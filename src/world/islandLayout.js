@@ -214,7 +214,10 @@ export function getBridgeLandings(island) {
       // How far the coast is in that direction, so the road reaches it
       shore: shoreDistance(island, dx, dz),
       rotationY: Math.atan2(dx, dz),
-      other
+      other,
+      // The bridge this landing belongs to, so callers can look up an
+      // edited approach road for it
+      def
     })
   }
 
@@ -266,35 +269,41 @@ function tightestRadius(path) {
 
 export function getIslandRoads(island) {
   const roads = []
-  const curve = island.roadCurve !== undefined ? island.roadCurve : DEFAULT_ROAD_CURVE
 
-  if (!island.noAutoRoad) {
-    const landings = getBridgeLandings(island)
+  for (const landing of getBridgeLandings(island)) {
+    const edited = !!getApproach(island, landing.def)
 
-    landings.forEach((landing, index) => {
-      // From where the bridge lands, in to the island centre
-      const reach = Math.max(2, landing.shore - 1)
-      const start = { x: landing.dirX * reach, z: landing.dirZ * reach }
-      const end = { x: 0, z: 0 }
+    // An island with auto roads switched off still gets any approach it
+    // has been given by hand - turning them off shouldn't throw away work.
+    if (island.noAutoRoad && !edited) continue
 
-      // A gentle bow stops every island looking like a wheel hub.
-      // Seeded per island and per road so it's stable between reloads.
-      const seed = hashString(island.id) + index * 37
-      const controls = bowedPath(start, end, curve, seed)
+    // Same source as the road the game actually draws, so the editor
+    // preview and the prop-avoidance both match what you'll drive on.
+    const controls = approachControls(
+      island, landing.dirX, landing.dirZ, landing.def
+    )
 
-      roads.push({
-        points: smoothRoad(
-          sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS })
-        ),
-        width: DEFAULT_ROAD_WIDTH,
-        // Drawn as part of the continuous bridge road instead, but still
-        // needed here so props keep clear of it
-        auto: true
-      })
+    roads.push({
+      points: smoothRoad(
+        sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS })
+      ),
+      width: DEFAULT_ROAD_WIDTH,
+      // Drawn as part of the continuous bridge road instead, but still
+      // needed here so props keep clear of it
+      auto: true,
+      // Which bridge this approach serves, and whether it's been taken
+      // over by hand. The editor needs both to offer Make editable.
+      bridgeTo: landing.def.from === island.id ? landing.def.to : landing.def.from,
+      edited
     })
   }
 
   for (const road of island.roads || []) {
+    // Approach roads were handled above - they're drawn as part of the
+    // continuous bridge road, so drawing them again here would lay a
+    // second surface on top of the first.
+    if (road.approachTo) continue
+
     const controls = resolveRoadControls(road)
     if (!controls || controls.length < 2) continue
 
@@ -338,9 +347,9 @@ export function hashString(str) {
  * Which of this island's bridge landings a given bridge is, so the road
  * bow can be seeded identically to getIslandRoads().
  */
-function landingIndex(island, def) {
+function landingIndex(island, def, bridges = BRIDGES) {
   let index = 0
-  for (const other of BRIDGES) {
+  for (const other of bridges) {
     if (other.from !== island.id && other.to !== island.id) continue
     if (other === def) return index
     index++
@@ -348,27 +357,83 @@ function landingIndex(island, def) {
   return 0
 }
 
-/** The bowed approach road on one island, as world-space points. */
+/**
+ * Where a bridge road runs once it comes ashore, in ISLAND-LOCAL
+ * coordinates, always ordered shore -> centre.
+ *
+ * Two sources, one shape:
+ *
+ *   - by default it's computed - a gentle bow from the landing point in to
+ *     the middle, seeded off the island's name so it looks the same every
+ *     time the page loads
+ *   - if the island carries an `approaches` entry for this bridge, those
+ *     stored points win, and the road goes exactly where you put it
+ *
+ * Both the game and the map editor call this, which is the point: there is
+ * one definition of where these roads go, so the preview can't disagree
+ * with the world.
+ */
+export function approachControls(island, dx, dz, def, bridges = BRIDGES) {
+  const dist = Math.hypot(dx, dz)
+  const ux = dx / dist
+  const uz = dz / dist
+  const shore = shoreDistance(island, dx, dz)
+  const reach = Math.max(2, shore - 1)
+
+  const stored = getApproach(island, def)
+  if (stored) {
+    // The first point is where the road meets the bridge deck. It is
+    // pinned to the landing whatever the saved file says, because a road
+    // that starts anywhere else tears open a hole at the join - and a
+    // stale saved point is exactly what you'd get after moving an island.
+    const points = stored.points.map(p => ({ x: p.x, z: p.z }))
+    points[0] = { x: ux * reach, z: uz * reach }
+    return points
+  }
+
+  const curve = island.roadCurve !== undefined ? island.roadCurve : DEFAULT_ROAD_CURVE
+  const seed = hashString(island.id) + landingIndex(island, def, bridges) * 37
+
+  return bowedPath({ x: ux * reach, z: uz * reach }, { x: 0, z: 0 }, curve, seed)
+}
+
+/**
+ * The island's hand-edited approach for one bridge, if it has one.
+ *
+ * These live in the island's ordinary `roads` array, marked with
+ * `approachTo: '<island id>'`:
+ *
+ *   roads: [
+ *     { approachTo: 'hub', points: [ {x,z}, {x,z}, ... ] }
+ *   ]
+ *
+ * Keeping them there rather than in a separate list means the map editor
+ * can select, drag and delete them with the machinery it already has -
+ * and deleting one simply hands the road back to the generator.
+ */
+export function getApproach(island, def) {
+  if (!island || !def || !Array.isArray(island.roads)) return null
+
+  const otherId = def.from === island.id ? def.to : def.from
+  const found = island.roads.find(r => r.approachTo === otherId)
+
+  return found && Array.isArray(found.points) && found.points.length >= 2
+    ? found
+    : null
+}
+
+/** The approach road on one island, as world-space points. */
 function approachPath(island, dx, dz, def, towardCentre) {
   const dist = Math.hypot(dx, dz)
   const ux = dx / dist
   const uz = dz / dist
   const shore = shoreDistance(island, dx, dz)
 
-  if (island.noAutoRoad) {
+  if (island.noAutoRoad && !getApproach(island, def)) {
     return [{ x: island.x + ux * shore, z: island.z + uz * shore }]
   }
 
-  const reach = Math.max(2, shore - 1)
-  const curve = island.roadCurve !== undefined ? island.roadCurve : DEFAULT_ROAD_CURVE
-  const seed = hashString(island.id) + landingIndex(island, def) * 37
-
-  const controls = bowedPath(
-    { x: ux * reach, z: uz * reach },
-    { x: 0, z: 0 },
-    curve,
-    seed
-  )
+  const controls = approachControls(island, dx, dz, def)
   const sampled = sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS })
 
   // Sampled shore -> centre. Reverse when we want centre -> shore.
