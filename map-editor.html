@@ -135,7 +135,6 @@
 
     <div id="toolbar">
       <button id="mode-select" class="on">Select</button>
-      <button id="mode-bridge">Bridge</button>
       <button id="mode-district">District</button>
       <button id="mode-road">Road</button>
       <button id="mode-shape">Shape</button>
@@ -1687,20 +1686,6 @@ canvas.addEventListener('mousedown', (e) => {
     e.preventDefault(); return;
   }
 
-  if (mode === 'bridge') {
-    const isl = pickIsland(w);
-    if (!isl) { bridgeFrom = null; }
-    else if (!bridgeFrom) { bridgeFrom = isl.id; }
-    else if (bridgeFrom === isl.id) { bridgeFrom = null; }
-    else {
-      const i = map.bridges.findIndex(b =>
-        (b.from === bridgeFrom && b.to === isl.id) || (b.to === bridgeFrom && b.from === isl.id));
-      if (i >= 0) map.bridges.splice(i, 1);
-      else map.bridges.push({ from: bridgeFrom, to: isl.id });
-      bridgeFrom = null;
-    }
-    refresh(); return;
-  }
 
   if (mode === 'district') {
     const isl = pickIsland(w);
@@ -1790,10 +1775,27 @@ canvas.addEventListener('mousedown', (e) => {
     const isl = pickIsland(w);
     if (!isl) { finishRoadDraft(); refresh(); return; }
 
+    // Carrying a road onto a different island means you want to cross the
+    // water, so build the bridge. This is why there is no separate Bridge
+    // tool: a bridge is just what a road does when it runs out of land.
+    if (roadDraft && roadDraft.island !== isl) {
+      const fromId = roadDraft.island.id;
+      const exists = map.bridges.some(b =>
+        (b.from === fromId && b.to === isl.id) || (b.to === fromId && b.from === isl.id));
+
+      if (!exists) map.bridges.push({ from: fromId, to: isl.id });
+
+      // Whatever was being drawn on the first island is finished off, and
+      // drawing carries on from the far side.
+      finishRoadDraft();
+      roadDraft = { island: isl, points: [snapToRoads(isl, { x: num(w.x - isl.x), z: num(w.z - isl.z) })] };
+      refresh(); return;
+    }
+
     const raw = { x: num(w.x - isl.x), z: num(w.z - isl.z) };
     const local = snapToRoads(isl, raw);
 
-    if (!roadDraft || roadDraft.island !== isl) {
+    if (!roadDraft) {
       // Starting a fresh road on this island
       finishRoadDraft();
       roadDraft = { island: isl, points: [local] };
@@ -2084,13 +2086,12 @@ function deleteSelection() {
 function setMode(m) {
   finishRoadDraft();
   mode = m; bridgeFrom = null; selVertex = null; selBuilding = null;
-  for (const id of ['select', 'bridge', 'district', 'road', 'shape', 'building', 'demolish']) {
+  for (const id of ['select', 'district', 'road', 'shape', 'building', 'demolish']) {
     document.getElementById('mode-' + id).classList.toggle('on', id === m);
   }
   refresh();
 }
 document.getElementById('mode-select').onclick = () => setMode('select');
-document.getElementById('mode-bridge').onclick = () => setMode('bridge');
 document.getElementById('mode-district').onclick = () => setMode('district');
 document.getElementById('mode-road').onclick = () => setMode('road');
 document.getElementById('mode-shape').onclick = () => setMode('shape');
@@ -2158,9 +2159,8 @@ function refresh() { draw(); renderProps(); renderValidation(); renderExport(); 
 function renderHint() {
   const tips = {
     select: '<b>Drag</b> islands to move · <b>drag the dot</b> on the rim to resize · <b>click a road or a bridge</b> to select it · <b>Delete</b> removes whatever is selected · <b>Shift-drag</b> to pan · <b>scroll</b> to zoom',
-    bridge: '<b>Click two islands</b> to connect them. Click an existing pair again to remove that bridge. <b>Esc</b> cancels.',
     district: '<b>Click inside an island</b> to drop a district there. Switch to Select to move or resize it.',
-    road: '<b>Click point by point</b> for a winding road, or <b>press and drag</b> for a straight one. <b>Enter</b> finishes, <b>Esc</b> cancels, <b>Alt-click</b> a point removes it.',
+    road: '<b>Click point by point</b> for a winding road, or <b>press and drag</b> for a straight one. <b>Click a second island</b> to bridge across to it. <b>Enter</b> finishes, <b>Esc</b> cancels, <b>Alt-click</b> a point removes it.',
     _road_old: '<b>Click along an island</b> to lay out a road, as many points as you like. <b>Enter</b> finishes it. <b>Drag</b> a point to reshape · <b>Alt-click</b> a point to remove it · <b>Delete</b> removes the whole road.',
     shape: '<b>Click an island</b> to make it editable · <b>drag</b> the white dots to reshape the coast · <b>Alt-click an edge</b> adds a point · <b>Delete</b> removes one',
     demolish: '<b>Click anything to remove it</b> \u2014 a road, a bridge, a building, a district, or an island. Whatever is under the pointer goes. Islands ask first.',

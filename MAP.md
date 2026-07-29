@@ -45,10 +45,10 @@ To pick up where you left off later, paste the contents of your current
 
 - **Select** — drag islands to move; drag the dot on the rim to resize.
   Click a road or a bridge to change it
-- **Bridge** — click two islands to connect; click the pair again to disconnect
 - **District** — click inside an island to place a town, jungle or plaza
 - **Road** — click point by point for a winding road, or press and drag
-  for a straight one. Ends snap onto nearby roads
+  for a straight one. Ends snap onto nearby roads. **Click a second
+  island and the bridge across to it is built for you**
 - **Shape** — click an island, then drag the white dots to reshape its coast
 - **Building** — click to place a building; drag the orange dot to rotate
 - **Demolish** — click anything to remove it
@@ -476,8 +476,12 @@ nothing happened.
 
 ## Bridges
 
-**To add one:** the **Bridge** tool (key `2`), then click one island and
-then another. Clicking the same pair again removes that bridge.
+There is no Bridge tool any more. A bridge is what a road does when it
+runs out of land.
+
+**To add one:** the **Road** tool. Start a road on one island, then click
+on another island. The bridge is built and you carry on drawing on the far
+side. Crossing again between the same pair doesn't make a second one.
 
 **To change one:** the **Select** tool, then click the bridge itself, out
 over the water. You get:
