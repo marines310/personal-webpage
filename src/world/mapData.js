@@ -59,7 +59,15 @@ export const ISLANDS = [
     name: 'SKILLS',
     palms: 10,
     shape: 'crescent',
-    shapeSeed: 3
+    shapeSeed: 3,
+    roads: [
+      { points: [
+          { x: -10.3, z: 9.9 }, { x: -2.2, z: 13.6 }, { x: 10.4, z: 12.6 },
+          { x: 15.5, z: 5.2 }, { x: 14.9, z: -5.6 }, { x: 7.8, z: -14.5 },
+          { x: -4.2, z: -15 }, { x: -12.7, z: -8.6 }, { x: -15.5, z: -0.8 },
+          { x: -10.4, z: 10 }
+        ] }
+    ]
   },
   {
     id: 'blog',
@@ -71,11 +79,7 @@ export const ISLANDS = [
     name: 'BLOG',
     palms: 10,
     shape: 'blob',
-    shapeSeed: 21,
-    buildings: [
-      { x: -3.4, z: 9.6, rotation: 110, model: 'building_a' },
-      { x: -5.5, z: 3.7, rotation: 109, model: 'building_b' }
-    ]
+    shapeSeed: 21
   },
   {
     id: 'contact',
