@@ -431,24 +431,53 @@ export function getIslandRing(island) {
   const stored = getStoredRing(island)
   if (stored) {
     const loop = stored.points.map(p => ({ x: p.x, z: p.z }))
+
+    // Drop a repeated closing point: the spline wraps on its own.
     const first = loop[0]
     const last = loop[loop.length - 1]
-    if (Math.hypot(first.x - last.x, first.z - last.z) > 1e-6) {
-      loop.push({ ...first })
+    if (Math.hypot(first.x - last.x, first.z - last.z) < 1e-6) loop.pop()
+    if (loop.length < 3) return null
+
+    // Run the curve THROUGH the handles rather than rounding the corners
+    // off them. Corner rounding pulls the loop inwards at every handle,
+    // so taking a ring over visibly shrank it - by 3.3 units on a big
+    // island, half a road width. A spline through the points doesn't
+    // move them at all.
+    let curve = sampleSpline(loop, {
+      samplesPerSpan: ROAD_SMOOTHNESS,
+      closed: true
+    })
+
+    // Ease it only if you've actually drawn something too tight to drive.
+    // Easing unconditionally would drag the loop off the handles you
+    // placed, for no benefit on a ring that was already fine.
+    for (let pass = 0; pass < 8; pass++) {
+      if (Math.min(...turningRadii(curve)) >= DEFAULT_ROAD_WIDTH * 0.75) break
+      curve = chaikinClosed(resamplePath(curve, ROAD_POINT_SPACING), 1)
     }
-    return chaikinClosed(resamplePath(loop, ROAD_POINT_SPACING), 2)
+
+    return curve
   }
 
   const outline = getOutline(island)
   const reach = boundingRadius(outline)
 
-  // Set in far enough to leave the beach clear, but not so far that the
-  // loop closes on itself. Below this an island can't hold a ring.
-  const inset = island.ringInset !== undefined
-    ? island.ringInset
-    : Math.max(DEFAULT_ROAD_WIDTH, reach * RING_INSET_FRACTION)
+  // How far in from the coast, as a FRACTION of the coast distance in
+  // each direction - not a fixed number of units.
+  //
+  // A fixed inset works out as a fraction of the island's longest axis,
+  // which on a stretched island is more than the short axis has to give.
+  // The sides then bottom out at the minimum width while the ends stay
+  // wide, and the ring becomes two big lobes joined by a pinch - 2-unit
+  // hairpins on a 7-unit road. Taking a proportion of the local shore
+  // distance keeps the loop in step with the shape whatever it is.
+  //
+  // `ringInset` on an island still means an absolute number of units.
+  const fraction = island.ringInsetFraction !== undefined
+    ? island.ringInsetFraction
+    : RING_INSET_FRACTION
 
-  if (reach - inset < DEFAULT_ROAD_WIDTH * 1.6) return null
+  if (reach * (1 - fraction) < DEFAULT_ROAD_WIDTH * 1.6) return null
 
   // Built in polar form: for each direction out from the centre, take the
   // coast distance and come in by `inset`.
@@ -466,7 +495,10 @@ export function getIslandRing(island) {
   for (let i = 0; i < STEPS; i++) {
     const angle = (i / STEPS) * Math.PI * 2
     const shore = rayDistanceToBoundary(outline, Math.cos(angle), Math.sin(angle))
-    radii.push(Math.max(DEFAULT_ROAD_WIDTH, shore - inset))
+    const pulled = island.ringInset !== undefined
+      ? shore - island.ringInset
+      : shore * (1 - fraction)
+    radii.push(Math.max(DEFAULT_ROAD_WIDTH, pulled))
   }
 
   // Smooth the radius around the loop so bays and headlands become gentle

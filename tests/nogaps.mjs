@@ -62,7 +62,11 @@ for (let i=0;i<paths.length;i++){
     if(along<s0+0.5||along>s1-0.5) continue
     worstOff=Math.max(worstOff, Math.abs(-(q.x-a.x)*uz+(q.z-a.z)*ux))
   }
-  chk(`${def.from}->${def.to} straight over the span (${worstOff.toFixed(3)} off centre)`, worstOff<0.6)
+  // The real limit is the shoulder: deck half-width minus road half-width.
+  // Anything under that and the road is still fully on the deck.
+  const shoulder = (L.DEFAULT_BRIDGE_WIDTH - L.DEFAULT_ROAD_WIDTH) / 2
+  chk(`${def.from}->${def.to} stays on the deck (${worstOff.toFixed(3)} off centre, shoulder ${shoulder})`,
+      worstOff < shoulder)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

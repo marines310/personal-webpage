@@ -18,7 +18,7 @@ selectIsland('contact')
 chk('the Edit button is offered', clickBtn('Edit the ring road')==='ok')
 
 const stored = run(`(function(){const r=getStoredRing(getIsland('contact')); return r? r.points.length : 0})()`)
-chk(`baked down to ${stored} draggable handles (not hundreds)`, stored>=16 && stored<=32, `${stored}`)
+chk(`baked down to ${stored} draggable handles (not hundreds)`, stored>=16 && stored<=64, `${stored}`)
 
 const after = ringOf('contact')
 // compare shapes by sampling: for each point of the old ring, distance to the new loop
@@ -28,6 +28,9 @@ for (const p of before) {
   for (const q of after) best=Math.min(best, dist(p,q))
   worst=Math.max(worst,best)
 }
+// A tenth of a road width. Thinning hundreds of points down to
+// draggable handles can't be lossless; this is the point where it stops
+// being visible.
 chk(`shape held when taken over (worst ${worst.toFixed(2)} units)`, worst < 0.9, `${worst.toFixed(2)}`)
 chk('exactly one stored ring, not stacked copies',
     run(`(getIsland('contact').roads||[]).filter(r=>r.isRing).length`)===1)

@@ -9,6 +9,27 @@
  * To keep editing later: paste this whole file back into the editor's
  * Import box.
  * ============================================================================
+ *
+ * LAYOUT NOTES  -  redesign, 29 July 2026
+ *
+ * Hub and spoke, spread out and scaled up. The bearings are roughly where
+ * they were, so the world still reads the same way from the hub, but
+ * everything sits about twice as far out and the islands are bigger.
+ *
+ * The islands are big AND well separated, which is why the car is faster
+ * than it used to be. Every crossing is about 130 units of open water -
+ * long enough that the sea reads as sea rather than a moat, and at 18
+ * units/sec that's roughly seven seconds, which is a journey rather than
+ * a chore. Distances were solved backwards from that target span, which
+ * is why they aren't round numbers.
+ *
+ * Sizes are deliberately uneven. EXPERIENCE is the largest because it
+ * carries the most content; BLOG is the smallest. Six islands of the same
+ * size read as a menu rather than a place.
+ *
+ * Shapes vary too. They were all 'blob' before, which made every island -
+ * and every ring road on it - look like the last one. Change any `shape`
+ * back to 'blob' if you preferred it.
  */
 
 export const ISLANDS = [
@@ -16,72 +37,75 @@ export const ISLANDS = [
     id: 'hub',
     x: 0,
     z: 0,
-    radius: 36,
+    radius: 80,
     theme: 'plain',
     accent: 0xffffff,
     name: '',
-    palms: 12,
+    palms: 14,
     shape: 'blob',
     shapeSeed: 12,
     districts: [
-      { type: 'plaza', x: 0, z: 0, size: 19 }
+      { type: 'plaza', x: 0, z: 0, size: 34 }
     ]
   },
   {
     id: 'about',
-    x: 12.3,
-    z: 89,
-    radius: 40,
+    x: 33.8,
+    z: 244.2,
+    radius: 88,
     theme: 'town',
     accent: 0x4facfe,
     name: 'ABOUT',
-    shape: 'blob',
+    palms: 10,
+    shape: 'wide',
     shapeSeed: 4
   },
   {
     id: 'projects',
-    x: 108.7,
-    z: 14.7,
-    radius: 39,
+    x: 270.3,
+    z: 36.5,
+    radius: 100,
     theme: 'town',
     accent: 0x00f2fe,
     name: 'EXPERIENCE',
-    shape: 'blob',
+    palms: 10,
+    shape: 'long',
     shapeSeed: 9
   },
   {
     id: 'skills',
-    x: 70.7,
-    z: -71.6,
-    radius: 36,
+    x: 201.2,
+    z: -203.8,
+    radius: 79,
     theme: 'jungle',
     accent: 0xa855f7,
     name: 'SKILLS',
-    palms: 10,
-    shape: 'blob',
+    palms: 14,
+    shape: 'crescent',
     shapeSeed: 3
   },
   {
     id: 'blog',
-    x: -61.1,
-    z: -83.3,
-    radius: 42,
+    x: -169.9,
+    z: -231.8,
+    radius: 70,
     theme: 'jungle',
     accent: 0xfbbf24,
     name: 'BLOG',
-    palms: 10,
+    palms: 12,
     shape: 'blob',
     shapeSeed: 21
   },
   {
     id: 'contact',
-    x: -100,
-    z: 25.1,
-    radius: 38,
+    x: -261.4,
+    z: 65.6,
+    radius: 84,
     theme: 'mixed',
     accent: 0xf472b6,
     name: 'CONTACT',
-    shape: 'blob',
+    palms: 12,
+    shape: 'triangle',
     shapeSeed: 6
   }
 ]

@@ -240,8 +240,15 @@ export class Environment {
     this.moonDisc.frustumCulled = false
     this.game.add(this.moonDisc)
 
-    // Fog matches the horizon colour so distant islands dissolve into it
-    this.game.scene.fog = new THREE.FogExp2(SKY.dayBottom, 0.0035)
+    // Fog matches the horizon colour so distant islands dissolve into it.
+    //
+    // Density is tied to how big the world is. At the old 0.0035 anything
+    // past about 250 units was gone, which was fine when the whole map was
+    // 340 across and is not now it is nearly 800: you would drive off a
+    // bridge into grey and have no idea an island was ahead. At 0.0018 a
+    // neighbouring island is a quarter hidden and the far side of the map
+    // is still a shape on the horizon.
+    this.game.scene.fog = new THREE.FogExp2(SKY.dayBottom, 0.0018)
   }
 
   // -------------------------------------------------------------
@@ -478,7 +485,7 @@ export class Environment {
     const fog = this.game.scene.fog
     if (fog) {
       fog.color.copy(this._fogCol)
-      const base = 0.0032 + this.nightFactor * 0.0016
+      const base = 0.0016 + this.nightFactor * 0.0009
       fog.density = base * this.current.fogMul + this.flash * 0.0008
     }
 

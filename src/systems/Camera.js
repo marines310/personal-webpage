@@ -39,7 +39,7 @@ export class Camera {
       restDistance: 9.5,    // distance behind when stopped
       fastHeight: 7.0,      // height at top speed
       fastDistance: 13.5,   // distance behind at top speed
-      speedForFullPullback: 13, // car speed at which the far values apply
+      speedForFullPullback: 18, // car speed at which the far values apply
 
       // How quickly the camera swings around to sit behind the car.
       // Higher = snappier. This is the main "does it keep up" dial.

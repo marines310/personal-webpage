@@ -37,16 +37,21 @@ export class Vehicle {
     // -----------------------------------------------------------------
     this.params = {
       // --- Speed & acceleration (world units, and units/sec) ---
-      maxForwardSpeed: 13,     // top speed going forward
-      maxReverseSpeed: 5,      // top speed in reverse (deliberately lower)
-      forwardAccel: 11,        // how hard it pulls away forward
-      reverseAccel: 6,         // gentler than forward
+      // Raised when the map was spread out. A 130-unit bridge at the old
+      // 13 units/sec was ten seconds of holding W in a straight line; at
+      // 18 it's seven, which reads as a journey instead of a wait.
+      maxForwardSpeed: 18,     // top speed going forward
+      maxReverseSpeed: 6.5,    // top speed in reverse (deliberately lower)
+      forwardAccel: 15,        // how hard it pulls away forward
+      reverseAccel: 7.5,       // gentler than forward
       boostMultiplier: 1.6,    // Shift: multiplies top speed & acceleration
 
       // --- Slowing down ---
-      handbrakeStrength: 26,   // Spacebar - strong, works both directions
-      engineBrakeStrength: 16, // pressing the opposite direction to travel
-      rollingResistance: 4,    // coasting with no key held
+      // Braking scaled with the speed, or stopping distance would have
+      // grown by the square of it - 3.3 units before, 6.2 if left alone.
+      handbrakeStrength: 34,   // Spacebar - strong, works both directions
+      engineBrakeStrength: 21, // pressing the opposite direction to travel
+      rollingResistance: 5,    // coasting with no key held
       stopThreshold: 0.3,      // below this speed the car counts as stopped
       restThreshold: 0.05,     // below this we snap to 0 to stop jitter
 
