@@ -43,15 +43,21 @@ To pick up where you left off later, paste the contents of your current
 
 ### The tools
 
-- **Select** — drag islands to move; drag the dot on the rim to resize
+- **Select** — drag islands to move; drag the dot on the rim to resize.
+  Click a road or a bridge to change it
 - **Bridge** — click two islands to connect; click the pair again to disconnect
 - **District** — click inside an island to place a town, jungle or plaza
-- **Road** — click two points inside an island to draw a road
+- **Road** — click point by point for a winding road, or press and drag
+  for a straight one. Ends snap onto nearby roads
 - **Shape** — click an island, then drag the white dots to reshape its coast
 - **Building** — click to place a building; drag the orange dot to rotate
+- **Demolish** — click anything to remove it
 
-Shift-drag (or right-drag) to pan, scroll to zoom, keys **1–6** switch
-tools, **Delete** removes what's selected.
+Two toggles sit alongside: **Props** shows scattered trees and buildings,
+**Links** shows where roads connect.
+
+Shift-drag (or right-drag) to pan, scroll to zoom, **Delete** removes
+what's selected.
 
 The right-hand panel validates continuously — overlapping islands,
 bridges to nowhere, islands you can't drive to.
@@ -420,6 +426,51 @@ ISLAND_DEPTH    // how thick the landmasses are
 SEA_LEVEL       // height of the water
 FALL_LIMIT      // drive below this and you respawn
 ```
+
+---
+
+## Drawing roads
+
+Two ways, both with the **Road** tool:
+
+- **Click point by point** for a winding road. `Enter` finishes, `Esc`
+  cancels, `Alt-click` a point removes it.
+- **Press and drag** for a straight run. It's finished the moment you let
+  go.
+
+**Ends snap to other roads.** Come within about 5 units of another road
+and the point is pulled onto it. That snap distance is deliberately the
+same distance the network uses to decide two roads are joined — so
+anything that snaps really is connected, rather than just looking it.
+
+### Seeing what's connected
+
+The **Links** toggle draws a dot at every junction:
+
+- **green** — roads meeting here, you can drive from one to another
+- **amber, with a dashed ring** — a dead end, joined to nothing
+
+Amber is the one to look for. A loop that looks closed but has an amber
+dot on it isn't closed, and a road that stops one unit short of another
+looks fine and isn't a junction.
+
+This is worked out from where the roads actually are, not from anything
+saved in the file, so it can't go stale when you move an island. It's also
+what traffic would follow if cars are added later: dots are where you can
+choose a direction, roads are what you follow between them.
+
+---
+
+## Removing things
+
+The **Demolish** tool removes whatever you click — road, bridge, building,
+district or island. Things sitting *on* an island are checked before the
+island itself, so you can't wipe out an island while aiming at a building
+on it. Islands ask for confirmation.
+
+Demolishing a ring road you'd taken over switches the ring off, rather
+than handing it back to the generator — otherwise it would look like
+nothing happened.
 
 ---
 

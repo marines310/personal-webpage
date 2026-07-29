@@ -503,6 +503,125 @@ export function getIslandRing(island) {
 }
 
 /**
+ * The whole drivable network, in world coordinates.
+ *
+ * Returns:
+ *   segments - every road in the world, as a world-space polyline, with
+ *              where it came from so the editor can point at it
+ *   nodes    - every place segments touch: { x, z, segments: [i, …] }
+ *
+ * This is DERIVED, never stored. Connections that live in the data go
+ * stale the moment you drag an island; connections worked out from where
+ * the roads actually are cannot. It costs a little to recompute and is
+ * always right.
+ *
+ * A node with two or more segments is a junction. A node with one is a
+ * dead end - which the editor draws differently, because a road you meant
+ * to join to something and didn't is the mistake worth catching.
+ *
+ * Anything wanting to drive a car around later wants this: nodes are
+ * where you can choose a direction, segments are what you follow.
+ */
+export function getRoadNetwork() {
+  const segments = []
+
+  for (const island of ISLANDS) {
+    for (const road of getIslandRoads(island)) {
+      // Approach roads are drawn as part of the bridge run, so taking
+      // them here as well would double every one of them up.
+      if (road.auto) continue
+
+      segments.push({
+        points: road.points.map(p => ({ x: island.x + p.x, z: island.z + p.z })),
+        island: island.id,
+        kind: road.ring ? 'ring' : 'road',
+        closed: !!road.ring
+      })
+    }
+  }
+
+  for (let i = 0; i < BRIDGES.length; i++) {
+    const path = getBridgeRoadPaths()[i]
+    if (!path) continue
+    segments.push({
+      points: path.points,
+      island: null,
+      kind: 'bridge',
+      bridge: BRIDGES[i],
+      closed: false
+    })
+  }
+
+  return buildNetwork(segments)
+}
+
+/**
+ * Work out where a set of road polylines join each other.
+ *
+ * Split out from getRoadNetwork so the map editor can feed in the roads
+ * it is currently drawing - including ones you haven't saved yet - and
+ * get connections worked out by exactly the same code the game uses.
+ *
+ * @param {Array<{points, closed}>} segments  world-space polylines
+ */
+export function buildNetwork(segments) {
+  // A node wherever segment ends land on, or near, another segment.
+  const TOLERANCE = DEFAULT_ROAD_WIDTH * 0.75
+  const nodes = []
+
+  const addNode = (x, z, index) => {
+    const existing = nodes.find(n => Math.hypot(n.x - x, n.z - z) < TOLERANCE)
+    if (existing) {
+      if (!existing.segments.includes(index)) existing.segments.push(index)
+      return existing
+    }
+    const node = { x, z, segments: [index] }
+    nodes.push(node)
+    return node
+  }
+
+  segments.forEach((seg, i) => {
+    const ends = seg.closed
+      ? []                                  // a loop has no loose ends
+      : [seg.points[0], seg.points[seg.points.length - 1]]
+
+    for (const end of ends) {
+      const node = addNode(end.x, end.z, i)
+
+      // Anything else passing within a road's width of this end counts as
+      // joined - that's what a T-junction is.
+      segments.forEach((other, k) => {
+        if (k === i) return
+        const near = nearestOnPath(other.points, end.x, end.z)
+        if (near && Math.hypot(near.x - end.x, near.z - end.z) <= TOLERANCE) {
+          if (!node.segments.includes(k)) node.segments.push(k)
+        }
+      })
+    }
+  })
+
+  // Crossings, for roads that pass through each other rather than end
+  segments.forEach((a, i) => {
+    segments.forEach((b, k) => {
+      if (k <= i) return
+      for (let p = 1; p < a.points.length; p++) {
+        for (let q = 1; q < b.points.length; q++) {
+          const hit = segmentIntersection(
+            a.points[p - 1], a.points[p], b.points[q - 1], b.points[q]
+          )
+          if (hit) {
+            const node = addNode(hit.x, hit.z, i)
+            if (!node.segments.includes(k)) node.segments.push(k)
+          }
+        }
+      }
+    })
+  })
+
+  return { segments, nodes }
+}
+
+/**
  * Every place two roads on an island meet or cross, island-local.
  *
  * A road is a ribbon with square ends. Where one runs into another they

@@ -140,8 +140,10 @@
       <button id="mode-road">Road</button>
       <button id="mode-shape">Shape</button>
       <button id="mode-building">Building</button>
+      <button id="mode-demolish" class="danger">Demolish</button>
       <span style="width:1px;background:var(--line);margin:0 3px"></span>
       <button id="props-toggle" class="on">Props</button>
+      <button id="links-toggle" class="on">Links</button>
       <button id="snap-toggle">Snap: off</button>
       <input id="snap-size" type="number" value="2" min="0.5" step="0.5"
              title="Grid size" style="width:56px;padding:6px">
@@ -227,7 +229,7 @@ import { MODEL_MANIFEST } from './src/world/modelManifest.js'
 // version of these and it quietly drifted out of step with the game, so
 // the preview showed roads where they weren't.
 import { sampleSpline, bowedPath } from './src/world/curves.js'
-import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, getStoredRing, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
+import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, getStoredRing, buildNetwork, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
 import { ISLANDS as MAP_ISLANDS, BRIDGES as MAP_BRIDGES } from './src/world/mapData.js'
 
 /** key -> { footprint:{x,y,z}, thumb: dataURL } */
@@ -520,6 +522,114 @@ function approachRoads(island) {
   return out;
 }
 
+/**
+ * Every road in the world the editor is currently showing, in world
+ * coordinates - including changes you haven't exported yet.
+ *
+ * Handed to buildNetwork(), the same function the game uses, so the
+ * connections drawn here are the connections the world will have.
+ */
+function worldSegments() {
+  const out = [];
+
+  for (const isl of map.islands) {
+    const ring = getIslandRing(isl);
+    if (ring && !isl.noAutoRoad) {
+      out.push({
+        points: ring.map(p => ({ x: isl.x + p.x, z: isl.z + p.z })),
+        closed: true, kind: 'ring', island: isl
+      });
+    }
+
+    for (const rd of isl.roads || []) {
+      if (rd.approachTo || rd.isRing) continue;   // drawn as part of something else
+      const curve = roadCurveOf(isl, rd);
+      if (curve.length < 2) continue;
+      out.push({
+        points: curve.map(p => ({ x: isl.x + p.x, z: isl.z + p.z })),
+        closed: !!rd.closed, kind: 'road', island: isl, road: rd
+      });
+    }
+  }
+
+  // Bridges, with their approach roads either side - one run per bridge,
+  // exactly as the game builds them
+  for (const br of map.bridges) {
+    const a = getIsland(br.from), b = getIsland(br.to);
+    if (!a || !b) continue;
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const d = Math.hypot(dx, dz);
+    if (!d) continue;
+
+    const ca = approachControls(a, dx, dz, br, map.bridges);
+    const cb = approachControls(b, -dx, -dz, br, map.bridges);
+    const pts = [
+      ...[...ca].reverse().map(p => ({ x: a.x + p.x, z: a.z + p.z })),
+      ...cb.map(p => ({ x: b.x + p.x, z: b.z + p.z }))
+    ];
+    out.push({ points: pts, closed: false, kind: 'bridge', bridge: br });
+  }
+
+  return out;
+}
+
+/**
+ * Pull a point onto a nearby road, so roads actually join instead of
+ * stopping a unit short of each other.
+ *
+ * Without this you can lay a road that looks connected and isn't: the
+ * surfaces overlap, so it reads as a junction, but there is no shared
+ * point and nothing driving the network later would be able to turn from
+ * one into the other. Snapping makes the join real.
+ *
+ * Takes and returns an ISLAND-LOCAL point.
+ */
+function snapToRoads(isl, local, ignoreRoad) {
+  const world = { x: isl.x + local.x, z: isl.z + local.z };
+
+  // Exactly the tolerance buildNetwork() uses to decide two roads are
+  // joined. Tying them together matters: with a smaller snap you could
+  // pull a road onto another and still not be connected, and with a
+  // larger one it would look joined in the editor and not be joined in
+  // the world. Same number, so what snaps is what connects.
+  let best = null, bestDist = 7 * 0.75;
+
+  for (const seg of worldSegments()) {
+    if (ignoreRoad && seg.road === ignoreRoad) continue;
+
+    // Prefer an exact end - joining end-to-end is the cleanest junction
+    for (const end of [seg.points[0], seg.points[seg.points.length - 1]]) {
+      const d = Math.hypot(end.x - world.x, end.z - world.z);
+      if (d < bestDist) { bestDist = d; best = end; }
+    }
+
+    // Otherwise anywhere along it, which is a T-junction
+    const near = nearestOnSeg(seg.points, world.x, world.z);
+    if (near && near.d < bestDist) { bestDist = near.d; best = near; }
+  }
+
+  return best
+    ? { x: num(best.x - isl.x, 2), z: num(best.z - isl.z, 2), snapped: true }
+    : { ...local, snapped: false };
+}
+
+/** Closest point on a polyline, with its distance. */
+function nearestOnSeg(points, x, z) {
+  let best = null, bestDist = Infinity;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const lenSq = dx * dx + dz * dz;
+    if (lenSq < 1e-9) continue;
+    let t = ((x - a.x) * dx + (z - a.z) * dz) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    const px = a.x + dx * t, pz = a.z + dz * t;
+    const d = Math.hypot(x - px, z - pz);
+    if (d < bestDist) { bestDist = d; best = { x: px, z: pz, d }; }
+  }
+  return best;
+}
+
 /** An island's hand-edited approach toward another island, if any. */
 function storedApproach(island, otherId) {
   return (island.roads || []).find(r => r.approachTo === otherId) || null;
@@ -601,6 +711,7 @@ let bridgeFrom = null;   // island id awaiting a partner
 let roadDraft = null;    // { island, points: [{x,z}] } while drawing
 let selVertex = null;    // { island, index } while shaping
 let selBuilding = null;  // { island, index }
+let showLinks = true;    // draw the road-connection dots
 let snapOn = false;      // grid snapping
 let snapSize = 2;        // grid spacing in world units
 
@@ -763,6 +874,35 @@ function draw() {
   });
 
   for (const island of map.islands) drawIsland(island);
+
+  // Where roads join. Worked out from where they actually are, by the
+  // same code the game uses - so a loop that looks closed but isn't
+  // shows up here rather than in the finished world.
+  if (showLinks) {
+    const net = buildNetwork(worldSegments());
+    for (const n of net.nodes) {
+      const p = w2s(n.x, n.z);
+      const joined = n.segments.length >= 2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, joined ? 5 : 6, 0, Math.PI * 2);
+      ctx.fillStyle = joined ? '#3ddc84' : '#ffb020';
+      ctx.fill();
+      ctx.strokeStyle = '#0d1117';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      if (!joined) {
+        // A loose end - almost always a road you meant to connect
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 11, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ffb020';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
 
   // Pending bridge / road feedback
   if (bridgeFrom) {
@@ -1650,12 +1790,17 @@ canvas.addEventListener('mousedown', (e) => {
     const isl = pickIsland(w);
     if (!isl) { finishRoadDraft(); refresh(); return; }
 
-    const local = { x: num(w.x - isl.x), z: num(w.z - isl.z) };
+    const raw = { x: num(w.x - isl.x), z: num(w.z - isl.z) };
+    const local = snapToRoads(isl, raw);
 
     if (!roadDraft || roadDraft.island !== isl) {
       // Starting a fresh road on this island
       finishRoadDraft();
       roadDraft = { island: isl, points: [local] };
+      // Remember where the press began. If the pointer travels before the
+      // button comes up, this was a drag - a straight run - rather than
+      // the first click of a click-by-click road.
+      drag = { type: 'roadDrag', island: isl, from: local, moved: false };
     } else {
       roadDraft.points.push(local);
     }
@@ -1695,6 +1840,51 @@ canvas.addEventListener('mousedown', (e) => {
     }
     refresh();
     return;
+  }
+
+  // --- Demolish mode ---
+  //
+  // One tool for getting rid of things, rather than a different route for
+  // each kind. Checked in the order you'd expect to hit them: the small
+  // things sitting on an island first, the island itself last, so you
+  // can't wipe out an island while aiming at a building on it.
+  if (mode === 'demolish') {
+    const bd = pickBuilding(w);
+    if (bd) {
+      bd.island.buildings.splice(bd.index, 1);
+      sel = null; selBuilding = null; refresh(); return;
+    }
+
+    const rd = pickRoad(w);
+    if (rd) {
+      const road = rd.island.roads[rd.index];
+      rd.island.roads.splice(rd.index, 1);
+      // Removing a generated road that you'd taken over just hands it
+      // back to the generator, which would look like nothing happened.
+      // Switching it off is what you actually meant.
+      if (road && road.isRing) rd.island.noRing = true;
+      sel = null; refresh(); return;
+    }
+
+    const di = pickDistrict(w);
+    if (di) {
+      di.island.districts.splice(di.index, 1);
+      sel = null; refresh(); return;
+    }
+
+    const isl = pickIsland(w);
+    if (isl) {
+      if (confirm(`Remove the island "${isl.id}" and its bridges?`)) {
+        map.islands = map.islands.filter(i => i !== isl);
+        map.bridges = map.bridges.filter(b => b.from !== isl.id && b.to !== isl.id);
+        sel = null;
+      }
+      refresh(); return;
+    }
+
+    const bi = pickBridge(w);
+    if (bi !== null) { map.bridges.splice(bi, 1); sel = null; }
+    refresh(); return;
   }
 
   // --- Select mode ---
@@ -1741,6 +1931,17 @@ canvas.addEventListener('mousemove', (e) => {
   const rect = canvas.getBoundingClientRect();
   const w = s2w(e.clientX - rect.left, e.clientY - rect.top);
 
+  if (drag.type === 'roadDrag') {
+    const to = snapToRoads(drag.island,
+      { x: num(w.x - drag.island.x), z: num(w.z - drag.island.z) });
+    // Only treat it as a drag once it has gone somewhere, so an ordinary
+    // click with a shaky hand still starts a click-by-click road.
+    if (Math.hypot(to.x - drag.from.x, to.z - drag.from.z) > 3) drag.moved = true;
+    if (drag.moved && roadDraft) roadDraft.points = [drag.from, to];
+    refresh();
+    return;
+  }
+
   if (drag.type === 'pan') {
     view.x = drag.vx - (e.clientX - drag.sx) / view.zoom;
     view.z = drag.vz - (e.clientY - drag.sy) / view.zoom;
@@ -1780,10 +1981,13 @@ canvas.addEventListener('mousemove', (e) => {
       road.points = [{ ...road.from }, { ...road.to }];
       delete road.from; delete road.to;
     }
-    road.points[drag.pointIndex] = {
-      x: num(w.x - drag.island.x),
-      z: num(w.z - drag.island.z)
-    };
+    // Snap while dragging too, so you can pull a loose end onto another
+    // road and have it actually join rather than merely overlap.
+    road.points[drag.pointIndex] = snapToRoads(
+      drag.island,
+      { x: num(w.x - drag.island.x), z: num(w.z - drag.island.z) },
+      road
+    );
   } else if (drag.type === 'vertex') {
     const v = drag.island.outline[drag.index];
     v.x = num(w.x - drag.island.x);
@@ -1796,7 +2000,15 @@ canvas.addEventListener('mousemove', (e) => {
   refresh();
 });
 
-window.addEventListener('mouseup', () => { drag = null; });
+window.addEventListener('mouseup', () => {
+  // A straight run is complete the moment you let go. A click-by-click
+  // road is not - that one keeps collecting points until you press Enter,
+  // Escape, or click away.
+  if (drag && drag.type === 'roadDrag' && drag.moved) {
+    finishRoadDraft();
+  }
+  drag = null;
+});
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 canvas.addEventListener('wheel', (e) => {
@@ -1872,7 +2084,7 @@ function deleteSelection() {
 function setMode(m) {
   finishRoadDraft();
   mode = m; bridgeFrom = null; selVertex = null; selBuilding = null;
-  for (const id of ['select', 'bridge', 'district', 'road', 'shape', 'building']) {
+  for (const id of ['select', 'bridge', 'district', 'road', 'shape', 'building', 'demolish']) {
     document.getElementById('mode-' + id).classList.toggle('on', id === m);
   }
   refresh();
@@ -1883,6 +2095,13 @@ document.getElementById('mode-district').onclick = () => setMode('district');
 document.getElementById('mode-road').onclick = () => setMode('road');
 document.getElementById('mode-shape').onclick = () => setMode('shape');
 document.getElementById('mode-building').onclick = () => setMode('building');
+document.getElementById('mode-demolish').onclick = () => setMode('demolish');
+
+document.getElementById('links-toggle').onclick = () => {
+  showLinks = !showLinks;
+  document.getElementById('links-toggle').classList.toggle('on', showLinks);
+  refresh();
+};
 
 document.getElementById('props-toggle').onclick = () => {
   showProps = !showProps;
@@ -1941,8 +2160,10 @@ function renderHint() {
     select: '<b>Drag</b> islands to move · <b>drag the dot</b> on the rim to resize · <b>click a road or a bridge</b> to select it · <b>Delete</b> removes whatever is selected · <b>Shift-drag</b> to pan · <b>scroll</b> to zoom',
     bridge: '<b>Click two islands</b> to connect them. Click an existing pair again to remove that bridge. <b>Esc</b> cancels.',
     district: '<b>Click inside an island</b> to drop a district there. Switch to Select to move or resize it.',
-    road: '<b>Click along an island</b> to lay out a road, as many points as you like. <b>Enter</b> finishes it. <b>Drag</b> a point to reshape · <b>Alt-click</b> a point to remove it · <b>Delete</b> removes the whole road.',
+    road: '<b>Click point by point</b> for a winding road, or <b>press and drag</b> for a straight one. <b>Enter</b> finishes, <b>Esc</b> cancels, <b>Alt-click</b> a point removes it.',
+    _road_old: '<b>Click along an island</b> to lay out a road, as many points as you like. <b>Enter</b> finishes it. <b>Drag</b> a point to reshape · <b>Alt-click</b> a point to remove it · <b>Delete</b> removes the whole road.',
     shape: '<b>Click an island</b> to make it editable · <b>drag</b> the white dots to reshape the coast · <b>Alt-click an edge</b> adds a point · <b>Delete</b> removes one',
+    demolish: '<b>Click anything to remove it</b> \u2014 a road, a bridge, a building, a district, or an island. Whatever is under the pointer goes. Islands ask first.',
     building: '<b>Click empty ground</b> to place a building · <b>drag</b> to move · <b>drag the orange dot</b> to rotate · <b>Delete</b> removes it. Turn on <b>Snap</b> for tidy rows and right angles.'
   };
   document.getElementById('hint').innerHTML =
