@@ -93,7 +93,6 @@ git add .
 git commit -m "Interactive driving portfolio"
 git branch -M main
 git remote add origin https://github.com/marines310/personal-webpage.git
-git push -u origin main
 ```
 
 What these do, briefly:
@@ -103,17 +102,30 @@ What these do, briefly:
 - `git commit` — save a snapshot, with a note describing it
 - `git branch -M main` — name the main line of work `main`
 - `git remote add origin …` — record where on GitHub this belongs
-- `git push` — upload it
 
-A browser window will open asking you to sign in to GitHub. Do that, and the push
-completes. Refresh your repo page and your files will be there.
+All of this happened on your Mac. Nothing has been uploaded yet — that's the next step.
 
-> **If it asks for a password in the Terminal and rejects the right one:** GitHub stopped
-> accepting account passwords over the command line. Install
-> [GitHub CLI](https://cli.github.com), run `gh auth login`, follow the prompts, then
-> re-run the `git push` line.
+> **You may be tempted to finish with `git push`. It won't work**, and the error is
+> *"Password authentication is not supported for Git operations"*. GitHub retired password
+> logins for the command line, so the upload needs a real credential. GitHub Desktop
+> handles that, and is easier for everything afterwards too.
 
-### Step 5: Turn on Pages
+### Step 5: Install GitHub Desktop and upload
+
+Download it from **[desktop.github.com/download](https://desktop.github.com/download)**,
+open the downloaded file, and drag GitHub Desktop into Applications. Open it.
+
+1. **Sign in.** It offers this on first launch — *Sign in to GitHub.com*. A browser opens,
+   you approve, and you're done. This is the whole authentication problem solved: the app
+   holds the credential from now on.
+2. **File → Add Local Repository.**
+3. Choose your `mike-portfolio-v1` folder. It recognises it as a git repository, because
+   Step 4 already made it one.
+4. Click **Push origin** at the top.
+
+Refresh your repo page on GitHub and your files will be there.
+
+### Step 6: Turn on Pages
 
 In your repo on GitHub: **Settings** → **Pages** (left sidebar).
 
@@ -123,7 +135,7 @@ This is the step people miss. The default is "Deploy from a branch", which would
 serve your raw source files instead of the built site — you'd get a blank page and no
 obvious reason why.
 
-### Step 6: Watch it build
+### Step 7: Watch it build
 
 Click the **Actions** tab at the top of your repo. You'll see a run in progress with a
 spinning amber dot. It takes 1–2 minutes and turns into a green tick.
@@ -142,49 +154,58 @@ The first time only, it can take a few extra minutes to become reachable. If you
 
 ## Part 2 — every time you change something
 
-This is the loop from here on.
+This is the loop from here on. Terminal for previewing, GitHub Desktop for publishing.
 
 **1. Make your change and check it locally.**
+
+In Terminal:
 
 ```bash
 npm run dev
 ```
 
-Open the address it prints (`http://localhost:3000`) and confirm you're happy. `Ctrl+C`
-in Terminal to stop it.
+Open `http://localhost:3000` and confirm you're happy. Leave it running while you work —
+it reloads as you edit. `Ctrl + C` stops it.
 
-**2. Publish.**
+> Tip: `Cmd + T` opens a second Terminal tab. Keep the dev server in one tab so you're
+> not stopping and starting it constantly.
 
-```bash
-git add .
-git commit -m "Redrew the map"
-git push
-```
+**2. Publish, in GitHub Desktop.**
 
-The message in quotes is a note to your future self about what changed. It can be
-anything; it's worth making it descriptive.
+1. Open GitHub Desktop. Your changed files are listed down the left, with the actual
+   changes shown beside them.
+2. Bottom left, type a short summary — *"Redrew the map"*, *"New buildings on Skills
+   island"*. A note to your future self about what changed.
+3. Click **Commit to main**.
+4. Click **Push origin** at the top.
 
 **3. Wait about 90 seconds**, then reload the site.
 
-That's genuinely it. Pushing to `main` starts the robot automatically — there's no
-separate "deploy" step to remember, and you never touch the `dist` folder.
+That's it. Pushing starts the build robot automatically — there's no separate "deploy"
+step, and you never touch the `dist` folder.
+
+> **Commit and push are two different things.** Commit saves a snapshot on your Mac. Push
+> sends it to GitHub. If your site isn't updating, the usual reason is a commit that was
+> never pushed — GitHub Desktop will show **Push origin** with a number next to it.
 
 ### If the site still looks old
 
-Almost always one of these two:
+Three candidates, in the order worth checking:
 
 **Your browser cached it.** Hard-refresh: `Cmd + Shift + R`. If you want to be certain,
 open the site in a private window — that can't be serving you an old copy.
 
-**The build failed.** Check the **Actions** tab. A red ✗ means the robot hit an error and
-kept the previous version online rather than publishing a broken one. Click into the red
-run and open the step that failed; the error is usually the last few lines. A site that
-doesn't update is nearly always a failed build, not a lost push.
+**You committed but didn't push.** Check GitHub Desktop — if the top button still says
+**Push origin** with a number on it, the change never left your Mac.
+
+**The build failed.** Check the **Actions** tab on GitHub. A red ✗ means the robot hit an
+error and kept the previous version online rather than publishing a broken one. Click into
+the red run and open the step that failed; the error is usually the last few lines.
 
 ### A useful habit
 
-`npm run build` locally before you push. It runs the same compile the robot will run, so
-if it's going to fail you find out in five seconds rather than two minutes.
+Run `npm run build` in Terminal before you publish. It's the same compile the robot will
+run, so if it's going to fail you find out in five seconds rather than two minutes.
 
 ---
 
@@ -269,7 +290,7 @@ Once the domain is working, create a file called `CNAME` (no extension) inside t
 yoursite.com
 ```
 
-Then `git add . && git commit -m "Add CNAME" && git push`.
+Then commit and push it in GitHub Desktop, as usual.
 
 GitHub stores your custom domain in its settings, but that setting has been known to reset
 itself when a deployment replaces the site. This file makes the domain part of your code,
@@ -285,8 +306,8 @@ domain it must be `'/personal-webpage/'`. Open the browser console (`Cmd + Optio
 a wall of 404s for missing `/assets/…` files confirms it.
 
 **Site loads but the buildings are plain shapes.** The `.glb` model files didn't get
-uploaded. Run `git status` — if it lists things in `public/models/`, they were never
-committed. `git add public/models` and push.
+uploaded. In GitHub Desktop, check whether anything under `public/models/` is sitting
+uncommitted in the left-hand list; if so, commit and push it.
 
 **Buildings load but are white.** The texture file is missing or misnamed. This one is
 sneaky: GitHub's servers treat `Textures/colormap.png` and `textures/colormap.png` as
