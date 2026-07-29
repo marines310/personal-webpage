@@ -423,6 +423,46 @@ FALL_LIMIT      // drive below this and you respawn
 
 ---
 
+## Moving the bridge roads
+
+Every bridge gets a road running from where it lands in to the island
+centre. By default these are *generated* — a gentle bow, seeded off the
+island's name so it looks the same on every page load. That's why there's
+nothing to grab in the editor: there are no stored points, just a formula.
+
+To take one over:
+
+1. Click the island (Select tool)
+2. In the panel, under **Bridge roads**, click **Edit the road to …**
+3. Handles appear. Drag the white ones.
+
+Taking a road over bakes its *current* shape into points, so nothing moves
+at the moment you click — it simply stops being generated and becomes
+yours. **Back to automatic** hands it to the generator again.
+
+**The grey handle at the shore can't be moved.** It's welded to where the
+bridge deck lands. If it could drift, the road would tear away from the
+bridge and leave a hole you could see the sea through — so it's pinned,
+and pinned again when the file loads, in case an island got moved after
+the road was saved.
+
+In the data file an edited approach is an ordinary road carrying an
+`approachTo`:
+
+```js
+{
+  id: 'blog',
+  roads: [
+    { approachTo: 'hub', points: [ { x: 10.1, z: 13.9 }, … ] }
+  ]
+}
+```
+
+Points are island-local and run **shore first, centre last**. Delete the
+entry and the road goes back to being generated.
+
+---
+
 ## What is *not* in this file
 
 | What | Where |
