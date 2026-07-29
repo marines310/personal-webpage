@@ -423,6 +423,28 @@ FALL_LIMIT      // drive below this and you respawn
 
 ---
 
+## Bridges
+
+**To add one:** the **Bridge** tool (key `2`), then click one island and
+then another. Clicking the same pair again removes that bridge.
+
+**To change one:** the **Select** tool, then click the bridge itself, out
+over the water. You get:
+
+- **deck width** — clamped to a minimum of 7.5, because the deck has to
+  stay wider than the 7-unit road running over it or the road hangs off
+  the sides with nothing underneath
+- **railings** — on or off
+- **Reverse direction** — swaps `from` and `to`. Only affects which end
+  the road is measured from, so it's cosmetic
+- **Delete bridge**
+
+Bridges are checked last when you click, so one can never swallow a click
+meant for the island it lands on. That does mean you have to click the
+part of the bridge that's over open water.
+
+---
+
 ## The ring road
 
 Each island gets a loop set in from the coast, and the bridge roads run a
