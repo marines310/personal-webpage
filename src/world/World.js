@@ -12,7 +12,8 @@ import {
   validateLayout,
   islandOutline,
   islandReach,
-  inlandDistance
+  inlandDistance,
+  getIslandJunctions
 } from './islandLayout.js'
 import { insetPolygon, polygonCentroid, rayDistanceToBoundary } from './shapes.js'
 import { pathTangents, ribbonQuads } from './curves.js'
@@ -190,6 +191,18 @@ export class World {
       const roads = getIslandRoads(island)
       for (const road of roads) {
         if (!road.auto) this.buildRoad(island, road)
+      }
+
+      // Patch every place two roads meet. A road is a ribbon with square
+      // ends, so a spur running into the ring leaves two bare corners
+      // where they cross. A disc of the same asphalt at the same height
+      // fills them and is invisible everywhere else.
+      for (const junction of getIslandJunctions(island)) {
+        this.buildJunction(
+          island.x + junction.x,
+          island.z + junction.z,
+          junction.radius
+        )
       }
 
       this.decorateIsland(island, roads)
@@ -404,6 +417,24 @@ export class World {
    *                             carry on across a join rather than restarting
    * @param {number} y           surface height
    */
+  /**
+   * A round patch of road surface, used to fill the corners where two
+   * roads meet. Sits a hair above the roads so there's no z-fighting
+   * where they overlap, but far enough below anything else to be
+   * invisible from a car.
+   */
+  buildJunction(x, z, radius) {
+    const geometry = new THREE.CircleGeometry(radius, 24)
+    geometry.rotateX(-Math.PI / 2)
+
+    const patch = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+      color: PALETTE.asphalt, roughness: 0.92, metalness: 0.05
+    }))
+    patch.position.set(x, 0.065, z)
+    patch.receiveShadow = true
+    this.game.add(patch)
+  }
+
   buildRoadSurface(path, width, dashOffset = 0, y = 0.06) {
     if (!path || path.length < 2) return
 

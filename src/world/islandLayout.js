@@ -18,7 +18,8 @@ import {
   boundingRadius,
   rayDistanceToBoundary,
   distanceToEdge,
-  polygonBounds
+  polygonBounds,
+  insetPolygon
 } from './shapes.js'
 import { ISLANDS, BRIDGES } from './mapData.js'
 import {
@@ -26,6 +27,7 @@ import {
   bowedPath,
   distanceToPath,
   chaikinSmooth,
+  chaikinClosed,
   resamplePath,
   turningRadii
 } from './curves.js'
@@ -75,6 +77,14 @@ export const ROAD_SMOOTHNESS = 9
  * inside edge folding over itself, which is what leaves gaps.
  */
 export const ROAD_POINT_SPACING = 2.2
+
+/**
+ * How far in from the coast the ring road sits, as a fraction of the
+ * island's reach. Bigger pulls the loop tighter to the middle.
+ * Islands can override with `ringInset` (world units), or opt out with
+ * `noRing: true`.
+ */
+export const RING_INSET_FRACTION = 0.34
 
 // ---------------------------------------------------------------------------
 // THE MAP DATA lives in mapData.js - that's the file you edit (or that the
@@ -270,6 +280,15 @@ function tightestRadius(path) {
 export function getIslandRoads(island) {
   const roads = []
 
+  const ring = getIslandRing(island)
+  if (ring && !island.noAutoRoad) {
+    roads.push({
+      points: ring,
+      width: DEFAULT_ROAD_WIDTH,
+      ring: true
+    })
+  }
+
   for (const landing of getBridgeLandings(island)) {
     const edited = !!getApproach(island, landing.def)
 
@@ -373,12 +392,208 @@ function landingIndex(island, def, bridges = BRIDGES) {
  * one definition of where these roads go, so the preview can't disagree
  * with the world.
  */
+/**
+ * The ring road on an island: a loop set in from the coast that the
+ * bridge roads feed into, island-local and closed.
+ *
+ * Why a ring at all. Every bridge road used to run to the island centre,
+ * so an island with five bridges got five roads converging on one point -
+ * unreadable, and impossible to drive through. A ring gives each road
+ * somewhere to arrive, turns the middle back into a place rather than a
+ * junction, and gives you a circuit to drive.
+ *
+ * Returns null for islands too small to hold one, and for any island
+ * with `noRing: true`.
+ */
+export function getIslandRing(island) {
+  if (!island || island.noRing) return null
+
+  const outline = getOutline(island)
+  const reach = boundingRadius(outline)
+
+  // Set in far enough to leave the beach clear, but not so far that the
+  // loop closes on itself. Below this an island can't hold a ring.
+  const inset = island.ringInset !== undefined
+    ? island.ringInset
+    : Math.max(DEFAULT_ROAD_WIDTH, reach * RING_INSET_FRACTION)
+
+  if (reach - inset < DEFAULT_ROAD_WIDTH * 1.6) return null
+
+  // Built in polar form: for each direction out from the centre, take the
+  // coast distance and come in by `inset`.
+  //
+  // The obvious approach - inset the outline polygon - does not survive
+  // contact with a real coastline. Pulling a wobbly shape inward by 15
+  // units makes it cross itself, and a self-crossing loop has a cusp in
+  // it that no amount of smoothing removes; you get a 1.6-unit hairpin
+  // where the road doubles back. Sweeping a radius around the centre
+  // cannot self-intersect, because there is exactly one ring point per
+  // direction.
+  const STEPS = 96
+  const radii = []
+
+  for (let i = 0; i < STEPS; i++) {
+    const angle = (i / STEPS) * Math.PI * 2
+    const shore = rayDistanceToBoundary(outline, Math.cos(angle), Math.sin(angle))
+    radii.push(Math.max(DEFAULT_ROAD_WIDTH, shore - inset))
+  }
+
+  // Smooth the radius around the loop so bays and headlands become gentle
+  // swells rather than corners. Circular, so there's no seam.
+  //
+  // How much smoothing is needed depends on how ragged the coast is, so
+  // rather than guess a number of passes, keep going until the loop is
+  // actually drivable. A deeply indented island simply ends up with a
+  // rounder ring, which is the right answer.
+  const toPoints = () => {
+    const ring = radii.map((r, i) => {
+      const angle = (i / STEPS) * Math.PI * 2
+      return { x: Math.cos(angle) * r, z: Math.sin(angle) * r }
+    })
+    ring.push({ ...ring[0] })
+    return chaikinClosed(ring, 2)
+  }
+
+  let ring = toPoints()
+
+  for (let pass = 0; pass < 40; pass++) {
+    if (Math.min(...turningRadii(ring)) >= DEFAULT_ROAD_WIDTH) break
+
+    const next = radii.map((r, i) => {
+      const prev = radii[(i - 1 + STEPS) % STEPS]
+      const after = radii[(i + 1) % STEPS]
+      return prev * 0.25 + r * 0.5 + after * 0.25
+    })
+    radii.splice(0, STEPS, ...next)
+    ring = toPoints()
+  }
+
+  return ring
+}
+
+/**
+ * Every place two roads on an island meet or cross, island-local.
+ *
+ * A road is a ribbon with square ends. Where one runs into another they
+ * overlap in a rough T with visible corners, and where two cross at an
+ * angle the outer corners of the crossing are left bare. Laying a disc of
+ * the same asphalt at each of these points covers both cases - and because
+ * the whole surface is one flat colour at one height, the disc is
+ * invisible except for the corner it fills.
+ *
+ * Returns { x, z, radius }. Nearby hits are merged so a spur meeting a
+ * ring produces one junction rather than a cluster.
+ */
+export function getIslandJunctions(island) {
+  const roads = getIslandRoads(island)
+  const hits = []
+
+  for (let a = 0; a < roads.length; a++) {
+    for (let b = a + 1; b < roads.length; b++) {
+      const radius = Math.max(roads[a].width, roads[b].width) / 2
+
+      for (const point of pathCrossings(roads[a].points, roads[b].points, radius)) {
+        hits.push({ ...point, radius })
+      }
+    }
+  }
+
+  // Merge anything closer together than a road is wide
+  const merged = []
+  for (const hit of hits) {
+    const near = merged.find(m =>
+      Math.hypot(m.x - hit.x, m.z - hit.z) < Math.max(m.radius, hit.radius))
+
+    if (near) {
+      near.radius = Math.max(near.radius, hit.radius)
+    } else {
+      merged.push({ ...hit })
+    }
+  }
+
+  return merged
+}
+
+/**
+ * Where two polylines cross, plus where one simply ends on the other -
+ * which is the common case here, a spur running into the ring.
+ */
+function pathCrossings(pathA, pathB, tolerance) {
+  const out = []
+
+  for (let i = 1; i < pathA.length; i++) {
+    for (let k = 1; k < pathB.length; k++) {
+      const hit = segmentIntersection(
+        pathA[i - 1], pathA[i], pathB[k - 1], pathB[k]
+      )
+      if (hit) out.push(hit)
+    }
+  }
+
+  // A spur that stops just short of the ring never technically crosses it,
+  // so check both endpoints against the other path too.
+  for (const [path, other] of [[pathA, pathB], [pathB, pathA]]) {
+    for (const end of [path[0], path[path.length - 1]]) {
+      const near = nearestOnPath(other, end.x, end.z)
+      if (near && Math.hypot(near.x - end.x, near.z - end.z) <= tolerance) {
+        out.push({ x: end.x, z: end.z })
+      }
+    }
+  }
+
+  return out
+}
+
+/** Where two line segments cross, or null. */
+function segmentIntersection(p1, p2, p3, p4) {
+  const d1x = p2.x - p1.x, d1z = p2.z - p1.z
+  const d2x = p4.x - p3.x, d2z = p4.z - p3.z
+
+  const denom = d1x * d2z - d1z * d2x
+  if (Math.abs(denom) < 1e-12) return null // parallel
+
+  const t = ((p3.x - p1.x) * d2z - (p3.z - p1.z) * d2x) / denom
+  const u = ((p3.x - p1.x) * d1z - (p3.z - p1.z) * d1x) / denom
+
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null
+  return { x: p1.x + d1x * t, z: p1.z + d1z * t }
+}
+
+/** The point on a path closest to a given island-local point. */
+function nearestOnPath(path, x, z) {
+  let best = null
+  let bestDist = Infinity
+
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1]
+    const b = path[i]
+    const dx = b.x - a.x
+    const dz = b.z - a.z
+    const lenSq = dx * dx + dz * dz
+    if (lenSq < 1e-12) continue
+
+    let t = ((x - a.x) * dx + (z - a.z) * dz) / lenSq
+    t = Math.max(0, Math.min(1, t))
+    const px = a.x + dx * t
+    const pz = a.z + dz * t
+    const d = Math.hypot(x - px, z - pz)
+
+    if (d < bestDist) {
+      bestDist = d
+      best = { x: px, z: pz }
+    }
+  }
+
+  return best
+}
+
 export function approachControls(island, dx, dz, def, bridges = BRIDGES) {
   const dist = Math.hypot(dx, dz)
   const ux = dx / dist
   const uz = dz / dist
   const shore = shoreDistance(island, dx, dz)
   const reach = Math.max(2, shore - 1)
+  const landing = { x: ux * reach, z: uz * reach }
 
   const stored = getApproach(island, def)
   if (stored) {
@@ -387,14 +602,27 @@ export function approachControls(island, dx, dz, def, bridges = BRIDGES) {
     // that starts anywhere else tears open a hole at the join - and a
     // stale saved point is exactly what you'd get after moving an island.
     const points = stored.points.map(p => ({ x: p.x, z: p.z }))
-    points[0] = { x: ux * reach, z: uz * reach }
+    points[0] = landing
     return points
   }
+
+  // Where the road is heading: the near side of the ring if there is one,
+  // otherwise the middle as before.
+  const ring = getIslandRing(island)
+  const target = ring
+    ? nearestOnPath(ring, landing.x, landing.z) || { x: 0, z: 0 }
+    : { x: 0, z: 0 }
 
   const curve = island.roadCurve !== undefined ? island.roadCurve : DEFAULT_ROAD_CURVE
   const seed = hashString(island.id) + landingIndex(island, def, bridges) * 37
 
-  return bowedPath({ x: ux * reach, z: uz * reach }, { x: 0, z: 0 }, curve, seed)
+  // A spur onto a ring is short. Bowing it as hard as a full run to the
+  // centre would make it wander noticeably on its way to a target only a
+  // few units away, so the bow is eased off for short roads.
+  const runLength = Math.hypot(target.x - landing.x, target.z - landing.z)
+  const eased = curve * Math.min(1, runLength / 18)
+
+  return bowedPath(landing, target, eased, seed)
 }
 
 /**

@@ -179,6 +179,40 @@ export function resamplePath(points, spacing = 2) {
 }
 
 /**
+ * Round off the corners of a closed loop.
+ *
+ * The open-path version pins the first and last point, which for a loop
+ * means the seam where the ends meet never gets rounded and stays as a
+ * corner. This wraps around instead, so a ring has no special point on it.
+ *
+ * Takes and returns a path whose last point repeats the first.
+ */
+export function chaikinClosed(points, iterations = 2) {
+  let ring = dedupePath(points)
+
+  // Work on the loop without the repeated closing point
+  if (ring.length > 1) {
+    const first = ring[0]
+    const last = ring[ring.length - 1]
+    if (Math.hypot(first.x - last.x, first.z - last.z) < 1e-6) ring = ring.slice(0, -1)
+  }
+  if (ring.length < 3) return points.map(p => ({ ...p }))
+
+  for (let pass = 0; pass < iterations; pass++) {
+    const next = []
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i]
+      const b = ring[(i + 1) % ring.length]
+      next.push({ x: a.x * 0.75 + b.x * 0.25, z: a.z * 0.75 + b.z * 0.25 })
+      next.push({ x: a.x * 0.25 + b.x * 0.75, z: a.z * 0.25 + b.z * 0.75 })
+    }
+    ring = next
+  }
+
+  return [...ring, { ...ring[0] }]
+}
+
+/**
  * Round off the corners of a polyline (Chaikin's algorithm).
  *
  * Each pass replaces every corner with two points cutting across it, at a

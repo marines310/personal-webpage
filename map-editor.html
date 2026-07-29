@@ -227,7 +227,7 @@ import { MODEL_MANIFEST } from './src/world/modelManifest.js'
 // version of these and it quietly drifted out of step with the game, so
 // the preview showed roads where they weren't.
 import { sampleSpline, bowedPath } from './src/world/curves.js'
-import { smoothRoad, hashString, approachControls, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
+import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
 import { ISLANDS as MAP_ISLANDS, BRIDGES as MAP_BRIDGES } from './src/world/mapData.js'
 
 /** key -> { footprint:{x,y,z}, thumb: dataURL } */
@@ -882,9 +882,32 @@ function drawIsland(island) {
     }
   }
 
-  // Bridge approach roads, shaped exactly the way the game shapes them
+  // Ring road, from the same function the game uses
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  const ring = getIslandRing(island);
+  if (ring && !island.noAutoRoad) {
+    const traceRing = () => {
+      ctx.beginPath();
+      ring.forEach((q, k) => {
+        const s = w2s(island.x + q.x, island.z + q.z);
+        if (k === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+      });
+    };
+    ctx.strokeStyle = P.asphalt;
+    ctx.lineWidth = Math.max(2, 7 * view.zoom);
+    traceRing(); ctx.stroke();
+
+    if (view.zoom > 1.4) {
+      ctx.strokeStyle = P.roadLine;
+      ctx.lineWidth = Math.max(1, 0.35 * view.zoom);
+      ctx.setLineDash([6, 8]);
+      traceRing(); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  // Bridge approach roads, shaped exactly the way the game shapes them
   for (const ap of approachRoads(island)) {
     const idx = ap.edited ? approachIndex(island, ap.to) : -1;
     const selA = ap.edited && sel?.kind === 'road'
@@ -924,6 +947,16 @@ function drawIsland(island) {
         ctx.stroke();
       });
     }
+  }
+  // Junction patches - the same discs the game lays to fill the corners
+  // where two roads meet. Drawn here so the preview shows the road
+  // surface you'll actually get, not a set of separate strips.
+  ctx.fillStyle = P.asphalt;
+  for (const j of getIslandJunctions(island)) {
+    const s = w2s(island.x + j.x, island.z + j.z);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, Math.max(1, j.radius * view.zoom), 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.lineCap = 'butt';
 
