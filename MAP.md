@@ -423,6 +423,41 @@ FALL_LIMIT      // drive below this and you respawn
 
 ---
 
+## The ring road
+
+Each island gets a loop set in from the coast, and the bridge roads run a
+short way inland and join it. Before this, every bridge road drove to the
+island centre, so hub — with five bridges — had five roads converging on a
+single point.
+
+Select an island and you get, in the panel:
+
+- **Edit the ring road** — takes it over. The loop it's drawing right now
+  becomes 24 draggable handles; the shape barely moves (under 0.8 units).
+- **Back to the automatic ring** — while a taken-over ring is selected.
+- **Remove the ring road** / **Bring the ring road back**.
+
+In the data file:
+
+```js
+{
+  id: 'contact',
+  noRing: true,                    // no ring on this island at all
+  ringInset: 12,                   // or: how far in from the coast
+  roads: [
+    { isRing: true, closed: true, points: [ … ] }   // or: your own loop
+  ]
+}
+```
+
+Delete the `isRing` entry and the loop goes back to being generated.
+
+Wherever two roads meet, a disc of road surface fills the corners. You
+don't have to do anything about these — they're worked out from wherever
+the roads actually end up.
+
+---
+
 ## Moving the bridge roads
 
 Every bridge gets a road running from where it lands in to the island

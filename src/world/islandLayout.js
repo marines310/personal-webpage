@@ -320,8 +320,9 @@ export function getIslandRoads(island) {
   for (const road of island.roads || []) {
     // Approach roads were handled above - they're drawn as part of the
     // continuous bridge road, so drawing them again here would lay a
-    // second surface on top of the first.
-    if (road.approachTo) continue
+    // second surface on top of the first. Same for a hand-edited ring,
+    // which is emitted as the ring at the top of this function.
+    if (road.approachTo || road.isRing) continue
 
     const controls = resolveRoadControls(road)
     if (!controls || controls.length < 2) continue
@@ -405,8 +406,38 @@ function landingIndex(island, def, bridges = BRIDGES) {
  * Returns null for islands too small to hold one, and for any island
  * with `noRing: true`.
  */
+/**
+ * An island's hand-edited ring, if it has one.
+ *
+ * Stored like the bridge approaches: an ordinary entry in the island's
+ * `roads`, marked `isRing: true`. Same reasoning - the editor can then
+ * select it, drag its points and delete it with the machinery it already
+ * has, and deleting simply hands the loop back to the generator.
+ */
+export function getStoredRing(island) {
+  if (!island || !Array.isArray(island.roads)) return null
+
+  const found = island.roads.find(r => r.isRing)
+  return found && Array.isArray(found.points) && found.points.length >= 3
+    ? found
+    : null
+}
+
 export function getIslandRing(island) {
   if (!island || island.noRing) return null
+
+  // A ring you've taken over by hand wins outright. It isn't re-derived
+  // from the coastline, so moving a headland won't drag your road with it.
+  const stored = getStoredRing(island)
+  if (stored) {
+    const loop = stored.points.map(p => ({ x: p.x, z: p.z }))
+    const first = loop[0]
+    const last = loop[loop.length - 1]
+    if (Math.hypot(first.x - last.x, first.z - last.z) > 1e-6) {
+      loop.push({ ...first })
+    }
+    return chaikinClosed(resamplePath(loop, ROAD_POINT_SPACING), 2)
+  }
 
   const outline = getOutline(island)
   const reach = boundingRadius(outline)

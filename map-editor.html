@@ -227,7 +227,7 @@ import { MODEL_MANIFEST } from './src/world/modelManifest.js'
 // version of these and it quietly drifted out of step with the game, so
 // the preview showed roads where they weren't.
 import { sampleSpline, bowedPath } from './src/world/curves.js'
-import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
+import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, getStoredRing, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
 import { ISLANDS as MAP_ISLANDS, BRIDGES as MAP_BRIDGES } from './src/world/mapData.js'
 
 /** key -> { footprint:{x,y,z}, thumb: dataURL } */
@@ -894,16 +894,35 @@ function drawIsland(island) {
         if (k === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
       });
     };
-    ctx.strokeStyle = P.asphalt;
+    const storedRing = getStoredRing(island);
+    const ringIdx = storedRing ? island.roads.indexOf(storedRing) : -1;
+    const selRing = storedRing && sel?.kind === 'road'
+                    && sel.island === island && sel.index === ringIdx;
+
+    ctx.strokeStyle = selRing ? '#3fc4cc' : P.asphalt;
     ctx.lineWidth = Math.max(2, 7 * view.zoom);
     traceRing(); ctx.stroke();
 
-    if (view.zoom > 1.4) {
+    if (view.zoom > 1.4 && !selRing) {
       ctx.strokeStyle = P.roadLine;
       ctx.lineWidth = Math.max(1, 0.35 * view.zoom);
       ctx.setLineDash([6, 8]);
       traceRing(); ctx.stroke();
       ctx.setLineDash([]);
+    }
+
+    // Handles, once the ring has been taken over by hand
+    if (selRing) {
+      for (const q of storedRing.points) {
+        const s = w2s(island.x + q.x, island.z + q.z);
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = '#0d1117';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
     }
   }
 
@@ -969,7 +988,7 @@ function drawIsland(island) {
     // is how the game draws it - one continuous surface from centre to
     // centre. Drawing it again here would double it up, and the copy would
     // ignore the pinned shore end and so sit slightly wrong.
-    if (rd.approachTo) continue;
+    if (rd.approachTo || rd.isRing) continue;
 
     const controls = roadPoints(rd);
     if (controls.length < 2) continue;
@@ -2088,7 +2107,8 @@ function renderProps() {
       chip.className = 'chip';
       const span = document.createElement('span');
       const n = roadPoints(rd).length;
-      span.textContent = rd.approachTo
+      span.textContent = rd.isRing ? `ring road, ${n} points`
+        : rd.approachTo
         ? `bridge road to ${rd.approachTo}, ${n} points`
         : (n > 2 ? `curved road, ${n} points` : `straight road`);
       const del = document.createElement('button');
@@ -2097,6 +2117,54 @@ function renderProps() {
       chip.append(span, del);
       box.append(chip);
     });
+
+    // Ring road controls
+    const ringNow = getIslandRing(isl);
+    const ringStored = getStoredRing(isl);
+
+    box.insertAdjacentHTML('beforeend',
+      `<p style="color:var(--muted);font-size:12px;margin:12px 0 4px">
+         Ring road ${isl.noRing ? '<span style="color:#8b98a5">&ndash; switched off</span>'
+                     : ringStored ? '<span style="color:#8b98a5">&ndash; yours</span>'
+                     : '<span style="color:#8b98a5">&ndash; automatic</span>'}</p>`);
+
+    if (!isl.noRing && ringNow && !ringStored) {
+      const takeOver = document.createElement('button');
+      takeOver.textContent = 'Edit the ring road';
+      takeOver.style.cssText = 'width:100%;margin-top:6px';
+      takeOver.onclick = () => {
+        // Bake the loop it is drawing right now, thinned to a handful of
+        // handles. 385 points is right for a smooth surface and useless
+        // to drag, so take every Nth and let the smoothing put the curve
+        // back - the shape barely moves and it becomes editable.
+        const loop = ringNow.slice(0, -1);
+        const want = 24;
+        const step = Math.max(1, Math.round(loop.length / want));
+        const pts = [];
+        for (let k = 0; k < loop.length; k += step) {
+          pts.push({ x: num(loop[k].x, 2), z: num(loop[k].z, 2) });
+        }
+        isl.roads = isl.roads || [];
+        isl.roads.push({ isRing: true, closed: true, points: pts });
+        sel = { kind: 'road', island: isl, index: isl.roads.length - 1 };
+        refresh();
+      };
+      box.append(takeOver);
+    }
+
+    const ringOff = document.createElement('button');
+    ringOff.textContent = isl.noRing ? 'Bring the ring road back' : 'Remove the ring road';
+    ringOff.style.cssText = 'width:100%;margin-top:6px';
+    if (!isl.noRing) ringOff.className = 'danger';
+    ringOff.onclick = () => {
+      isl.noRing = !isl.noRing;
+      if (isl.noRing) {
+        isl.roads = (isl.roads || []).filter(r => !r.isRing);
+        sel = { kind: 'island', island: isl };
+      }
+      refresh();
+    };
+    box.append(ringOff);
 
     // One button per bridge road still being generated automatically.
     // Taking one over bakes its current shape into draggable points, so
@@ -2270,7 +2338,20 @@ function renderProps() {
   } else if (sel.kind === 'road') {
     const rd = sel.island.roads[sel.index];
 
-    if (rd.approachTo) {
+    if (rd.isRing) {
+      box.insertAdjacentHTML('beforeend',
+        `<p style="color:var(--muted);font-size:12px;margin:0 0 8px">
+           Ring road on <b>${sel.island.id}</b><br>
+           <span style="color:#8b98a5">Drag the handles to reshape the loop.</span>
+         </p>`);
+
+      const revert = document.createElement('button');
+      revert.textContent = 'Back to the automatic ring';
+      revert.style.cssText = 'width:100%;margin-top:10px';
+      revert.onclick = deleteSelection;
+      box.append(revert);
+
+    } else if (rd.approachTo) {
       box.insertAdjacentHTML('beforeend',
         `<p style="color:var(--muted);font-size:12px;margin:0 0 8px">
            Bridge road on <b>${sel.island.id}</b>, to <b>${rd.approachTo}</b><br>
@@ -2344,6 +2425,7 @@ function generate() {
     ];
     if (i.palms !== undefined && i.palms !== 8) parts.push(`palms: ${i.palms}`);
     if (i.noAutoRoad) parts.push('noAutoRoad: true');
+    if (i.noRing) parts.push('noRing: true');
     if (!i.outline && i.shape && i.shape !== 'circle') {
       parts.push(`shape: '${i.shape}'`);
       if (i.shapeSeed && i.shapeSeed !== 1) parts.push(`shapeSeed: ${i.shapeSeed}`);
@@ -2408,7 +2490,8 @@ function generate() {
         if (r.closed) extra.push(', closed: true');
 
         // Marks this as a bridge approach the user has taken over by hand
-        const lead = r.approachTo ? `approachTo: '${r.approachTo}', ` : '';
+        const lead = r.approachTo ? `approachTo: '${r.approachTo}', `
+                  : r.isRing ? 'isRing: true, ' : '';
 
         return `      { ${lead}points: [${list}]${extra.join('')} }`;
       }).join(',\n');
@@ -2479,6 +2562,7 @@ document.getElementById('load').onclick = () => {
         name: i.name || '',
         palms: i.palms !== undefined ? i.palms : 8,
         noAutoRoad: !!i.noAutoRoad,
+        noRing: !!i.noRing,
         shape: i.shape || 'circle',
         shapeSeed: i.shapeSeed || 1,
         ...(Array.isArray(i.outline) && i.outline.length >= 3
@@ -2493,6 +2577,7 @@ document.getElementById('load').onclick = () => {
         roads: (i.roads || []).map(r => (
           Array.isArray(r.points)
             ? { ...(r.approachTo ? { approachTo: r.approachTo } : {}),
+                ...(r.isRing ? { isRing: true } : {}),
                 points: r.points.map(p => ({ x: p.x, z: p.z })),
                 width: r.width || 7, ...(r.closed ? { closed: true } : {}) }
             : { points: [{ ...r.from }, { ...r.to }], width: r.width || 7 }
