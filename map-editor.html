@@ -1,0 +1,2367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Map Editor — Interactive Portfolio</title>
+<style>
+  :root {
+    --bg: #11161d;
+    --panel: #1a212b;
+    --panel2: #222b37;
+    --line: #2f3a49;
+    --text: #e8eef5;
+    --muted: #8b9bb0;
+    --accent: #3fc4cc;
+    --warn: #ffb300;
+    --err: #ff5f6d;
+    --ok: #6fdc8c;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+  #app { display: flex; height: 100%; }
+
+  /* ---------- Canvas ---------- */
+  #stage { flex: 1; position: relative; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+
+  #toolbar {
+    position: absolute; top: 12px; left: 12px;
+    display: flex; gap: 6px; flex-wrap: wrap;
+    background: rgba(26,33,43,.94); padding: 8px;
+    border: 1px solid var(--line); border-radius: 10px;
+    max-width: calc(100% - 24px);
+  }
+  #hint {
+    position: absolute; bottom: 12px; left: 12px;
+    background: rgba(26,33,43,.94); padding: 8px 12px;
+    border: 1px solid var(--line); border-radius: 8px;
+    color: var(--muted); font-size: 12px; max-width: 560px;
+  }
+  #hint b { color: var(--text); }
+
+  /* ---------- Buttons ---------- */
+  button {
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 7px;
+    padding: 7px 11px; font-size: 13px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { border-color: var(--accent); }
+  button.on { background: var(--accent); color: #06222a; border-color: var(--accent); font-weight: 600; }
+  button.danger:hover { border-color: var(--err); color: var(--err); }
+
+  /* ---------- Side panel ---------- */
+  #side {
+    width: 336px; flex-shrink: 0;
+    background: var(--panel); border-left: 1px solid var(--line);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  #side header {
+    padding: 14px 16px 10px; border-bottom: 1px solid var(--line);
+  }
+  #side header h1 { margin: 0; font-size: 15px; letter-spacing: .3px; }
+  #side header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  #scroll { flex: 1; overflow-y: auto; padding: 14px 16px 30px; }
+
+  .sec { margin-bottom: 20px; }
+  .sec > h2 {
+    margin: 0 0 9px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 1.1px; color: var(--muted); font-weight: 600;
+  }
+
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .row label { width: 74px; flex-shrink: 0; color: var(--muted); font-size: 12px; }
+  input[type=text], input[type=number], select {
+    flex: 1; min-width: 0; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 8px; font-size: 13px; font-family: inherit;
+  }
+  input[type=color] {
+    width: 40px; height: 30px; padding: 2px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+  .chip {
+    display: flex; justify-content: space-between; align-items: center;
+    background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 9px; margin-bottom: 5px; font-size: 12px;
+  }
+  .chip button { padding: 2px 7px; font-size: 11px; }
+
+  .msg { padding: 7px 10px; border-radius: 6px; margin-bottom: 6px; font-size: 12px; }
+  .msg.err { background: rgba(255,95,109,.13); color: #ffb3b9; border: 1px solid rgba(255,95,109,.34); }
+  .msg.warn { background: rgba(255,179,0,.12); color: #ffd98a; border: 1px solid rgba(255,179,0,.3); }
+  .msg.ok { background: rgba(111,220,140,.11); color: #a7e9bb; border: 1px solid rgba(111,220,140,.28); }
+
+  textarea {
+    width: 100%; height: 190px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 7px; padding: 9px;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    resize: vertical;
+  }
+  .empty { color: var(--muted); font-size: 12px; font-style: italic; }
+  .howto {
+    background: rgba(63,196,204,.09); border: 1px solid rgba(63,196,204,.3);
+    border-radius: 7px; padding: 9px 11px; margin-bottom: 9px;
+    font-size: 12px; color: var(--text); line-height: 1.5;
+  }
+  .howto ol { margin: 5px 0 6px; padding-left: 18px; }
+  .howto li { margin-bottom: 2px; }
+  .howto code { background: rgba(0,0,0,.32); padding: 1px 4px; border-radius: 3px; }
+  .preview {
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 8px; margin: 2px 0 10px; text-align: center;
+  }
+  .preview img {
+    width: 108px; height: 108px; display: block; margin: 0 auto 6px;
+    image-rendering: auto; background: rgba(255,255,255,.03); border-radius: 5px;
+  }
+  .preview-cap { font-size: 11px; color: var(--muted); line-height: 1.4; }
+  .btnrow { display: flex; gap: 6px; margin-top: 7px; }
+  .btnrow button { flex: 1; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="c"></canvas>
+
+    <div id="toolbar">
+      <button id="mode-select" class="on">Select</button>
+      <button id="mode-bridge">Bridge</button>
+      <button id="mode-district">District</button>
+      <button id="mode-road">Road</button>
+      <button id="mode-shape">Shape</button>
+      <button id="mode-building">Building</button>
+      <span style="width:1px;background:var(--line);margin:0 3px"></span>
+      <button id="props-toggle" class="on">Props</button>
+      <button id="snap-toggle">Snap: off</button>
+      <input id="snap-size" type="number" value="2" min="0.5" step="0.5"
+             title="Grid size" style="width:56px;padding:6px">
+      <span style="width:1px;background:var(--line);margin:0 3px"></span>
+      <button id="add-island">+ Island</button>
+      <button id="fit">Fit view</button>
+    </div>
+
+    <div id="hint"></div>
+  </div>
+
+  <div id="side">
+    <header>
+      <h1>Map Editor</h1>
+      <p>Design the world, then download <code>mapData.js</code> into <code>src/world/</code></p>
+    </header>
+
+    <div id="scroll">
+      <div class="sec">
+        <h2>Checks</h2>
+        <div id="validation"></div>
+      </div>
+
+      <div class="sec">
+        <h2>Selection</h2>
+        <div id="props"></div>
+      </div>
+
+      <div class="sec">
+        <h2>Export</h2>
+        <div class="howto">
+          <b>To apply your map:</b>
+          <ol>
+            <li>Hit <b>Download mapData.js</b></li>
+            <li>Move it into <code>src/world/</code>, replacing the file
+                already there</li>
+            <li>The dev server reloads by itself</li>
+          </ol>
+          Leave <code>islandLayout.js</code> alone &mdash; it holds the
+          machinery, not the map.
+        </div>
+        <textarea id="out" readonly spellcheck="false"></textarea>
+        <div class="btnrow">
+          <button id="copy">Copy</button>
+          <button id="download">Download mapData.js</button>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h2>Import</h2>
+        <p style="color:var(--muted);font-size:12px;margin:0 0 8px">
+          Paste the contents of your <code>mapData.js</code> here to carry on
+          editing it.
+        </p>
+        <textarea id="in" placeholder="Paste your mapData.js here…" spellcheck="false"></textarea>
+        <div class="btnrow">
+          <button id="load">Load</button>
+          <button id="reset" class="danger">Reset to default</button>
+        </div>
+        <div id="importmsg"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+// ===========================================================================
+// MODEL LIBRARY
+// ===========================================================================
+// The editor loads the same .glb files the game does, measures their real
+// footprints, and renders a small top-down thumbnail of each. That's what
+// lets a placed building be drawn at its true size instead of a guess.
+//
+// Everything here degrades gracefully: if a model is missing or WebGL is
+// unavailable, the editor still works, it just falls back to plain boxes.
+import * as THREE from 'three'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { MODEL_MANIFEST } from './src/world/modelManifest.js'
+
+// The real road maths, not a copy of it. The editor used to keep its own
+// version of these and it quietly drifted out of step with the game, so
+// the preview showed roads where they weren't.
+import { sampleSpline, bowedPath } from './src/world/curves.js'
+import { smoothRoad, hashString, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
+
+/** key -> { footprint:{x,y,z}, thumb: dataURL } */
+const MODELS = new Map()
+let modelsReady = false
+
+/** Which manifest keys are buildings, in the order they appear. */
+const BUILDING_KEYS = MODEL_MANIFEST
+  .filter(m => m.key.startsWith('building'))
+  .map(m => m.key)
+
+async function loadModelLibrary() {
+  const loader = new GLTFLoader()
+
+  // A tiny offscreen renderer just for thumbnails
+  let renderer = null
+  try {
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    renderer.setSize(120, 120)
+  } catch (err) {
+    console.warn('[Editor] No WebGL for thumbnails:', err.message)
+  }
+
+  for (const entry of MODEL_MANIFEST) {
+    try {
+      const gltf = await new Promise((res, rej) =>
+        loader.load(entry.url, res, undefined, rej))
+      const scene = gltf.scene || gltf.scenes[0]
+
+      // Apply the manifest's fitLength, exactly as Assets.js does
+      const size = new THREE.Vector3()
+      new THREE.Box3().setFromObject(scene).getSize(size)
+      if (entry.fitLength) {
+        const longest = Math.max(size.x, size.z)
+        if (longest > 0) {
+          scene.scale.setScalar(entry.fitLength / longest)
+          size.multiplyScalar(entry.fitLength / longest)
+        }
+      } else if (entry.scale) {
+        scene.scale.setScalar(entry.scale)
+        size.multiplyScalar(entry.scale)
+      }
+
+      MODELS.set(entry.key, {
+        footprint: { x: size.x, y: size.y, z: size.z },
+        thumb: renderer ? renderThumb(renderer, scene, size) : null
+      })
+    } catch (err) {
+      // Missing model - fine, the game falls back too
+    }
+  }
+
+  if (renderer) renderer.dispose()
+  modelsReady = true
+  refresh()
+  console.info(`[Editor] Loaded ${MODELS.size} of ${MODEL_MANIFEST.length} models.`)
+}
+
+/** A small angled render of a model, as a data URL. */
+function renderThumb(renderer, model, size) {
+  try {
+    const scene = new THREE.Scene()
+    const subject = model.clone(true)
+    // Centre it on the origin
+    const box = new THREE.Box3().setFromObject(subject)
+    const mid = new THREE.Vector3()
+    box.getCenter(mid)
+    subject.position.sub(mid)
+    scene.add(subject)
+
+    scene.add(new THREE.AmbientLight(0xffffff, 1.5))
+    const key = new THREE.DirectionalLight(0xffffff, 2.2)
+    key.position.set(3, 6, 4)
+    scene.add(key)
+
+    const reach = Math.max(size.x, size.y, size.z) * 0.72
+    const cam = new THREE.OrthographicCamera(-reach, reach, reach, -reach, 0.1, 100)
+    cam.position.set(reach * 1.3, reach * 1.5, reach * 1.3)
+    cam.lookAt(0, 0, 0)
+
+    renderer.render(scene, cam)
+    return renderer.domElement.toDataURL('image/png')
+  } catch (err) {
+    return null
+  }
+}
+
+/**
+ * The footprint a building will actually occupy in the world.
+ *
+ * The game scales a model so its LONGEST horizontal side equals `width`,
+ * so the other side comes out proportionally - not necessarily square.
+ * Without a known model we fall back to the plain width x depth box.
+ */
+function buildingFootprint(bd) {
+  const rec = bd.model && MODELS.get(bd.model)
+  if (rec) {
+    const longest = Math.max(rec.footprint.x, rec.footprint.z)
+    const k = longest > 0 ? (bd.width || 6) / longest : 1
+    return { w: rec.footprint.x * k, d: rec.footprint.z * k }
+  }
+  return { w: bd.width || 6, d: bd.depth || 6 }
+}
+
+// ===========================================================================
+// Default map - mirrors the shipped src/world/islandLayout.js
+// ===========================================================================
+const DEFAULT_MAP = {
+  islands: [
+    { id:'hub', x:0, z:0, radius:24, shape:'blob', shapeSeed:12, theme:'plain',
+      accent:0xffffff, name:'', palms:12,
+      districts:[{type:'plaza', x:0, z:0, size:19}], roads:[] },
+    { id:'about',    x:0,     z:62,    radius:20, shape:'blob',     shapeSeed:4,  theme:'town',   accent:0x4facfe, name:'ABOUT',      palms:8,  districts:[], roads:[] },
+    { id:'projects', x:59,    z:19.2,  radius:22, shape:'wide',     shapeSeed:9,  theme:'town',   accent:0x00f2fe, name:'EXPERIENCE', palms:8,  districts:[], roads:[] },
+    { id:'skills',   x:36.4,  z:-50.2, radius:20, shape:'crescent', shapeSeed:3,  theme:'jungle', accent:0xa855f7, name:'SKILLS',     palms:10, districts:[], roads:[] },
+    { id:'blog',     x:-36.4, z:-50.2, radius:18, shape:'blob',     shapeSeed:21, theme:'jungle', accent:0xfbbf24, name:'BLOG',       palms:10, districts:[], roads:[] },
+    { id:'contact',  x:-59,   z:19.2,  radius:19, shape:'long',     shapeSeed:6,  theme:'mixed',  accent:0xf472b6, name:'CONTACT',    palms:8,  districts:[], roads:[] }
+  ],
+  bridges: [
+    { from:'hub', to:'about' },
+    { from:'hub', to:'projects' },
+    { from:'hub', to:'skills' },
+    { from:'hub', to:'blog' },
+    { from:'hub', to:'contact' }
+  ]
+};
+
+// ===========================================================================
+// Shape maths - mirrors src/world/shapes.js. Keep the two in step.
+// ===========================================================================
+function makeRandom(seed){ let s=(seed|0)||1; return ()=>{ s=(s*16807)%2147483647; return (s-1)/2147483646; }; }
+
+const SHAPE_PRESETS = ['circle','blob','long','wide','crescent','lshape','triangle','star','atoll'];
+
+function circlePoints(radius, segments = 26){
+  const pts=[];
+  for(let i=0;i<segments;i++){ const a=i/segments*Math.PI*2;
+    pts.push({x:Math.sin(a)*radius, z:Math.cos(a)*radius}); }
+  return pts;
+}
+function blobPoints(radius, seed=1, segments=20){
+  const rnd=makeRandom(seed);
+  const a1=0.12+rnd()*0.14, f1=2+Math.floor(rnd()*2);
+  const a2=0.06+rnd()*0.09, f2=3+Math.floor(rnd()*3);
+  const p1=rnd()*Math.PI*2, p2=rnd()*Math.PI*2;
+  const pts=[];
+  for(let i=0;i<segments;i++){ const a=i/segments*Math.PI*2;
+    const r=radius*(1+Math.sin(a*f1+p1)*a1+Math.sin(a*f2+p2)*a2);
+    pts.push({x:Math.sin(a)*r, z:Math.cos(a)*r}); }
+  return pts;
+}
+function crescentPoints(radius, seed=1, segments=30){
+  const rnd=makeRandom(seed); const bite=0.62+rnd()*0.12; const offset=radius*0.68;
+  const pts=[];
+  for(let i=0;i<segments;i++){ const a=i/segments*Math.PI*2;
+    const x=Math.sin(a)*radius, z=Math.cos(a)*radius;
+    const d=Math.hypot(x, z-offset), cut=radius*bite;
+    if(d<cut){ const k=0.35+0.65*(d/cut); pts.push({x:x*k, z:offset+(z-offset)*k}); }
+    else pts.push({x,z}); }
+  return pts;
+}
+function normaliseToRadius(pts, radius){
+  const max=boundingRadius(pts); if(!max) return pts;
+  const k=radius/max; return pts.map(p=>({x:p.x*k, z:p.z*k}));
+}
+function lShapePoints(radius){
+  const r=radius;
+  return normaliseToRadius([
+    {x:-r,z:-r},{x:r*0.2,z:-r},{x:r*0.2,z:r*0.2},{x:r,z:r*0.2},{x:r,z:r},{x:-r,z:r}
+  ], radius);
+}
+function trianglePoints(radius, seed=1){
+  const rnd=makeRandom(seed); const rot=rnd()*Math.PI*2; const pts=[];
+  for(let c=0;c<3;c++){ const base=rot+c/3*Math.PI*2;
+    for(let k=-2;k<=2;k++){ const a=base+k*0.14; const r=radius*(1-Math.abs(k)*0.045);
+      pts.push({x:Math.sin(a)*r, z:Math.cos(a)*r}); } }
+  return normaliseToRadius(pts, radius);
+}
+function starPoints(radius, seed=1, points=5){
+  const rnd=makeRandom(seed); const inner=0.52+rnd()*0.14; const pts=[];
+  for(let i=0;i<points*2;i++){ const a=i/(points*2)*Math.PI*2;
+    const r=radius*(i%2===0?1:inner); pts.push({x:Math.sin(a)*r, z:Math.cos(a)*r}); }
+  return pts;
+}
+function atollPoints(radius, seed=1, segments=34){
+  const rnd=makeRandom(seed); const gap=0.55+rnd()*0.25; const thickness=0.42+rnd()*0.1;
+  const outer=[], inner=[]; const span=Math.PI*2-gap;
+  for(let i=0;i<=segments;i++){ const a=gap/2+i/segments*span;
+    outer.push({x:Math.sin(a)*radius, z:Math.cos(a)*radius});
+    inner.push({x:Math.sin(a)*radius*(1-thickness), z:Math.cos(a)*radius*(1-thickness)}); }
+  return outer.concat(inner.reverse());
+}
+function makeShape(preset, radius, seed=1){
+  switch(preset){
+    case 'blob': return blobPoints(radius,seed);
+    case 'long': return blobPoints(radius,seed,22).map(p=>({x:p.x*0.52,z:p.z*1.32}));
+    case 'wide': return blobPoints(radius,seed,22).map(p=>({x:p.x*1.32,z:p.z*0.52}));
+    case 'crescent': return crescentPoints(radius,seed);
+    case 'lshape': return lShapePoints(radius);
+    case 'triangle': return trianglePoints(radius,seed);
+    case 'star': return starPoints(radius,seed);
+    case 'atoll': return atollPoints(radius,seed);
+    default: return circlePoints(radius);
+  }
+}
+function boundingRadius(pts){ let m=0; for(const p of pts) m=Math.max(m,Math.hypot(p.x,p.z)); return m; }
+function polygonArea(pts){ let a=0;
+  for(let i=0;i<pts.length;i++){ const p=pts[i],q=pts[(i+1)%pts.length]; a+=p.x*q.z-q.x*p.z; }
+  return a/2; }
+function pointInPolygon(pts,x,z){ let inside=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){ const a=pts[i],b=pts[j];
+    if((a.z>z)!==(b.z>z) && x < (b.x-a.x)*(z-a.z)/(b.z-a.z)+a.x) inside=!inside; }
+  return inside; }
+function rayDistanceToBoundary(pts,dx,dz){
+  const len=Math.hypot(dx,dz); if(!len) return 0;
+  const ux=dx/len, uz=dz/len; let best=Infinity;
+  for(let i=0;i<pts.length;i++){ const a=pts[i], b=pts[(i+1)%pts.length];
+    const ex=b.x-a.x, ez=b.z-a.z; const denom=ux*ez-uz*ex;
+    if(Math.abs(denom)<1e-9) continue;
+    const t=(a.x*ez-a.z*ex)/denom; if(t<=1e-6||t>=best) continue;
+    const s=(a.x*uz-a.z*ux)/denom; if(s<0||s>1) continue;
+    best=t; }
+  return best===Infinity?boundingRadius(pts):best;
+}
+function polygonAreaSigned(pts){ return polygonArea(pts); }
+/** Same inset the game uses, so the editor preview matches the 3D world. */
+function insetPolygon(pts, d){
+  const n=pts.length;
+  if(n<3||d<=0) return pts.map(p=>({...p}));
+  const sign = polygonArea(pts)>0 ? 1 : -1;
+  const out=[];
+  for(let i=0;i<n;i++){
+    const prev=pts[(i-1+n)%n], cur=pts[i], next=pts[(i+1)%n];
+    let e1x=cur.x-prev.x, e1z=cur.z-prev.z;
+    let e2x=next.x-cur.x, e2z=next.z-cur.z;
+    const l1=Math.hypot(e1x,e1z)||1, l2=Math.hypot(e2x,e2z)||1;
+    e1x/=l1; e1z/=l1; e2x/=l2; e2z/=l2;
+    const n1x=-e1z*sign, n1z=e1x*sign;
+    const n2x=-e2z*sign, n2z=e2x*sign;
+    let bx=n1x+n2x, bz=n1z+n2z;
+    const bl=Math.hypot(bx,bz);
+    if(bl<1e-6){ out.push({x:cur.x+n1x*d, z:cur.z+n1z*d}); continue; }
+    bx/=bl; bz/=bl;
+    const cosHalf=bx*n1x+bz*n1z;
+    const scale=Math.min(d/Math.max(cosHalf,0.25), d*4);
+    out.push({x:cur.x+bx*scale, z:cur.z+bz*scale});
+  }
+  return out;
+}
+
+/**
+ * The automatic bridge-to-centre roads for an island, sampled exactly as
+ * the game samples them. Island-local coordinates.
+ */
+function autoRoadCurves(island, outline) {
+  if (island.noAutoRoad) return [];
+  const curve = island.roadCurve !== undefined ? island.roadCurve : DEFAULT_ROAD_CURVE;
+  const out = [];
+  let index = 0;
+
+  for (const br of map.bridges) {
+    if (br.from !== island.id && br.to !== island.id) continue;
+    const other = getIsland(br.from === island.id ? br.to : br.from);
+    if (!other) continue;
+
+    const dx = other.x - island.x, dz = other.z - island.z;
+    const d = Math.hypot(dx, dz);
+    if (!d) continue;
+
+    const shore = rayDistanceToBoundary(outline, dx, dz);
+    const reach = Math.max(2, shore - 1);
+    const start = { x: dx / d * reach, z: dz / d * reach };
+    const controls = bowedPath(start, { x: 0, z: 0 }, curve, hashString(island.id) + index * 37);
+
+    out.push(smoothRoad(sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS })));
+    index++;
+  }
+  return out;
+}
+
+/** Outline for an island however it was described. */
+function outlineOf(island){
+  if(Array.isArray(island.outline) && island.outline.length>=3) return island.outline;
+  if(island.shape && island.shape!=='circle') return makeShape(island.shape, island.radius, island.shapeSeed||1);
+  return circlePoints(island.radius);
+}
+
+const THEMES = ['town', 'jungle', 'mixed', 'plain'];
+const DISTRICT_TYPES = ['town', 'jungle', 'plaza'];
+const DEFAULT_BUILDING = { width: 6, depth: 6, floors: 3, rotation: 0 };
+
+// Mirrors PALETTE in src/world/World.js so the editor previews the real thing
+const P = {
+  seaDeep:'#0e5a7a', seaShallow:'#3fc4cc',
+  sand:'#eadaa8', sandWet:'#d3bf8c',
+  grass:'#5fa84e', grassDark:'#437f3f',
+  asphalt:'#4c4a52', roadLine:'#f3ead2',
+  concrete:'#d9d3c7',
+  palm:'#4f9e46', palmDark:'#3a7a38',
+  bush:'#3f8f4a', rock:'#9c8a6d',
+  wall:'#f4eee2', roof:'#b85c47'
+};
+
+/** Show a preview of the scattered trees and buildings. */
+let showProps = true;
+
+/** Deterministic RNG so the preview doesn't shimmer between redraws. */
+function seededRandom(seed) {
+  let s = (seed | 0) || 1;
+  return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+}
+
+/** A stable number from a string, for per-island seeding. */
+function hashId(str) {
+  let h = 0;
+  for (let i = 0; i < String(str).length; i++) h = (h * 31 + String(str).charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+// ===========================================================================
+// State
+// ===========================================================================
+let map = structuredClone(DEFAULT_MAP);
+let mode = 'select';
+let sel = null;          // { kind:'island'|'district'|'road', island, index }
+let bridgeFrom = null;   // island id awaiting a partner
+let roadDraft = null;    // { island, points: [{x,z}] } while drawing
+let selVertex = null;    // { island, index } while shaping
+let selBuilding = null;  // { island, index }
+let snapOn = false;      // grid snapping
+let snapSize = 2;        // grid spacing in world units
+
+/** Round to the snap grid, if snapping is on. */
+function snap(v) {
+  return snapOn ? Math.round(v / snapSize) * snapSize : num(v);
+}
+let view = { x: 0, z: 0, zoom: 3.0 };   // world point at screen centre, px per unit
+let drag = null;
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+  const r = canvas.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = r.width * dpr;
+  canvas.height = r.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+window.addEventListener('resize', resize);
+
+// World <-> screen. Matches the in-game minimap: +X right, +Z down.
+function w2s(x, z) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: r.width / 2 + (x - view.x) * view.zoom,
+    y: r.height / 2 + (z - view.z) * view.zoom
+  };
+}
+function s2w(px, py) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (px - r.width / 2) / view.zoom + view.x,
+    z: (py - r.height / 2) / view.zoom + view.z
+  };
+}
+
+const hex = (n) => '#' + n.toString(16).padStart(6, '0');
+const num = (v, d = 1) => Math.round(v * 10 ** d) / 10 ** d;
+const getIsland = (id) => map.islands.find(i => i.id === id);
+
+// ===========================================================================
+// Geometry helpers - same maths the game uses
+// ===========================================================================
+function resolveBridge(def) {
+  const a = getIsland(def.from), b = getIsland(def.to);
+  if (!a || !b) return null;
+  const dx = b.x - a.x, dz = b.z - a.z;
+  const d = Math.hypot(dx, dz);
+  if (d === 0) return null;
+  // Use the real coastline, matching the game
+  const start = rayDistanceToBoundary(outlineOf(a), dx, dz) - 1.5;
+  const end = d - rayDistanceToBoundary(outlineOf(b), -dx, -dz) + 1.5;
+  return { a, b, length: end - start };
+}
+
+function validate() {
+  const problems = [], warnings = [];
+  const seenIds = new Set();
+
+  for (const i of map.islands) {
+    if (!i.id) problems.push('An island has no id');
+    else if (seenIds.has(i.id)) problems.push(`Duplicate island id "${i.id}"`);
+    seenIds.add(i.id);
+    if (!(i.radius > 0)) problems.push(`"${i.id}" needs a radius above 0`);
+  }
+
+  for (let a = 0; a < map.islands.length; a++) {
+    for (let b = a + 1; b < map.islands.length; b++) {
+      const A = map.islands[a], B = map.islands[b];
+      const dx = B.x - A.x, dz = B.z - A.z;
+      const gap = Math.hypot(dx, dz)
+        - rayDistanceToBoundary(outlineOf(A), dx, dz)
+        - rayDistanceToBoundary(outlineOf(B), -dx, -dz);
+      if (gap < 0) problems.push(`"${A.id}" and "${B.id}" overlap by ${(-gap).toFixed(1)}`);
+      else if (gap < 4) warnings.push(`"${A.id}" and "${B.id}" are only ${gap.toFixed(1)} apart`);
+    }
+  }
+
+  for (const br of map.bridges) {
+    if (!getIsland(br.from)) problems.push(`Bridge references unknown "${br.from}"`);
+    if (!getIsland(br.to)) problems.push(`Bridge references unknown "${br.to}"`);
+    const r = resolveBridge(br);
+    if (r && r.length <= 0) problems.push(`Bridge "${br.from}"–"${br.to}" has no length`);
+  }
+
+  // Reachability from the spawn island
+  const spawn = getIsland('hub') || map.islands[0];
+  if (spawn) {
+    const seen = new Set([spawn.id]), queue = [spawn.id];
+    while (queue.length) {
+      const cur = queue.shift();
+      for (const br of map.bridges) {
+        let next = br.from === cur ? br.to : br.to === cur ? br.from : null;
+        if (next && !seen.has(next) && getIsland(next)) { seen.add(next); queue.push(next); }
+      }
+    }
+    for (const i of map.islands) {
+      if (!seen.has(i.id)) warnings.push(`"${i.id}" can't be driven to — no bridge path`);
+    }
+  }
+
+  return { problems, warnings };
+}
+
+// ===========================================================================
+// Drawing
+// ===========================================================================
+function draw() {
+  const r = canvas.getBoundingClientRect();
+  ctx.clearRect(0, 0, r.width, r.height);
+
+  // Sea
+  ctx.fillStyle = P.seaDeep;
+  ctx.fillRect(0, 0, r.width, r.height);
+
+  drawGrid(r);
+
+  // Bridges under the islands
+  for (const br of map.bridges) {
+    const a = getIsland(br.from), b = getIsland(br.to);
+    if (!a || !b) continue;
+    const p = w2s(a.x, a.z), q = w2s(b.x, b.z);
+    const bad = (resolveBridge(br)?.length ?? 1) <= 0;
+    const width = br.width || 8.5;
+
+    if (bad) {
+      ctx.strokeStyle = '#ff5f6d';
+      ctx.lineWidth = Math.max(2, width * view.zoom);
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+      continue;
+    }
+
+    // Concrete deck
+    ctx.strokeStyle = P.concrete;
+    ctx.lineWidth = Math.max(2, width * view.zoom);
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+
+    // Asphalt running across it, at the road's real width
+    ctx.strokeStyle = P.asphalt;
+    ctx.lineWidth = Math.max(1.5, 7 * view.zoom);
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+
+    if (view.zoom > 1.4) {
+      ctx.strokeStyle = P.roadLine;
+      ctx.lineWidth = Math.max(1, 0.35 * view.zoom);
+      ctx.setLineDash([6, 8]);
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  for (const island of map.islands) drawIsland(island);
+
+  // Pending bridge / road feedback
+  if (bridgeFrom) {
+    const a = getIsland(bridgeFrom);
+    if (a) {
+      const p = w2s(a.x, a.z);
+      ctx.strokeStyle = '#3fc4cc'; ctx.lineWidth = 2; ctx.setLineDash([6, 5]);
+      ctx.beginPath(); ctx.arc(p.x, p.y, a.radius * view.zoom + 6, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  if (roadDraft && roadDraft.points.length) {
+    const isl = roadDraft.island;
+    if (roadDraft.points.length >= 2) {
+      const curve = smoothRoad(sampleSpline(roadDraft.points, { samplesPerSpan: ROAD_SMOOTHNESS }));
+      ctx.strokeStyle = '#3fc4cc';
+      ctx.lineWidth = Math.max(2, 7 * view.zoom / 3);
+      ctx.setLineDash([8, 6]);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      curve.forEach((q, k) => {
+        const s = w2s(isl.x + q.x, isl.z + q.z);
+        if (k === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.lineCap = 'butt';
+    }
+    for (const q of roadDraft.points) {
+      const s = w2s(isl.x + q.x, isl.z + q.z);
+      ctx.fillStyle = '#3fc4cc';
+      ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#11161d'; ctx.lineWidth = 1.4; ctx.stroke();
+    }
+  }
+
+  drawCompass(r);
+}
+
+function drawGrid(r) {
+  const step = 20;
+  const tl = s2w(0, 0), brc = s2w(r.width, r.height);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,.055)';
+  ctx.beginPath();
+  for (let x = Math.floor(tl.x / step) * step; x < brc.x; x += step) {
+    const p = w2s(x, 0); ctx.moveTo(p.x, 0); ctx.lineTo(p.x, r.height);
+  }
+  for (let z = Math.floor(tl.z / step) * step; z < brc.z; z += step) {
+    const p = w2s(0, z); ctx.moveTo(0, p.y); ctx.lineTo(r.width, p.y);
+  }
+  ctx.stroke();
+
+  // Origin lines
+  const o = w2s(0, 0);
+  ctx.strokeStyle = 'rgba(255,255,255,.16)';
+  ctx.beginPath();
+  ctx.moveTo(o.x, 0); ctx.lineTo(o.x, r.height);
+  ctx.moveTo(0, o.y); ctx.lineTo(r.width, o.y);
+  ctx.stroke();
+}
+
+function drawIsland(island) {
+  const p = w2s(island.x, island.z);
+  const rad = island.radius * view.zoom;
+  const isSel = sel?.kind === 'island' && sel.island === island;
+
+  const outline = outlineOf(island);
+
+  // Beach
+  ctx.fillStyle = P.sand;
+  tracePolygon(outline, island);
+  ctx.fill();
+
+  // Wet sand at the waterline, as a darker rim
+  ctx.strokeStyle = P.sandWet;
+  ctx.lineWidth = Math.max(2, 2.2 * view.zoom);
+  tracePolygon(outline, island);
+  ctx.stroke();
+
+  // Grass cap - uses the same inset the game does, so what you see here
+  // is what the 3D world builds
+  const beach = Math.max(2, boundingRadius(outline) * 0.13);
+  const grassRing = insetPolygon(outline, beach);
+  if (grassRing.length >= 3) {
+    ctx.fillStyle = P.grass;
+    tracePolygon(grassRing, island);
+    ctx.fill();
+  }
+
+  // Preview of what the game will scatter here
+  drawScatterPreview(island, outline);
+
+  // Districts
+  for (let i = 0; i < (island.districts || []).length; i++) {
+    const d = island.districts[i];
+    const dp = w2s(island.x + d.x, island.z + d.z);
+    const dr = (d.size || 12) * view.zoom;
+    const selD = sel?.kind === 'district' && sel.island === island && sel.index === i;
+    // A plaza is real paving; town and jungle are just zones where props
+    // get scattered, so those read as a dashed boundary rather than a fill
+    if (d.type === 'plaza') {
+      ctx.fillStyle = P.concrete;
+      ctx.beginPath(); ctx.arc(dp.x, dp.y, dr, 0, 7); ctx.fill();
+      ctx.strokeStyle = selD ? '#3fc4cc' : 'rgba(0,0,0,.25)';
+      ctx.lineWidth = selD ? 2.5 : 1;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = d.type === 'town'
+        ? 'rgba(244,238,226,.16)' : 'rgba(63,143,74,.18)';
+      ctx.beginPath(); ctx.arc(dp.x, dp.y, dr, 0, 7); ctx.fill();
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = selD ? '#3fc4cc' : 'rgba(255,255,255,.4)';
+      ctx.lineWidth = selD ? 2.5 : 1.2;
+      ctx.beginPath(); ctx.arc(dp.x, dp.y, dr, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    if (view.zoom > 1.6 && dr > 12) {
+      ctx.fillStyle = 'rgba(255,255,255,.75)';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(d.type, dp.x, dp.y - dr + 9);
+    }
+  }
+
+  // Auto roads, bowed exactly the way the game bows them
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const curve of autoRoadCurves(island, outline)) {
+    const trace = () => {
+      ctx.beginPath();
+      curve.forEach((q, k) => {
+        const s = w2s(island.x + q.x, island.z + q.z);
+        if (k === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+      });
+    };
+
+    ctx.strokeStyle = P.asphalt;
+    ctx.lineWidth = Math.max(2, 7 * view.zoom);
+    trace(); ctx.stroke();
+
+    if (view.zoom > 1.4) {
+      ctx.strokeStyle = P.roadLine;
+      ctx.lineWidth = Math.max(1, 0.35 * view.zoom);
+      ctx.setLineDash([6, 8]);
+      trace(); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  ctx.lineCap = 'butt';
+
+  // Hand-drawn roads, smoothed the same way the game smooths them
+  for (let i = 0; i < (island.roads || []).length; i++) {
+    const rd = island.roads[i];
+    const selR = sel?.kind === 'road' && sel.island === island && sel.index === i;
+    const controls = roadPoints(rd);
+    if (controls.length < 2) continue;
+
+    const curve = smoothRoad(sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS, closed: !!rd.closed }), rd.width || 7);
+
+    const traceCurve = () => {
+      ctx.beginPath();
+      curve.forEach((q, k) => {
+        const s = w2s(island.x + q.x, island.z + q.z);
+        if (k === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+      });
+    };
+
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = selR ? '#3fc4cc' : P.asphalt;
+    ctx.lineWidth = Math.max(2, (rd.width || 7) * view.zoom);
+    traceCurve(); ctx.stroke();
+
+    if (view.zoom > 1.4 && !selR) {
+      ctx.strokeStyle = P.roadLine;
+      ctx.lineWidth = Math.max(1, 0.35 * view.zoom);
+      ctx.setLineDash([6, 8]);
+      traceCurve(); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.lineCap = 'butt';
+
+    // Control points, so you can grab and bend the road
+    if (mode === 'road') {
+      for (const q of controls) {
+        const s = w2s(island.x + q.x, island.z + q.z);
+        ctx.fillStyle = selR ? '#3fc4cc' : '#cfd8e3';
+        ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, 7); ctx.fill();
+        ctx.strokeStyle = '#11161d'; ctx.lineWidth = 1.4; ctx.stroke();
+      }
+    }
+  }
+
+  // Hand-placed buildings
+  for (let i = 0; i < (island.buildings || []).length; i++) {
+    const bd = island.buildings[i];
+    const selB = selBuilding && selBuilding.island === island && selBuilding.index === i;
+    const a = ((bd.rotation || 0) * Math.PI) / 180;
+    const fp = buildingFootprint(bd);
+    const hw = fp.w / 2;
+    const hd = fp.d / 2;
+
+    // Four corners, rotated
+    const corners = [[-hw,-hd],[hw,-hd],[hw,hd],[-hw,hd]].map(([lx,lz]) => {
+      const rx = lx * Math.cos(a) + lz * Math.sin(a);
+      const rz = -lx * Math.sin(a) + lz * Math.cos(a);
+      return w2s(island.x + bd.x + rx, island.z + bd.z + rz);
+    });
+
+    // Taller buildings read darker, so height is visible from above
+    const floors = bd.floors || 3;
+    const shade = Math.max(0, 190 - floors * 16);
+    ctx.fillStyle = selB ? 'rgba(63,196,204,.55)' : `rgb(${shade},${shade},${shade + 12})`;
+    ctx.beginPath();
+    corners.forEach((p, k) => k === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = selB ? '#3fc4cc' : 'rgba(20,25,35,.65)';
+    ctx.lineWidth = selB ? 2.5 : 1.2;
+    ctx.stroke();
+
+    // Which way is the front
+    if (mode === 'building') {
+      const front = w2s(
+        island.x + bd.x + Math.sin(a) * hd,
+        island.z + bd.z + Math.cos(a) * hd
+      );
+      const mid = w2s(island.x + bd.x, island.z + bd.z);
+      ctx.strokeStyle = selB ? '#3fc4cc' : 'rgba(255,255,255,.5)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(mid.x, mid.y); ctx.lineTo(front.x, front.y); ctx.stroke();
+
+      if (selB) {
+        const h = buildingHandle(island, bd);
+        const hs = w2s(h.x, h.z);
+        ctx.fillStyle = '#ffb300';
+        ctx.beginPath(); ctx.arc(hs.x, hs.y, 5, 0, 7); ctx.fill();
+        ctx.strokeStyle = '#11161d'; ctx.lineWidth = 1.4; ctx.stroke();
+      }
+    }
+
+    if (floors >= 2 && view.zoom > 2.5) {
+      const mid = w2s(island.x + bd.x, island.z + bd.z);
+      ctx.fillStyle = 'rgba(255,255,255,.75)';
+      ctx.font = '9px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(floors + 'F', mid.x, mid.y);
+    }
+  }
+
+  // Coastline
+  ctx.strokeStyle = isSel ? '#3fc4cc' : hex(island.accent);
+  ctx.lineWidth = isSel ? 3 : 2;
+  tracePolygon(outline, island);
+  ctx.stroke();
+
+  if (isSel) {
+    // Resize handle, out at the island's widest point
+    const h = w2s(island.x + boundingRadius(outline), island.z);
+    ctx.fillStyle = '#3fc4cc';
+    ctx.beginPath(); ctx.arc(h.x, h.y, 6, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#06222a'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+
+  // Vertex handles, only while shaping
+  if (mode === 'shape' && island.outline) {
+    for (let i = 0; i < island.outline.length; i++) {
+      const v = island.outline[i];
+      const vp = w2s(island.x + v.x, island.z + v.z);
+      const selV = selVertex && selVertex.island === island && selVertex.index === i;
+      ctx.fillStyle = selV ? '#ffb300' : '#fff';
+      ctx.beginPath(); ctx.arc(vp.x, vp.y, selV ? 6 : 4, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#11161d'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+  }
+
+  // Label - the marker name if it has one, otherwise the id
+  if (view.zoom > 0.8) {
+    const title = island.name || island.id.toUpperCase();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // A slab behind the text so it stays readable over busy ground
+    ctx.font = '700 13px sans-serif';
+    const tw = ctx.measureText(title).width;
+    ctx.fillStyle = 'rgba(10,14,20,.55)';
+    ctx.fillRect(p.x - tw / 2 - 6, p.y - 10, tw + 12, 20);
+
+    ctx.fillStyle = hex(island.accent);
+    ctx.fillText(title, p.x, p.y);
+
+    if (view.zoom > 2 && island.name) {
+      ctx.font = '10px sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,.5)';
+      ctx.fillText(island.id, p.x, p.y + 15);
+    }
+  }
+
+  // Spawn marker
+  if (island.id === 'hub') {
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - 9); ctx.lineTo(p.x - 6, p.y + 6);
+    ctx.lineTo(p.x + 6, p.y + 6); ctx.closePath(); ctx.stroke();
+  }
+}
+
+/**
+ * Preview the props the game will scatter on this island.
+ *
+ * This mirrors the placement rules in World.js closely enough to be
+ * useful - same seeded RNG idea, same "stay inland and off the roads"
+ * checks - so what you see here is a fair picture of the finished island
+ * rather than a blank shape.
+ */
+function drawScatterPreview(island, outline) {
+  if (!showProps || view.zoom < 0.9) return;
+
+  const theme = island.theme || 'plain';
+  const reach = boundingRadius(outline);
+  const beach = Math.max(2, reach * 0.13);
+  const rnd = seededRandom(hashId(island.id) + 7);
+
+  // Sampled roads, so we can keep props off them like the game does
+  const roadCurves = [];
+  for (const rd of island.roads || []) {
+    const pts = roadPoints(rd);
+    if (pts.length >= 2) roadCurves.push(smoothRoad(sampleSpline(pts, { samplesPerSpan: ROAD_SMOOTHNESS, closed: !!rd.closed }), rd.width || 7));
+  }
+  // The automatic bridge roads, bowed the same way the game bows them
+  for (const curve of autoRoadCurves(island, outline)) roadCurves.push(curve);
+
+  const nearRoad = (x, z) => {
+    for (const curve of roadCurves) {
+      for (let i = 1; i < curve.length; i++) {
+        const a = curve[i - 1], b = curve[i];
+        const ex = b.x - a.x, ez = b.z - a.z;
+        const lenSq = ex * ex + ez * ez; if (!lenSq) continue;
+        let t = ((x - a.x) * ex + (z - a.z) * ez) / lenSq;
+        t = Math.max(0, Math.min(1, t));
+        if (Math.hypot(x - (a.x + ex * t), z - (a.z + ez * t)) < 5) return true;
+      }
+    }
+    return false;
+  };
+
+  const buildable = (x, z) =>
+    distanceToEdgeLocal(outline, x, z) > beach + 0.5 && !nearRoad(x, z);
+
+  const budget = Math.round((Math.PI * reach * reach) / 55);
+  const zoom = view.zoom;
+
+  for (let i = 0; i < budget; i++) {
+    const a = rnd() * Math.PI * 2;
+    const d = 8 + rnd() * (reach - 8);
+    const lx = Math.sin(a) * d, lz = Math.cos(a) * d;
+    if (!buildable(lx, lz)) continue;
+
+    const s = w2s(island.x + lx, island.z + lz);
+    const r = rnd();
+
+    if (theme === 'town') {
+      if (r < 0.62) drawTinyBuilding(s, zoom, rnd);
+      else if (r < 0.82) drawTinyLamp(s, zoom);
+      else drawTinyPalm(s, zoom);
+    } else if (theme === 'jungle') {
+      if (r < 0.58) drawTinyPalm(s, zoom);
+      else if (r < 0.82) drawTinyBush(s, zoom);
+      else drawTinyRock(s, zoom);
+    } else if (theme === 'mixed') {
+      if (r < 0.3) drawTinyBuilding(s, zoom, rnd);
+      else if (r < 0.62) drawTinyPalm(s, zoom);
+      else if (r < 0.85) drawTinyBush(s, zoom);
+      else drawTinyRock(s, zoom);
+    }
+  }
+
+  // Districts add their own denser clusters
+  for (const dist of island.districts || []) {
+    if (dist.type === 'plaza') continue;
+    const dr = seededRandom(hashId(island.id + dist.type) + Math.round(dist.x * 7 + dist.z * 13));
+    const size = dist.size || 12;
+    const density = dist.density !== undefined ? dist.density : 1;
+    const n = Math.round(size * density * (dist.type === 'town' ? 0.7 : 1.2));
+
+    for (let i = 0; i < n; i++) {
+      const a = dr() * Math.PI * 2;
+      const d = Math.sqrt(dr()) * size;
+      const lx = (dist.x || 0) + Math.sin(a) * d;
+      const lz = (dist.z || 0) + Math.cos(a) * d;
+      if (!buildable(lx, lz)) continue;
+      const s = w2s(island.x + lx, island.z + lz);
+      if (dist.type === 'town') {
+        dr() < 0.78 ? drawTinyBuilding(s, zoom, dr) : drawTinyLamp(s, zoom);
+      } else {
+        const r = dr();
+        if (r < 0.62) drawTinyPalm(s, zoom);
+        else if (r < 0.88) drawTinyBush(s, zoom);
+        else drawTinyRock(s, zoom);
+      }
+    }
+  }
+}
+
+/** Distance from an island-local point to the coastline (positive inland). */
+function distanceToEdgeLocal(pts, x, z) {
+  let best = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const ex = b.x - a.x, ez = b.z - a.z;
+    const lenSq = ex * ex + ez * ez;
+    let t = 0;
+    if (lenSq > 0) {
+      t = ((x - a.x) * ex + (z - a.z) * ez) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+    }
+    best = Math.min(best, Math.hypot(x - (a.x + ex * t), z - (a.z + ez * t)));
+  }
+  return pointInPolygon(pts, x, z) ? best : -best;
+}
+
+function drawTinyPalm(s, zoom) {
+  const r = Math.max(1.4, 1.7 * zoom / 3);
+  ctx.fillStyle = P.palm;
+  ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, 7); ctx.fill();
+  ctx.fillStyle = P.palmDark;
+  ctx.beginPath(); ctx.arc(s.x + r * 0.3, s.y + r * 0.3, r * 0.5, 0, 7); ctx.fill();
+}
+function drawTinyBush(s, zoom) {
+  const r = Math.max(1, 1.2 * zoom / 3);
+  ctx.fillStyle = P.bush;
+  ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, 7); ctx.fill();
+}
+function drawTinyRock(s, zoom) {
+  const r = Math.max(1, 1.1 * zoom / 3);
+  ctx.fillStyle = P.rock;
+  ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, 7); ctx.fill();
+}
+function drawTinyLamp(s, zoom) {
+  const r = Math.max(0.8, 0.9 * zoom / 3);
+  ctx.fillStyle = '#8d95a3';
+  ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, 7); ctx.fill();
+}
+function drawTinyBuilding(s, zoom, rnd) {
+  const w = Math.max(2.5, (4 + rnd() * 2.5) * zoom / 3);
+  const h = Math.max(2.5, (4 + rnd() * 2) * zoom / 3);
+  ctx.fillStyle = P.wall;
+  ctx.fillRect(s.x - w / 2, s.y - h / 2, w, h);
+  ctx.strokeStyle = 'rgba(120,90,70,.5)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(s.x - w / 2, s.y - h / 2, w, h);
+}
+
+/** Trace an island-local polygon as a canvas path in screen space. */
+function tracePolygon(points, island) {
+  ctx.beginPath();
+  for (let i = 0; i < points.length; i++) {
+    const s = w2s(island.x + points[i].x, island.z + points[i].z);
+    if (i === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+  }
+  ctx.closePath();
+}
+
+function drawCompass(r) {
+  const x = r.width - 62, y = r.height - 62;
+  ctx.strokeStyle = 'rgba(255,255,255,.4)'; ctx.lineWidth = 1.5;
+  ctx.fillStyle = 'rgba(255,255,255,.65)';
+  ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 26, y); ctx.stroke();
+  ctx.fillText('+X', x + 36, y);
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 26); ctx.stroke();
+  ctx.fillText('+Z', x, y + 36);
+  ctx.fillText('fwd', x - 16, y + 26);
+}
+
+// ===========================================================================
+// Hit testing
+// ===========================================================================
+function pickIsland(w) {
+  // Topmost (last drawn) first
+  for (let i = map.islands.length - 1; i >= 0; i--) {
+    const isl = map.islands[i];
+    if (pointInPolygon(outlineOf(isl), w.x - isl.x, w.z - isl.z)) return isl;
+  }
+  return null;
+}
+
+/** Nearest outline vertex to a world point, if one is close enough. */
+function pickVertex(w) {
+  const tol = 9 / view.zoom;
+  for (let i = map.islands.length - 1; i >= 0; i--) {
+    const isl = map.islands[i];
+    if (!isl.outline) continue;
+    for (let v = 0; v < isl.outline.length; v++) {
+      const p = isl.outline[v];
+      if (Math.hypot(w.x - (isl.x + p.x), w.z - (isl.z + p.z)) < tol) {
+        return { island: isl, index: v };
+      }
+    }
+  }
+  return null;
+}
+
+/** Closest point on an outline edge, for inserting a new vertex. */
+function pickEdge(w) {
+  const tol = 8 / view.zoom;
+  for (let i = map.islands.length - 1; i >= 0; i--) {
+    const isl = map.islands[i];
+    if (!isl.outline) continue;
+    const pts = isl.outline;
+    for (let v = 0; v < pts.length; v++) {
+      const a = pts[v], b = pts[(v + 1) % pts.length];
+      const lx = w.x - isl.x, lz = w.z - isl.z;
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const lenSq = dx * dx + dz * dz;
+      if (!lenSq) continue;
+      let t = ((lx - a.x) * dx + (lz - a.z) * dz) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      const px = a.x + dx * t, pz = a.z + dz * t;
+      if (Math.hypot(lx - px, lz - pz) < tol) {
+        return { island: isl, index: v, point: { x: num(px), z: num(pz) } };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Commit the road being drawn. Needs at least two points to be a road.
+ */
+function finishRoadDraft() {
+  if (roadDraft && roadDraft.points.length >= 2) {
+    const isl = roadDraft.island;
+    isl.roads = isl.roads || [];
+    isl.roads.push({ points: roadDraft.points, width: 7 });
+    sel = { kind: 'road', island: isl, index: isl.roads.length - 1 };
+  }
+  roadDraft = null;
+}
+
+/**
+ * A road whose centre line passes close to this point.
+ * Deliberately a tight tolerance, so there's still plenty of island left
+ * to grab and drag.
+ */
+/** A hand-placed building under this point, if any. */
+function pickBuilding(w) {
+  for (let i = map.islands.length - 1; i >= 0; i--) {
+    const isl = map.islands[i];
+    const list = isl.buildings || [];
+    for (let b = list.length - 1; b >= 0; b--) {
+      const bd = list[b];
+      // Rotate the click into the building's own frame, then a plain
+      // rectangle test does the rest
+      const dx = w.x - (isl.x + bd.x);
+      const dz = w.z - (isl.z + bd.z);
+      const a = -((bd.rotation || 0) * Math.PI) / 180;
+      const lx = dx * Math.cos(a) - dz * Math.sin(a);
+      const lz = dx * Math.sin(a) + dz * Math.cos(a);
+      const fp = buildingFootprint(bd);
+      if (Math.abs(lx) <= fp.w / 2 && Math.abs(lz) <= fp.d / 2) {
+        return { island: isl, index: b };
+      }
+    }
+  }
+  return null;
+}
+
+/** Where the rotation handle sits for a given building. */
+function buildingHandle(isl, bd) {
+  const a = ((bd.rotation || 0) * Math.PI) / 180;
+  const reach = buildingFootprint(bd).d / 2 + 3;
+  return {
+    x: isl.x + bd.x + Math.sin(a) * reach,
+    z: isl.z + bd.z + Math.cos(a) * reach
+  };
+}
+
+function pickRoad(w) {
+  const tol = 2.2;
+  for (let i = map.islands.length - 1; i >= 0; i--) {
+    const isl = map.islands[i];
+    const roads = isl.roads || [];
+    for (let r = 0; r < roads.length; r++) {
+      const controls = roadPoints(roads[r]);
+      if (controls.length < 2) continue;
+      const curve = smoothRoad(sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS, closed: !!roads[r].closed }), roads[r].width || 7);
+
+      for (let k = 1; k < curve.length; k++) {
+        const a = curve[k - 1], b = curve[k];
+        const ax = isl.x + a.x, az = isl.z + a.z;
+        const bx = isl.x + b.x, bz = isl.z + b.z;
+        const dx = bx - ax, dz = bz - az;
+        const lenSq = dx * dx + dz * dz;
+        if (!lenSq) continue;
+        let t = ((w.x - ax) * dx + (w.z - az) * dz) / lenSq;
+        t = Math.max(0, Math.min(1, t));
+        if (Math.hypot(w.x - (ax + dx * t), w.z - (az + dz * t)) < tol) {
+          return { island: isl, index: r };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Nearest control point of an existing road, if one is close by. */
+function pickRoadPoint(w) {
+  const tol = 9 / view.zoom;
+  for (let i = map.islands.length - 1; i >= 0; i--) {
+    const isl = map.islands[i];
+    const roads = isl.roads || [];
+    for (let r = 0; r < roads.length; r++) {
+      const pts = roadPoints(roads[r]);
+      for (let p = 0; p < pts.length; p++) {
+        if (Math.hypot(w.x - (isl.x + pts[p].x), w.z - (isl.z + pts[p].z)) < tol) {
+          return { island: isl, roadIndex: r, pointIndex: p };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** A road's control points, whichever way it was written. */
+function roadPoints(road) {
+  if (Array.isArray(road.points)) return road.points;
+  if (road.from && road.to) return [road.from, road.to];
+  return [];
+}
+
+/** Give an island an editable outline, generated from its current look. */
+function ensureOutline(island) {
+  if (!island.outline) {
+    island.outline = outlineOf(island).map(p => ({ x: num(p.x), z: num(p.z) }));
+  }
+  return island.outline;
+}
+
+function pickHandle(w) {
+  if (sel?.kind !== 'island') return false;
+  const isl = sel.island;
+  const r = boundingRadius(outlineOf(isl));
+  return Math.hypot(w.x - (isl.x + r), w.z - isl.z) < 8 / view.zoom;
+}
+
+function pickDistrict(w) {
+  for (const isl of map.islands) {
+    const ds = isl.districts || [];
+    for (let i = ds.length - 1; i >= 0; i--) {
+      const d = ds[i];
+      if (Math.hypot(w.x - (isl.x + d.x), w.z - (isl.z + d.z)) <= (d.size || 12)) {
+        return { island: isl, index: i };
+      }
+    }
+  }
+  return null;
+}
+
+// ===========================================================================
+// Mouse
+// ===========================================================================
+canvas.addEventListener('mousedown', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const w = s2w(e.clientX - rect.left, e.clientY - rect.top);
+
+  // Middle / right / space = pan
+  if (e.button === 1 || e.button === 2 || e.shiftKey) {
+    drag = { type: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vz: view.z };
+    e.preventDefault(); return;
+  }
+
+  if (mode === 'bridge') {
+    const isl = pickIsland(w);
+    if (!isl) { bridgeFrom = null; }
+    else if (!bridgeFrom) { bridgeFrom = isl.id; }
+    else if (bridgeFrom === isl.id) { bridgeFrom = null; }
+    else {
+      const i = map.bridges.findIndex(b =>
+        (b.from === bridgeFrom && b.to === isl.id) || (b.to === bridgeFrom && b.from === isl.id));
+      if (i >= 0) map.bridges.splice(i, 1);
+      else map.bridges.push({ from: bridgeFrom, to: isl.id });
+      bridgeFrom = null;
+    }
+    refresh(); return;
+  }
+
+  if (mode === 'district') {
+    const isl = pickIsland(w);
+    if (isl) {
+      isl.districts = isl.districts || [];
+      isl.districts.push({
+        type: 'town',
+        x: num(w.x - isl.x), z: num(w.z - isl.z),
+        size: Math.max(5, Math.round(isl.radius * 0.35))
+      });
+      sel = { kind: 'district', island: isl, index: isl.districts.length - 1 };
+    }
+    refresh(); return;
+  }
+
+  if (mode === 'building') {
+      // Grab the rotation handle of the selected building
+      if (selBuilding) {
+        const bd = selBuilding.island.buildings[selBuilding.index];
+        if (bd) {
+          const h = buildingHandle(selBuilding.island, bd);
+          if (Math.hypot(w.x - h.x, w.z - h.z) < 9 / view.zoom) {
+            drag = { type: 'buildingRotate', ...selBuilding };
+            return;
+          }
+        }
+      }
+
+      const hit = pickBuilding(w);
+      if (hit) {
+        selBuilding = hit;
+        sel = { kind: 'building', island: hit.island, index: hit.index };
+        const bd = hit.island.buildings[hit.index];
+        drag = {
+          type: 'building', ...hit,
+          ox: w.x - (hit.island.x + bd.x),
+          oz: w.z - (hit.island.z + bd.z)
+        };
+        refresh(); return;
+      }
+
+      // Empty ground on an island: drop a new building there
+      const isl = pickIsland(w);
+      if (isl) {
+        isl.buildings = isl.buildings || [];
+        isl.buildings.push({
+          ...DEFAULT_BUILDING,
+          x: snap(w.x - isl.x),
+          z: snap(w.z - isl.z)
+        });
+        selBuilding = { island: isl, index: isl.buildings.length - 1 };
+        sel = { kind: 'building', island: isl, index: isl.buildings.length - 1 };
+      } else {
+        selBuilding = null; sel = null;
+      }
+      refresh(); return;
+    }
+
+  if (mode === 'road') {
+    // Dragging an existing road point moves it
+    const rp = pickRoadPoint(w);
+
+    // Alt-click removes a single point. Drop below two points and the
+    // whole road goes, since a road needs at least a start and an end.
+    if (rp && e.altKey) {
+      const road = rp.island.roads[rp.roadIndex];
+      if (!Array.isArray(road.points)) {
+        road.points = [{ ...road.from }, { ...road.to }];
+        delete road.from; delete road.to;
+      }
+      road.points.splice(rp.pointIndex, 1);
+      if (road.points.length < 2) {
+        rp.island.roads.splice(rp.roadIndex, 1);
+        sel = { kind: 'island', island: rp.island };
+      } else {
+        sel = { kind: 'road', island: rp.island, index: rp.roadIndex };
+      }
+      refresh(); return;
+    }
+
+    if (rp && !roadDraft) {
+      sel = { kind: 'road', island: rp.island, index: rp.roadIndex };
+      drag = { type: 'roadPoint', ...rp };
+      refresh(); return;
+    }
+
+    const isl = pickIsland(w);
+    if (!isl) { finishRoadDraft(); refresh(); return; }
+
+    const local = { x: num(w.x - isl.x), z: num(w.z - isl.z) };
+
+    if (!roadDraft || roadDraft.island !== isl) {
+      // Starting a fresh road on this island
+      finishRoadDraft();
+      roadDraft = { island: isl, points: [local] };
+    } else {
+      roadDraft.points.push(local);
+    }
+    refresh(); return;
+  }
+
+  if (mode === 'shape') {
+    // Alt-click an edge inserts a vertex there
+    if (e.altKey) {
+      const edge = pickEdge(w);
+      if (edge) {
+        edge.island.outline.splice(edge.index + 1, 0, edge.point);
+        selVertex = { island: edge.island, index: edge.index + 1 };
+        sel = { kind: 'island', island: edge.island };
+        refresh();
+      }
+      return;
+    }
+
+    const v = pickVertex(w);
+    if (v) {
+      selVertex = v;
+      sel = { kind: 'island', island: v.island };
+      drag = { type: 'vertex', island: v.island, index: v.index };
+      refresh();
+      return;
+    }
+
+    // Clicking an island with no outline yet converts it so it can be shaped
+    const isl = pickIsland(w);
+    if (isl) {
+      ensureOutline(isl);
+      sel = { kind: 'island', island: isl };
+      selVertex = null;
+    } else {
+      sel = null; selVertex = null;
+    }
+    refresh();
+    return;
+  }
+
+  // --- Select mode ---
+  if (pickHandle(w)) {
+    drag = { type: 'resize', island: sel.island };
+    return;
+  }
+
+  // Roads sit on top of the island, so check them first - but only
+  // near their centre line, so the island stays easy to grab
+  const road = pickRoad(w);
+  if (road) {
+    sel = { kind: 'road', island: road.island, index: road.index };
+    refresh();
+    return;
+  }
+
+  const d = pickDistrict(w);
+  const isl = pickIsland(w);
+
+  // Prefer a district only if we're inside it and it's on the island we hit
+  if (d && (!isl || d.island === isl)) {
+    sel = { kind: 'district', island: d.island, index: d.index };
+    drag = {
+      type: 'district', island: d.island, index: d.index,
+      ox: w.x - (d.island.x + d.island.districts[d.index].x),
+      oz: w.z - (d.island.z + d.island.districts[d.index].z)
+    };
+  } else if (isl) {
+    sel = { kind: 'island', island: isl };
+    drag = { type: 'island', island: isl, ox: w.x - isl.x, oz: w.z - isl.z };
+  } else {
+    sel = null;
+  }
+  refresh();
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!drag) return;
+  const rect = canvas.getBoundingClientRect();
+  const w = s2w(e.clientX - rect.left, e.clientY - rect.top);
+
+  if (drag.type === 'pan') {
+    view.x = drag.vx - (e.clientX - drag.sx) / view.zoom;
+    view.z = drag.vz - (e.clientY - drag.sy) / view.zoom;
+  } else if (drag.type === 'island') {
+    drag.island.x = snap(w.x - drag.ox);
+    drag.island.z = snap(w.z - drag.oz);
+  } else if (drag.type === 'resize') {
+    const next = Math.max(6, num(Math.hypot(w.x - drag.island.x, w.z - drag.island.z)));
+    const isl = drag.island;
+
+    if (isl.outline) {
+      // Scale a custom outline rather than throwing the shape away
+      const before = boundingRadius(isl.outline) || 1;
+      const k = next / before;
+      isl.outline = isl.outline.map(p => ({ x: num(p.x * k), z: num(p.z * k) }));
+    }
+    isl.radius = next;
+  } else if (drag.type === 'building') {
+    const bd = drag.island.buildings[drag.index];
+    bd.x = snap(w.x - drag.island.x - drag.ox);
+    bd.z = snap(w.z - drag.island.z - drag.oz);
+  } else if (drag.type === 'buildingRotate') {
+    const bd = drag.island.buildings[drag.index];
+    const a = Math.atan2(
+      w.x - (drag.island.x + bd.x),
+      w.z - (drag.island.z + bd.z)
+    );
+    let deg = (a * 180) / Math.PI;
+    // Snap rotation to 15 degree steps when snapping is on
+    if (snapOn) deg = Math.round(deg / 15) * 15;
+    bd.rotation = Math.round(deg * 10) / 10;
+  } else if (drag.type === 'roadPoint') {
+    const road = drag.island.roads[drag.roadIndex];
+    const pts = roadPoints(road);
+    // Convert an old from/to road into a points array on first edit
+    if (!Array.isArray(road.points)) {
+      road.points = [{ ...road.from }, { ...road.to }];
+      delete road.from; delete road.to;
+    }
+    road.points[drag.pointIndex] = {
+      x: num(w.x - drag.island.x),
+      z: num(w.z - drag.island.z)
+    };
+  } else if (drag.type === 'vertex') {
+    const v = drag.island.outline[drag.index];
+    v.x = num(w.x - drag.island.x);
+    v.z = num(w.z - drag.island.z);
+  } else if (drag.type === 'district') {
+    const d = drag.island.districts[drag.index];
+    d.x = num(w.x - drag.island.x - drag.ox);
+    d.z = num(w.z - drag.island.z - drag.oz);
+  }
+  refresh();
+});
+
+window.addEventListener('mouseup', () => { drag = null; });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const before = s2w(e.clientX - rect.left, e.clientY - rect.top);
+  view.zoom = Math.max(0.6, Math.min(14, view.zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  const after = s2w(e.clientX - rect.left, e.clientY - rect.top);
+  view.x += before.x - after.x;
+  view.z += before.z - after.z;
+  draw();
+}, { passive: false });
+
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    deleteSelection(); e.preventDefault();
+  }
+  if (e.key === 'Escape') { finishRoadDraft(); bridgeFrom = null; selVertex = null; refresh(); }
+  if (e.key === 'Enter') { finishRoadDraft(); refresh(); }
+  if (e.key === '1') setMode('select');
+  if (e.key === '2') setMode('bridge');
+  if (e.key === '3') setMode('district');
+  if (e.key === '4') setMode('road');
+  if (e.key === '5') setMode('shape');
+  if (e.key === '6') setMode('building');
+});
+
+function deleteSelection() {
+  // In shape mode, Delete removes the selected vertex rather than the island
+  if (mode === 'shape' && selVertex) {
+    const pts = selVertex.island.outline;
+    if (pts && pts.length > 3) {
+      pts.splice(selVertex.index, 1);
+      selVertex = null;
+      refresh();
+    }
+    return;
+  }
+  if (mode === 'building' && selBuilding) {
+    const list = selBuilding.island.buildings;
+    if (list) list.splice(selBuilding.index, 1);
+    selBuilding = null; sel = null;
+    refresh();
+    return;
+  }
+  if (!sel) return;
+  if (sel.kind === 'building') {
+    sel.island.buildings.splice(sel.index, 1);
+    selBuilding = null; sel = null;
+    refresh();
+    return;
+  }
+  if (sel.kind === 'island') {
+    const id = sel.island.id;
+    map.islands = map.islands.filter(i => i !== sel.island);
+    map.bridges = map.bridges.filter(b => b.from !== id && b.to !== id);
+  } else if (sel.kind === 'district') {
+    sel.island.districts.splice(sel.index, 1);
+  } else if (sel.kind === 'road') {
+    sel.island.roads.splice(sel.index, 1);
+  }
+  sel = null;
+  refresh();
+}
+
+// ===========================================================================
+// Toolbar
+// ===========================================================================
+function setMode(m) {
+  finishRoadDraft();
+  mode = m; bridgeFrom = null; selVertex = null; selBuilding = null;
+  for (const id of ['select', 'bridge', 'district', 'road', 'shape', 'building']) {
+    document.getElementById('mode-' + id).classList.toggle('on', id === m);
+  }
+  refresh();
+}
+document.getElementById('mode-select').onclick = () => setMode('select');
+document.getElementById('mode-bridge').onclick = () => setMode('bridge');
+document.getElementById('mode-district').onclick = () => setMode('district');
+document.getElementById('mode-road').onclick = () => setMode('road');
+document.getElementById('mode-shape').onclick = () => setMode('shape');
+document.getElementById('mode-building').onclick = () => setMode('building');
+
+document.getElementById('props-toggle').onclick = () => {
+  showProps = !showProps;
+  document.getElementById('props-toggle').classList.toggle('on', showProps);
+  refresh();
+};
+
+document.getElementById('snap-toggle').onclick = () => {
+  snapOn = !snapOn;
+  document.getElementById('snap-toggle').textContent = 'Snap: ' + (snapOn ? 'on' : 'off');
+  document.getElementById('snap-toggle').classList.toggle('on', snapOn);
+  refresh();
+};
+document.getElementById('snap-size').onchange = (e) => {
+  snapSize = Math.max(0.5, parseFloat(e.target.value) || 2);
+  refresh();
+};
+
+document.getElementById('add-island').onclick = () => {
+  let n = 1, id = 'island1';
+  while (getIsland(id)) { n++; id = 'island' + n; }
+  const isl = {
+    id, x: num(view.x), z: num(view.z), radius: 18,
+    theme: 'town', accent: 0x4facfe, name: id.toUpperCase(),
+    palms: 8, districts: [], roads: [],
+    shape: 'blob', shapeSeed: 1 + Math.floor(Math.random() * 9999)
+  };
+  map.islands.push(isl);
+  sel = { kind: 'island', island: isl };
+  setMode('select');
+};
+
+document.getElementById('fit').onclick = fitView;
+function fitView() {
+  if (!map.islands.length) return;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const i of map.islands) {
+    minX = Math.min(minX, i.x - i.radius); maxX = Math.max(maxX, i.x + i.radius);
+    minZ = Math.min(minZ, i.z - i.radius); maxZ = Math.max(maxZ, i.z + i.radius);
+  }
+  view.x = (minX + maxX) / 2;
+  view.z = (minZ + maxZ) / 2;
+  const r = canvas.getBoundingClientRect();
+  view.zoom = Math.min(r.width / (maxX - minX + 40), r.height / (maxZ - minZ + 40));
+  view.zoom = Math.max(0.6, Math.min(14, view.zoom));
+  draw();
+}
+
+// ===========================================================================
+// Side panel
+// ===========================================================================
+function refresh() { draw(); renderProps(); renderValidation(); renderExport(); renderHint(); }
+
+function renderHint() {
+  const tips = {
+    select: '<b>Drag</b> islands to move · <b>drag the dot</b> on the rim to resize · <b>click a road</b> to select it · <b>Delete</b> removes whatever is selected · <b>Shift-drag</b> to pan · <b>scroll</b> to zoom',
+    bridge: '<b>Click two islands</b> to connect them. Click an existing pair again to remove that bridge. <b>Esc</b> cancels.',
+    district: '<b>Click inside an island</b> to drop a district there. Switch to Select to move or resize it.',
+    road: '<b>Click along an island</b> to lay out a road, as many points as you like. <b>Enter</b> finishes it. <b>Drag</b> a point to reshape · <b>Alt-click</b> a point to remove it · <b>Delete</b> removes the whole road.',
+    shape: '<b>Click an island</b> to make it editable · <b>drag</b> the white dots to reshape the coast · <b>Alt-click an edge</b> adds a point · <b>Delete</b> removes one',
+    building: '<b>Click empty ground</b> to place a building · <b>drag</b> to move · <b>drag the orange dot</b> to rotate · <b>Delete</b> removes it. Turn on <b>Snap</b> for tidy rows and right angles.'
+  };
+  document.getElementById('hint').innerHTML =
+    tips[mode] + ' &nbsp;·&nbsp; keys <b>1–6</b> switch tools &nbsp;·&nbsp; <b>Props</b> previews the scatter';
+}
+
+function field(label, input) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  const l = document.createElement('label');
+  l.textContent = label;
+  row.append(l, input);
+  return row;
+}
+
+function renderProps() {
+  const box = document.getElementById('props');
+  box.innerHTML = '';
+
+  if (!sel) {
+    box.innerHTML = `<p class="empty">Nothing selected. Click an island, or use + Island.</p>`;
+    return;
+  }
+
+  if (sel.kind === 'island') {
+    const isl = sel.island;
+
+    const id = Object.assign(document.createElement('input'), { type: 'text', value: isl.id });
+    id.onchange = () => {
+      const old = isl.id, next = id.value.trim();
+      if (!next) { id.value = old; return; }
+      for (const b of map.bridges) {
+        if (b.from === old) b.from = next;
+        if (b.to === old) b.to = next;
+      }
+      isl.id = next; refresh();
+    };
+    box.append(field('id', id));
+
+    const nm = Object.assign(document.createElement('input'), { type: 'text', value: isl.name || '' });
+    nm.onchange = () => { isl.name = nm.value; refresh(); };
+    box.append(field('label', nm));
+
+    for (const key of ['x', 'z', 'radius', 'palms']) {
+      const inp = Object.assign(document.createElement('input'),
+        { type: 'number', value: isl[key] ?? 0, step: key === 'radius' ? 1 : 1 });
+      inp.onchange = () => { isl[key] = parseFloat(inp.value) || 0; refresh(); };
+      box.append(field(key, inp));
+    }
+
+    const th = document.createElement('select');
+    for (const t of THEMES) {
+      const o = document.createElement('option');
+      o.value = o.textContent = t;
+      if (isl.theme === t) o.selected = true;
+      th.append(o);
+    }
+    th.onchange = () => { isl.theme = th.value; refresh(); };
+    box.append(field('theme', th));
+
+    const col = Object.assign(document.createElement('input'),
+      { type: 'color', value: hex(isl.accent) });
+    col.onchange = () => { isl.accent = parseInt(col.value.slice(1), 16); refresh(); };
+    box.append(field('accent', col));
+
+    // --- Shape ---
+    const sh = document.createElement('select');
+    for (const s of SHAPE_PRESETS) {
+      const o = document.createElement('option');
+      o.value = o.textContent = s;
+      if (!isl.outline && (isl.shape || 'circle') === s) o.selected = true;
+      sh.append(o);
+    }
+    if (isl.outline) {
+      const o = document.createElement('option');
+      o.value = 'custom'; o.textContent = 'custom (edited)';
+      o.selected = true;
+      sh.append(o);
+    }
+    sh.onchange = () => {
+      if (sh.value === 'custom') return;
+      // Picking a preset replaces any hand-edited outline
+      delete isl.outline;
+      isl.shape = sh.value;
+      selVertex = null;
+      refresh();
+    };
+    box.append(field('shape', sh));
+
+    if (!isl.outline && isl.shape && isl.shape !== 'circle') {
+      const seedRow = document.createElement('div');
+      seedRow.className = 'row';
+      const lab = document.createElement('label');
+      lab.textContent = 'variant';
+      const seedIn = Object.assign(document.createElement('input'),
+        { type: 'number', value: isl.shapeSeed || 1 });
+      seedIn.onchange = () => { isl.shapeSeed = parseInt(seedIn.value) || 1; refresh(); };
+      const roll = document.createElement('button');
+      roll.textContent = '🎲';
+      roll.style.cssText = 'flex:0 0 38px;padding:6px 0';
+      roll.onclick = () => {
+        isl.shapeSeed = 1 + Math.floor(Math.random() * 9999);
+        refresh();
+      };
+      seedRow.append(lab, seedIn, roll);
+      box.append(seedRow);
+    }
+
+    const shapeBtns = document.createElement('div');
+    shapeBtns.className = 'btnrow';
+
+    const editBtn = document.createElement('button');
+    editBtn.textContent = isl.outline ? 'Edit points' : 'Make editable';
+    editBtn.onclick = () => {
+      ensureOutline(isl);
+      setMode('shape');
+      sel = { kind: 'island', island: isl };
+      refresh();
+    };
+    shapeBtns.append(editBtn);
+
+    if (isl.outline) {
+      const revert = document.createElement('button');
+      revert.textContent = 'Revert to preset';
+      revert.className = 'danger';
+      revert.onclick = () => {
+        delete isl.outline;
+        selVertex = null;
+        refresh();
+      };
+      shapeBtns.append(revert);
+    }
+    box.append(shapeBtns);
+
+    // Districts
+    const dh = document.createElement('h2');
+    dh.textContent = 'Districts';
+    dh.style.cssText = 'font-size:11px;text-transform:uppercase;color:var(--muted);margin:16px 0 7px';
+    box.append(dh);
+
+    if (!(isl.districts || []).length) {
+      box.insertAdjacentHTML('beforeend', '<p class="empty">None. Use the District tool.</p>');
+    }
+    (isl.districts || []).forEach((d, i) => {
+      const chip = document.createElement('div');
+      chip.className = 'chip';
+      const sel2 = document.createElement('select');
+      for (const t of DISTRICT_TYPES) {
+        const o = document.createElement('option');
+        o.value = o.textContent = t;
+        if (d.type === t) o.selected = true;
+        sel2.append(o);
+      }
+      sel2.style.cssText = 'flex:0 0 84px;padding:2px 4px;font-size:11px';
+      sel2.onchange = () => { d.type = sel2.value; refresh(); };
+
+      const size = Object.assign(document.createElement('input'),
+        { type: 'number', value: d.size ?? 12 });
+      size.style.cssText = 'flex:0 0 56px;padding:2px 5px;font-size:11px';
+      size.onchange = () => { d.size = parseFloat(size.value) || 5; refresh(); };
+
+      const del = document.createElement('button');
+      del.textContent = '✕'; del.className = 'danger';
+      del.onclick = () => { isl.districts.splice(i, 1); sel = { kind: 'island', island: isl }; refresh(); };
+
+      chip.append(sel2, size, del);
+      box.append(chip);
+    });
+
+    // Buildings
+    const bh = document.createElement('h2');
+    bh.textContent = 'Buildings';
+    bh.style.cssText = 'font-size:11px;text-transform:uppercase;color:var(--muted);margin:16px 0 7px';
+    box.append(bh);
+
+    if (!(isl.buildings || []).length) {
+      box.insertAdjacentHTML('beforeend', '<p class="empty">None. Use the Building tool.</p>');
+    } else {
+      box.insertAdjacentHTML('beforeend',
+        `<p style="color:var(--muted);font-size:12px;margin:0 0 6px">${isl.buildings.length} placed</p>`);
+      const clear = document.createElement('button');
+      clear.textContent = 'Remove all buildings';
+      clear.className = 'danger';
+      clear.style.cssText = 'width:100%;margin-bottom:6px';
+      clear.onclick = () => { isl.buildings = []; selBuilding = null; refresh(); };
+      box.append(clear);
+    }
+
+    // Roads
+    const rh = document.createElement('h2');
+    rh.textContent = 'Roads';
+    rh.style.cssText = 'font-size:11px;text-transform:uppercase;color:var(--muted);margin:16px 0 7px';
+    box.append(rh);
+
+    if (!(isl.roads || []).length) {
+      box.insertAdjacentHTML('beforeend',
+        '<p class="empty">None beyond the automatic bridge roads.</p>');
+    }
+    (isl.roads || []).forEach((rd, i) => {
+      const chip = document.createElement('div');
+      chip.className = 'chip';
+      const span = document.createElement('span');
+      const n = roadPoints(rd).length;
+      span.textContent = n > 2 ? `curved road, ${n} points` : `straight road`;
+      const del = document.createElement('button');
+      del.textContent = '✕'; del.className = 'danger';
+      del.onclick = () => { isl.roads.splice(i, 1); sel = { kind: 'island', island: isl }; refresh(); };
+      chip.append(span, del);
+      box.append(chip);
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.textContent = 'Delete island';
+    delBtn.className = 'danger';
+    delBtn.style.cssText = 'width:100%;margin-top:12px';
+    delBtn.onclick = deleteSelection;
+    box.append(delBtn);
+
+  } else if (sel.kind === 'district') {
+    const d = sel.island.districts[sel.index];
+    box.insertAdjacentHTML('beforeend',
+      `<p style="color:var(--muted);font-size:12px;margin:0 0 8px">District on <b>${sel.island.id}</b></p>`);
+
+    const t = document.createElement('select');
+    for (const type of DISTRICT_TYPES) {
+      const o = document.createElement('option');
+      o.value = o.textContent = type;
+      if (d.type === type) o.selected = true;
+      t.append(o);
+    }
+    t.onchange = () => { d.type = t.value; refresh(); };
+    box.append(field('type', t));
+
+    for (const key of ['x', 'z', 'size']) {
+      const inp = Object.assign(document.createElement('input'),
+        { type: 'number', value: d[key] ?? 0 });
+      inp.onchange = () => { d[key] = parseFloat(inp.value) || 0; refresh(); };
+      box.append(field(key, inp));
+    }
+    const dens = Object.assign(document.createElement('input'),
+      { type: 'number', step: '0.1', value: d.density ?? 1 });
+    dens.onchange = () => { d.density = parseFloat(dens.value) || 1; refresh(); };
+    box.append(field('density', dens));
+
+    const del = document.createElement('button');
+    del.textContent = 'Delete district'; del.className = 'danger';
+    del.style.cssText = 'width:100%;margin-top:10px';
+    del.onclick = deleteSelection;
+    box.append(del);
+
+  } else if (sel.kind === 'building') {
+    const bd = sel.island.buildings[sel.index];
+    if (!bd) { box.innerHTML = '<p class="empty">Gone.</p>'; return; }
+
+    box.insertAdjacentHTML('beforeend',
+      `<p style="color:var(--muted);font-size:12px;margin:0 0 8px">Building on <b>${sel.island.id}</b></p>`);
+
+    // --- Which model? ---
+    const available = MODEL_MANIFEST
+      .map(m => m.key)
+      .filter(k => k.startsWith('building') || k.startsWith('hut'));
+
+    const modelSel = document.createElement('select');
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = available.length ? 'random each load' : 'plain box';
+    modelSel.append(noneOpt);
+
+    for (const k of available) {
+      const o = document.createElement('option');
+      o.value = k;
+      o.textContent = MODELS.has(k) ? k : k + '  (file missing)';
+      o.disabled = !MODELS.has(k);
+      if (bd.model === k) o.selected = true;
+      modelSel.append(o);
+    }
+    modelSel.onchange = () => {
+      if (modelSel.value) bd.model = modelSel.value; else delete bd.model;
+      refresh();
+    };
+    box.append(field('model', modelSel));
+
+    // --- Preview ---
+    const rec = bd.model && MODELS.get(bd.model);
+    const preview = document.createElement('div');
+    preview.className = 'preview';
+
+    if (rec && rec.thumb) {
+      const img = document.createElement('img');
+      img.src = rec.thumb;
+      preview.append(img);
+      const fp = buildingFootprint(bd);
+      const cap = document.createElement('div');
+      cap.className = 'preview-cap';
+      cap.textContent =
+        `${fp.w.toFixed(1)} x ${fp.d.toFixed(1)} units on the ground`;
+      preview.append(cap);
+    } else if (!modelsReady) {
+      preview.innerHTML = '<div class="preview-cap">Loading models…</div>';
+    } else if (bd.model) {
+      preview.innerHTML =
+        '<div class="preview-cap">That .glb isn\'t in public/models/ yet</div>';
+    } else {
+      preview.innerHTML =
+        '<div class="preview-cap">No model picked — the game will choose one at random, so the footprint shown here is only the width x depth box.</div>';
+    }
+    box.append(preview);
+
+    for (const key of ['x', 'z', 'width', 'depth', 'floors', 'rotation']) {
+      // With a model chosen, the game scales the longest side to `width`
+      // and the other side follows - so `depth` has no effect
+      if (key === 'depth' && bd.model && MODELS.has(bd.model)) continue;
+
+      const inp = Object.assign(document.createElement('input'),
+        { type: 'number', value: bd[key] ?? 0, step: key === 'rotation' ? 15 : 1 });
+      inp.onchange = () => { bd[key] = parseFloat(inp.value) || 0; refresh(); };
+      box.append(field(key === 'width' && bd.model ? 'size' : key, inp));
+    }
+
+    const dup = document.createElement('button');
+    dup.textContent = 'Duplicate';
+    dup.style.cssText = 'width:100%;margin-top:8px';
+    dup.onclick = () => {
+      const copy = { ...bd, x: bd.x + (bd.width || 6) + 2 };
+      sel.island.buildings.push(copy);
+      selBuilding = { island: sel.island, index: sel.island.buildings.length - 1 };
+      sel = { kind: 'building', island: sel.island, index: selBuilding.index };
+      refresh();
+    };
+    box.append(dup);
+
+    const rowBtn = document.createElement('button');
+    rowBtn.textContent = 'Duplicate as a row of 4';
+    rowBtn.style.cssText = 'width:100%;margin-top:6px';
+    rowBtn.onclick = () => {
+      const a = ((bd.rotation || 0) * Math.PI) / 180;
+      // Step sideways relative to the building's own facing
+      const stepX = Math.cos(a) * ((bd.width || 6) + 2);
+      const stepZ = -Math.sin(a) * ((bd.width || 6) + 2);
+      for (let k = 1; k <= 3; k++) {
+        sel.island.buildings.push({ ...bd, x: num(bd.x + stepX * k), z: num(bd.z + stepZ * k) });
+      }
+      refresh();
+    };
+    box.append(rowBtn);
+
+    const del = document.createElement('button');
+    del.textContent = 'Delete building'; del.className = 'danger';
+    del.style.cssText = 'width:100%;margin-top:10px';
+    del.onclick = () => {
+      sel.island.buildings.splice(sel.index, 1);
+      selBuilding = null; sel = null; refresh();
+    };
+    box.append(del);
+
+  } else if (sel.kind === 'road') {
+    const rd = sel.island.roads[sel.index];
+    box.insertAdjacentHTML('beforeend',
+      `<p style="color:var(--muted);font-size:12px;margin:0 0 8px">Road on <b>${sel.island.id}</b></p>`);
+    const wi = Object.assign(document.createElement('input'),
+      { type: 'number', value: rd.width ?? 7 });
+    wi.onchange = () => { rd.width = parseFloat(wi.value) || 7; refresh(); };
+    box.append(field('width', wi));
+
+    const del = document.createElement('button');
+    del.textContent = 'Delete road'; del.className = 'danger';
+    del.style.cssText = 'width:100%;margin-top:10px';
+    del.onclick = deleteSelection;
+    box.append(del);
+  }
+}
+
+function renderValidation() {
+  const { problems, warnings } = validate();
+  const box = document.getElementById('validation');
+  box.innerHTML = '';
+  for (const p of problems) box.insertAdjacentHTML('beforeend', `<div class="msg err">${p}</div>`);
+  for (const w of warnings) box.insertAdjacentHTML('beforeend', `<div class="msg warn">${w}</div>`);
+  if (!problems.length && !warnings.length) {
+    box.innerHTML = `<div class="msg ok">Looks good — ${map.islands.length} islands, ${map.bridges.length} bridges.</div>`;
+  }
+}
+
+// ===========================================================================
+// Export / import
+// ===========================================================================
+function generate() {
+  const lines = [];
+
+  lines.push('/**');
+  lines.push(' * ============================================================================');
+  lines.push(' * MAP DATA  -  generated by the map editor');
+  lines.push(' * ============================================================================');
+  lines.push(' * Drop this file into src/world/ , replacing the existing mapData.js.');
+  lines.push(' * Everything else (bridge maths, roads, validation) lives in');
+  lines.push(' * islandLayout.js and does not need changing.');
+  lines.push(' *');
+  lines.push(' * To keep editing later: paste this whole file back into the editor\'s');
+  lines.push(' * Import box.');
+  lines.push(' * ============================================================================');
+  lines.push(' */');
+  lines.push('');
+  lines.push('export const ISLANDS = [');
+
+  map.islands.forEach((i, idx) => {
+    const parts = [
+      `id: '${i.id}'`,
+      `x: ${num(i.x)}`, `z: ${num(i.z)}`,
+      `radius: ${num(i.radius)}`,
+      `theme: '${i.theme}'`,
+      `accent: 0x${i.accent.toString(16).padStart(6, '0')}`,
+      `name: '${(i.name || '').replace(/'/g, "\\'")}'`
+    ];
+    if (i.palms !== undefined && i.palms !== 8) parts.push(`palms: ${i.palms}`);
+    if (i.noAutoRoad) parts.push('noAutoRoad: true');
+    if (!i.outline && i.shape && i.shape !== 'circle') {
+      parts.push(`shape: '${i.shape}'`);
+      if (i.shapeSeed && i.shapeSeed !== 1) parts.push(`shapeSeed: ${i.shapeSeed}`);
+    }
+
+    let body = `  {\n    ${parts.join(',\n    ')}`;
+
+    if (i.outline && i.outline.length >= 3) {
+      // Wrap a few points per line so the file stays readable
+      const rows = [];
+      for (let k = 0; k < i.outline.length; k += 4) {
+        rows.push('      ' + i.outline.slice(k, k + 4)
+          .map(p => `{ x: ${num(p.x)}, z: ${num(p.z)} }`).join(', '));
+      }
+      body += `,\n    outline: [\n${rows.join(',\n')}\n    ]`;
+    }
+
+    if ((i.districts || []).length) {
+      const ds = i.districts.map(d => {
+        const p = [`type: '${d.type}'`, `x: ${num(d.x)}`, `z: ${num(d.z)}`, `size: ${num(d.size)}`];
+        if (d.density !== undefined && d.density !== 1) p.push(`density: ${d.density}`);
+        return `      { ${p.join(', ')} }`;
+      }).join(',\n');
+      body += `,\n    districts: [\n${ds}\n    ]`;
+    }
+
+    if ((i.buildings || []).length) {
+      const bs = i.buildings.map(b => {
+        const p = [`x: ${num(b.x)}`, `z: ${num(b.z)}`];
+        if (b.width && b.width !== 6) p.push(`width: ${b.width}`);
+        if (b.depth && b.depth !== 6) p.push(`depth: ${b.depth}`);
+        if (b.floors && b.floors !== 3) p.push(`floors: ${b.floors}`);
+        if (b.rotation) p.push(`rotation: ${b.rotation}`);
+        if (b.model) p.push(`model: '${b.model}'`);
+        return `      { ${p.join(', ')} }`;
+      }).join(',\n');
+      body += `,\n    buildings: [\n${bs}\n    ]`;
+    }
+
+    if ((i.roads || []).length) {
+      const rs = i.roads.map(r => {
+        const pts = roadPoints(r);
+        const coords = pts.map(p => `{ x: ${num(p.x)}, z: ${num(p.z)} }`);
+
+        // Wrap long point lists so the file stays readable
+        let list;
+        if (coords.length <= 3) {
+          list = coords.join(', ');
+        } else {
+          const rows = [];
+          for (let k = 0; k < coords.length; k += 3) {
+            rows.push('          ' + coords.slice(k, k + 3).join(', '));
+          }
+          list = '\n' + rows.join(',\n') + '\n        ';
+        }
+
+        const extra = [];
+        if (r.width && r.width !== 7) extra.push(`, width: ${r.width}`);
+        if (r.closed) extra.push(', closed: true');
+
+        return `      { points: [${list}]${extra.join('')} }`;
+      }).join(',\n');
+      body += `,\n    roads: [\n${rs}\n    ]`;
+    }
+
+    body += '\n  }' + (idx < map.islands.length - 1 ? ',' : '');
+    lines.push(body);
+  });
+
+  lines.push(']', '', 'export const BRIDGES = [');
+  map.bridges.forEach((b, idx) => {
+    const p = [`from: '${b.from}'`, `to: '${b.to}'`];
+    if (b.width) p.push(`width: ${b.width}`);
+    if (b.railings === false) p.push('railings: false');
+    lines.push(`  { ${p.join(', ')} }` + (idx < map.bridges.length - 1 ? ',' : ''));
+  });
+  lines.push(']');
+
+  return lines.join('\n');
+}
+
+function renderExport() { document.getElementById('out').value = generate(); }
+
+document.getElementById('copy').onclick = async () => {
+  const btn = document.getElementById('copy');
+  try {
+    await navigator.clipboard.writeText(generate());
+    btn.textContent = 'Copied';
+  } catch {
+    document.getElementById('out').select();
+    btn.textContent = 'Press Cmd+C';
+  }
+  setTimeout(() => (btn.textContent = 'Copy'), 1600);
+};
+
+document.getElementById('download').onclick = () => {
+  const blob = new Blob([generate() + '\n'], { type: 'text/javascript' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'mapData.js';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+document.getElementById('load').onclick = () => {
+  const text = document.getElementById('in').value.trim();
+  const msg = document.getElementById('importmsg');
+  msg.innerHTML = '';
+  if (!text) return;
+
+  try {
+    // Strip the export keywords, then evaluate the two array literals.
+    // This is local-only tooling operating on your own file, so this is safe.
+    const cleaned = text.replace(/export\s+const\s+/g, 'const ');
+    const fn = new Function(cleaned + '\n;return { ISLANDS, BRIDGES };');
+    const result = fn();
+
+    if (!Array.isArray(result.ISLANDS) || !Array.isArray(result.BRIDGES)) {
+      throw new Error('Need both ISLANDS and BRIDGES arrays');
+    }
+
+    map = {
+      islands: result.ISLANDS.map(i => ({
+        id: i.id, x: i.x, z: i.z, radius: i.radius,
+        theme: i.theme || 'town',
+        accent: typeof i.accent === 'number' ? i.accent : 0x4facfe,
+        name: i.name || '',
+        palms: i.palms !== undefined ? i.palms : 8,
+        noAutoRoad: !!i.noAutoRoad,
+        shape: i.shape || 'circle',
+        shapeSeed: i.shapeSeed || 1,
+        ...(Array.isArray(i.outline) && i.outline.length >= 3
+          ? { outline: i.outline.map(p => ({ x: p.x, z: p.z })) } : {}),
+        districts: (i.districts || []).map(d => ({ ...d })),
+        buildings: (i.buildings || []).map(b => ({
+          x: b.x, z: b.z,
+          width: b.width ?? 6, depth: b.depth ?? 6,
+          floors: b.floors ?? 3, rotation: b.rotation ?? 0,
+          ...(b.model ? { model: b.model } : {})
+        })),
+        roads: (i.roads || []).map(r => (
+          Array.isArray(r.points)
+            ? { points: r.points.map(p => ({ x: p.x, z: p.z })),
+                width: r.width || 7, ...(r.closed ? { closed: true } : {}) }
+            : { points: [{ ...r.from }, { ...r.to }], width: r.width || 7 }
+        ))
+      })),
+      bridges: result.BRIDGES.map(b => ({ ...b }))
+    };
+    sel = null;
+    fitView(); refresh();
+    msg.innerHTML = `<div class="msg ok">Loaded ${map.islands.length} islands.</div>`;
+  } catch (err) {
+    msg.innerHTML = `<div class="msg err">Couldn't read that: ${err.message}</div>`;
+  }
+};
+
+document.getElementById('reset').onclick = () => {
+  if (!confirm('Discard your changes and reload the default map?')) return;
+  map = structuredClone(DEFAULT_MAP);
+  sel = null;
+  fitView(); refresh();
+};
+
+// ===========================================================================
+// Go
+// ===========================================================================
+resize();
+fitView();
+refresh();
+
+// Load the real models in the background; the editor is usable meanwhile
+loadModelLibrary();
+</script>
+</body>
+</html>
