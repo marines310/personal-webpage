@@ -29,9 +29,9 @@ export const ISLANDS = [
   },
   {
     id: 'about',
-    x: 0,
-    z: 62,
-    radius: 20,
+    x: 3.3,
+    z: 70.3,
+    radius: 40,
     theme: 'town',
     accent: 0x4facfe,
     name: 'ABOUT',
@@ -40,52 +40,48 @@ export const ISLANDS = [
   },
   {
     id: 'projects',
-    x: 59,
-    z: 19.2,
-    radius: 22,
+    x: 96,
+    z: 11.8,
+    radius: 39,
     theme: 'town',
     accent: 0x00f2fe,
     name: 'EXPERIENCE',
-    shape: 'wide',
+    shape: 'blob',
     shapeSeed: 9
   },
   {
     id: 'skills',
-    x: 36.4,
-    z: -50.2,
-    radius: 20,
+    x: 62.9,
+    z: -62.7,
+    radius: 36,
     theme: 'jungle',
     accent: 0xa855f7,
     name: 'SKILLS',
     palms: 10,
-    shape: 'crescent',
+    shape: 'blob',
     shapeSeed: 3
   },
   {
     id: 'blog',
-    x: -36.4,
-    z: -50.2,
-    radius: 18,
+    x: -48.9,
+    z: -63.7,
+    radius: 42,
     theme: 'jungle',
     accent: 0xfbbf24,
     name: 'BLOG',
     palms: 10,
     shape: 'blob',
-    shapeSeed: 21,
-    buildings: [
-      { x: -3.4, z: 9.6, rotation: 110, model: 'building_a' },
-      { x: -5.5, z: 3.7, rotation: 109, model: 'building_b' }
-    ]
+    shapeSeed: 21
   },
   {
     id: 'contact',
-    x: -59,
-    z: 19.2,
-    radius: 19,
+    x: -85.3,
+    z: 25.1,
+    radius: 38,
     theme: 'mixed',
     accent: 0xf472b6,
     name: 'CONTACT',
-    shape: 'long',
+    shape: 'blob',
     shapeSeed: 6
   }
 ]
