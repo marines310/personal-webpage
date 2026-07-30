@@ -516,7 +516,7 @@ export class Environment {
 
     // --- Moon (opposite the sun) ---
     const moonUp = Math.max(0, -this.sunDirection.y)
-    this.moon.intensity = moonUp * 0.55 * dim
+    this.moon.intensity = moonUp * 0.85 * dim
     this.moon.position.copy(focus).addScaledVector(this.sunDirection, -150)
     this.moonDisc.position.copy(focus).addScaledVector(this.sunDirection, -430)
     this.moonDisc.visible = moonUp > 0.05
@@ -525,11 +525,13 @@ export class Environment {
     // --- Ambient / hemisphere ---
     const flashBoost = this.flash * 1.6
 
-    this.hemi.intensity = (0.15 + this.dayFactor * 0.75) * dim + flashBoost
+    // Night floor lifted from 0.15: the towns were unreadable after dark,
+    // and emissive materials glow without lighting anything around them.
+    this.hemi.intensity = (0.30 + this.dayFactor * 0.60) * dim + flashBoost
     this.hemi.color.copy(this._bottom)
     this.hemi.groundColor.setHex(this.nightFactor > 0.5 ? 0x1a2033 : 0x6b7a4a)
 
-    this.ambient.intensity = (0.16 + this.dayFactor * 0.34) * dim + flashBoost * 0.6
+    this.ambient.intensity = (0.30 + this.dayFactor * 0.26) * dim + flashBoost * 0.6
     this.ambient.color.copy(this._top).lerp(new THREE.Color(0xffffff), 0.5)
 
     // Stars fade in after dusk, and hide behind cloud cover

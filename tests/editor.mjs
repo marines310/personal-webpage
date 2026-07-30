@@ -87,6 +87,8 @@ export function loadEditor() {
     getIslandJunctions: LAYOUT.getIslandJunctions,
     getStoredRing: LAYOUT.getStoredRing,
     buildNetwork: LAYOUT.buildNetwork,
+    getTownGrid: LAYOUT.getTownGrid,
+    getTownPlots: LAYOUT.getTownPlots,
     DEFAULT_ROAD_CURVE: LAYOUT.DEFAULT_ROAD_CURVE,
     ROAD_SMOOTHNESS: LAYOUT.ROAD_SMOOTHNESS,
     MAP_ISLANDS: MAPDATA.ISLANDS,

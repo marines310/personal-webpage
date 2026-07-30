@@ -13,10 +13,15 @@ import {
   islandOutline,
   islandReach,
   inlandDistance,
-  getIslandJunctions
+  getIslandJunctions,
+  getTownPlots,
+  PAVEMENT_WIDTH,
+  PLOT_GAP,
+  getWalkways,
+  getTrafficSignals
 } from './islandLayout.js'
-import { insetPolygon, polygonCentroid, rayDistanceToBoundary } from './shapes.js'
-import { pathTangents, ribbonQuads } from './curves.js'
+import { insetPolygon, insetPolygonRadial, polygonCentroid, rayDistanceToBoundary } from './shapes.js'
+import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
 
 /**
  * World - builds the geography described by islandLayout.js.
@@ -35,6 +40,15 @@ import { pathTangents, ribbonQuads } from './curves.js'
 // ---------------------------------------------------------------
 // PALETTE - change these to restyle the whole world at once
 // ---------------------------------------------------------------
+/** How long a full two-way traffic light cycle takes, in seconds. */
+export const TRAFFIC_CYCLE = 18
+
+/** How far apart street lamps run along a road. */
+export const LAMP_SPACING = 26
+
+/** Amber at the end of each green, in seconds. */
+export const TRAFFIC_AMBER = 2.5
+
 export const PALETTE = {
   // Sea and shore
   seaDeep: 0x0e5a7a,
@@ -88,6 +102,8 @@ export class World {
 
     this.nightEmissives = []  // materials that light up after dark
     this.swayables = []       // foliage that moves in the wind
+    this.trafficLights = []   // signal heads, grouped by junction
+    this.lightPools = []      // the patch of lit ground under a lamp
     this.elapsed = 0
 
     // Deterministic pseudo-random so the world looks the same each visit
@@ -114,6 +130,51 @@ export class World {
 
   pick(arr) {
     return arr[Math.floor(this.rand() * arr.length)]
+  }
+
+  /**
+   * A soft round patch of light on the ground.
+   *
+   * An emissive material in Three.js glows but doesn't illuminate
+   * anything - so a street lamp looked lit while the road under it stayed
+   * black. Real lights would fix that, but a lamp on every third plot is
+   * dozens of them and the renderer won't take it. This fakes the pool of
+   * light instead: one shared radial-gradient texture, added rather than
+   * blended, fading in as night falls.
+   */
+  addLightPool(x, z, radius, strength = 1) {
+    if (!this._glowTexture) {
+      const size = 128
+      const canvas = document.createElement('canvas')
+      canvas.width = canvas.height = size
+      const ctx = canvas.getContext('2d')
+      const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
+      grad.addColorStop(0, 'rgba(255,240,205,1)')
+      grad.addColorStop(0.45, 'rgba(255,235,190,0.42)')
+      grad.addColorStop(1, 'rgba(255,230,180,0)')
+      ctx.fillStyle = grad
+      ctx.fillRect(0, 0, size, size)
+
+      this._glowTexture = new THREE.CanvasTexture(canvas)
+    }
+
+    const pool = new THREE.Mesh(
+      new THREE.PlaneGeometry(radius * 2, radius * 2),
+      new THREE.MeshBasicMaterial({
+        map: this._glowTexture,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      })
+    )
+    pool.rotation.x = -Math.PI / 2
+    // Above the road surface, the pavements and the crossings, so it
+    // lights all of them rather than being hidden under one.
+    pool.position.set(x, 0.15, z)
+    this.game.add(pool)
+    this.lightPools.push({ mesh: pool, strength })
+    return pool
   }
 
   registerNightLight(material, strength = 1) {
@@ -189,9 +250,32 @@ export class World {
       // here though - the automatic bridge approaches are drawn as part
       // of one continuous road per bridge, so there's no seam.
       const roads = getIslandRoads(island)
+
+      // Junctions are needed before the roads are drawn, so a road can
+      // stop painting its centre line where it crosses another one.
+      const junctions = getIslandJunctions(island).map(j => ({
+        x: island.x + j.x, z: island.z + j.z, radius: j.radius
+      }))
+      this.noMarkings = junctions
+
       for (const road of roads) {
         if (!road.auto) this.buildRoad(island, road)
       }
+
+      // Pavements go down before the junction patches, so the asphalt
+      // covers their ends where they run into a crossroads.
+      for (const road of roads) {
+        if (road.street || road.ring) this.buildPavements(island, road, roads)
+      }
+
+      // Footpaths out to anything a road doesn't pass
+      for (const walk of getWalkways(island)) {
+        this.buildWalkway(island, walk)
+      }
+
+      // Light every road on every island. This used to hang off the town
+      // plot layout, so the hub - which has no town - had no lamps at all.
+      this.lightRoads(island, roads)
 
       // Patch every place two roads meet. A road is a ribbon with square
       // ends, so a spur running into the ring leaves two bare corners
@@ -203,6 +287,16 @@ export class World {
           island.z + junction.z,
           junction.radius
         )
+
+      }
+
+      // Signals are decided in the layout, where junctions that a driver
+      // sees as one are merged and each approach counted once. Crossings
+      // follow the same approaches, so they can't land on an arm that
+      // isn't there.
+      for (const signal of getTrafficSignals(island)) {
+        this.buildTrafficSignal(island, signal)
+        this.buildCrossings(island, signal, roads)
       }
 
       this.decorateIsland(island, roads)
@@ -234,7 +328,12 @@ export class World {
 
     // --- Grass cap, inset so the sand reads as a beach ---
     const beachWidth = Math.max(2, islandReach(island) * 0.13)
-    const grassRing = insetPolygon(outline, beachWidth)
+
+    // Radial, not the bisector inset. Pulling a wobbly coastline in by 16
+    // units with the bisector method makes the polygon cross itself, and
+    // the triangulation then leaves a star-shaped hole with the sand
+    // showing through - which is what the pale patch on About was.
+    const grassRing = insetPolygonRadial(outline, beachWidth)
 
     if (grassRing.length >= 3) {
       const grass = this.polygonMesh(grassRing, cx, 0.03, cz, {
@@ -435,6 +534,326 @@ export class World {
     this.game.add(patch)
   }
 
+  /**
+   * A raised kerb and pavement down both sides of a street.
+   *
+   * Built as two more ribbons offset from the road's own centre line, so
+   * they follow every bend it takes without any extra maths. Slightly
+   * proud of the road so the kerb catches the light.
+   */
+  buildPavements(island, road, allRoads = []) {
+    const tangents = pathTangents(road.points)
+    const offset = road.width / 2 + PAVEMENT_WIDTH / 2
+
+    for (const side of [1, -1]) {
+      const path = road.points.map((p, i) => ({
+        x: island.x + p.x - tangents[i].z * offset * side,
+        z: island.z + p.z + tangents[i].x * offset * side
+      }))
+
+      const quads = ribbonQuads(path, PAVEMENT_WIDTH)
+      if (!quads.length) continue
+
+      const positions = []
+      for (const { l0, r0, l1, r1 } of quads) {
+        // Pavements stop at a junction. They sit higher than the road
+        // surface so the kerb catches the light, which meant they were
+        // drawing OVER the junction patch - a pale strip straight across
+        // the middle of every intersection. A real crossing is bare road.
+        const mx = (l0.x + r1.x) / 2
+        const mz = (l0.z + r1.z) / 2
+        // A pavement stops where it meets another road's asphalt.
+        //
+        // Not "inside a circle around the junction": the pavement's outer
+        // edge sits further from the road centre than that circle's radius,
+        // so its outer half escaped and carried straight on across the
+        // intersection - two of them crossing made a pale X over the
+        // junction. Testing against the other road's actual surface is
+        // exact, and stops the kerb precisely where it should.
+        let onAnotherRoad = false
+        for (const other of allRoads) {
+          if (other === road) continue
+          if (!other.street && !other.ring && !other.auto) continue
+          const d = distanceToPath(other.points, mx - island.x, mz - island.z)
+          if (d < other.width / 2 + 0.2) { onAnotherRoad = true; break }
+        }
+        if (onAnotherRoad) continue
+
+        // Drop anything that has genuinely folded onto the carriageway.
+        //
+        // Measured at the quad's CENTRE, which should sit a full
+        // half-pavement clear of the kerb. Testing the corners instead was
+        // a mistake: the inner corner sits exactly ON the kerb line by
+        // construction, so "closer than width/2" was true everywhere and
+        // deleted every pavement in the world.
+        //
+        // On the current map this never fires - the rings aren't tight
+        // enough to fold a 2.4-wide offset. It's kept as insurance for
+        // tighter ones, so don't assume it's doing any work today.
+        const clearOfKerb = distanceToPath(
+          road.points, mx - island.x, mz - island.z
+        ) - road.width / 2
+        if (clearOfKerb < PAVEMENT_WIDTH * 0.2) continue
+
+        positions.push(
+          l0.x, 0.12, l0.z, r0.x, 0.12, r0.z, l1.x, 0.12, l1.z,
+          l1.x, 0.12, l1.z, r0.x, 0.12, r0.z, r1.x, 0.12, r1.z
+        )
+      }
+      if (!positions.length) continue
+
+      const geometry = new THREE.BufferGeometry()
+      geometry.setAttribute('position',
+        new THREE.BufferAttribute(new Float32Array(positions), 3))
+      const normals = new Float32Array(positions.length)
+      for (let i = 1; i < normals.length; i += 3) normals[i] = 1
+      geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+
+      const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+        color: PALETTE.concrete, roughness: 0.95, side: THREE.DoubleSide
+      }))
+      mesh.receiveShadow = true
+      this.game.add(mesh)
+    }
+  }
+
+  /**
+   * Traffic lights on the corners of a proper crossroads, and they work.
+   *
+   * Arms are sorted into two groups by which way they run, so opposite
+   * sides of the junction show the same aspect and the crossing flows are
+   * complementary - the thing that makes lights read as controlling
+   * traffic rather than as decoration.
+   *
+   * Only where three or more arms meet. A bend in the ring doesn't need
+   * signalling.
+   */
+  buildTrafficSignal(island, signal) {
+    const cx = island.x + signal.x
+    const cz = island.z + signal.z
+
+    // Two phases: arms roughly in line with the first one share a phase,
+    // everything else takes the other. That's what makes the crossing
+    // flows complementary rather than decorative.
+    const base = signal.arms[0]
+    const signals = []
+
+    for (const arm of signal.arms) {
+      const group = Math.abs(base.x * arm.x + base.z * arm.z) > 0.7 ? 0 : 1
+
+      // The layout worked out a spot clear of every carriageway; using a
+      // fixed offset here put half the poles in the road.
+      signals.push({
+        group,
+        lamps: this.addTrafficLight(
+          island.x + arm.pole.x,
+          island.z + arm.pole.z,
+          Math.atan2(-arm.x, -arm.z)
+        )
+      })
+    }
+
+    this.trafficLights.push({
+      signals,
+      offset: this.rand() * TRAFFIC_CYCLE
+    })
+  }
+
+  /**
+   * One signal head on a pole. Returns the three lamp materials so the
+   * cycle can switch them.
+   */
+  addTrafficLight(x, z, heading) {
+    const group = new THREE.Group()
+
+    const poleMat = new THREE.MeshStandardMaterial({
+      color: 0x2f353d, roughness: 0.7, metalness: 0.4, flatShading: true
+    })
+
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, 3.4, 7), poleMat)
+    pole.position.y = 1.7
+    pole.castShadow = true
+    group.add(pole)
+
+    const box = new THREE.Mesh(new THREE.BoxGeometry(0.52, 1.4, 0.34), poleMat)
+    box.position.y = 3.8
+    box.castShadow = true
+    group.add(box)
+
+    const lamps = {}
+    const colours = [['red', 0xff3b30, 0.42], ['amber', 0xffb020, 0], ['green', 0x34d058, -0.42]]
+
+    for (const [name, colour, offsetY] of colours) {
+      const mat = new THREE.MeshStandardMaterial({
+        color: colour,
+        emissive: new THREE.Color(colour),
+        emissiveIntensity: 0
+      })
+      const lens = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 8), mat)
+      lens.position.set(0, 3.8 + offsetY, 0.2)
+      group.add(lens)
+      lamps[name] = mat
+    }
+
+    group.position.set(x, 0, z)
+    group.rotation.y = heading
+    this.game.add(group)
+
+    return lamps
+  }
+
+  /**
+   * Run the lights. Called every frame from update().
+   *
+   * One group goes green while the other is red, with an amber between -
+   * so the two directions never both show green, which is the only thing
+   * that would make them obviously fake.
+   */
+  updateTrafficLights() {
+    for (const junction of this.trafficLights) {
+      const t = (this.elapsed + junction.offset) % TRAFFIC_CYCLE
+
+      // First half belongs to group 0, second half to group 1
+      const half = TRAFFIC_CYCLE / 2
+      const firstGroupsTurn = t < half
+      const intoPhase = firstGroupsTurn ? t : t - half
+      const amber = intoPhase > half - TRAFFIC_AMBER
+
+      for (const signal of junction.signals) {
+        const mine = (signal.group === 0) === firstGroupsTurn
+        const state = !mine ? 'red' : amber ? 'amber' : 'green'
+
+        for (const name of ['red', 'amber', 'green']) {
+          signal.lamps[name].emissiveIntensity = name === state ? 1.6 : 0
+        }
+      }
+    }
+  }
+
+  /**
+   * Zebra stripes on every arm of a junction.
+   *
+   * Laid across the road just outside the junction patch, which is where
+   * a crossing goes in reality - you cross before the cars turn, not in
+   * the middle of them.
+   */
+  /** Which way a path runs at the point nearest (x, z). Island-local. */
+  tangentOfPath(points, x, z) {
+    let best = 0
+    let bestDist = Infinity
+    for (let i = 0; i < points.length; i++) {
+      const d = Math.hypot(points[i].x - x, points[i].z - z)
+      if (d < bestDist) { bestDist = d; best = i }
+    }
+    const a = points[Math.max(0, best - 1)]
+    const b = points[Math.min(points.length - 1, best + 1)]
+    const dx = b.x - a.x
+    const dz = b.z - a.z
+    const len = Math.hypot(dx, dz)
+    return len < 1e-6 ? null : { x: dx / len, z: dz / len }
+  }
+
+  buildCrossings(island, signal, roads) {
+    const stripeMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.roadLine, roughness: 0.8
+    })
+
+    for (const arm of signal.arms) {
+      // Just outside the junction, on the approach itself
+      const along = signal.radius + 2.6
+      const lx = signal.x + arm.x * along
+      const lz = signal.z + arm.z * along
+
+      // Which road is this, and how wide? A crossing has to span the
+      // carriageway it's painted on, not a fixed guess.
+      let road = null
+      let best = Infinity
+      for (const r of roads) {
+        if (!r.street && !r.ring && !r.auto) continue
+        const d = distanceToPath(r.points, lx, lz) - r.width / 2
+        if (d < best) { best = d; road = r }
+      }
+
+      // Nothing here. This is what put zebra stripes on the sand: the old
+      // version laid them on both sides of every arm, so a road that ENDS
+      // at the junction got a crossing painted out into the grass beyond.
+      if (!road || best > 0.5) continue
+
+      // Square the crossing to the ROAD IT LANDS ON, not to the arm.
+      //
+      // Approaches within 40 degrees of each other get merged into one, so
+      // the surviving arm can point up to 40 degrees away from the road the
+      // crossing is actually painted on - which is why some of them sat
+      // diagonally across the carriageway.
+      const tan = this.tangentOfPath(road.points, lx, lz)
+      if (!tan) continue
+
+      // A zebra crossing is bars running ALONG the direction of travel,
+      // set side by side across the width of the road. Look at any real
+      // one: long rectangles pointing down the road, a row of them.
+      //
+      // I briefly built them the other way - short bars spanning the
+      // carriageway, stepping along it - reasoning that you'd cross one
+      // after another driving over. That's wrong; they're paint, you feel
+      // nothing, and it looked like a diagonal smear.
+      const stripes = 6
+      const barLength = 2.8
+      const barWidth = 0.62
+
+      // Spread across roughly 84% of the carriageway, leaving a margin at
+      // each kerb the way a real crossing does.
+      const span = road.width * 0.84
+      const step = span / (stripes - 1)
+
+      for (let k = 0; k < stripes; k++) {
+        const across = -span / 2 + k * step
+        const ox = -tan.z * across
+        const oz = tan.x * across
+
+        // Long in local Z, which rotation.y aligns with the road
+        const stripe = new THREE.Mesh(
+          new THREE.BoxGeometry(barWidth, 0.02, barLength), stripeMat
+        )
+        stripe.position.set(island.x + lx + ox, 0.08, island.z + lz + oz)
+        stripe.rotation.y = Math.atan2(tan.x, tan.z)
+        this.game.add(stripe)
+      }
+    }
+  }
+
+  /**
+   * A narrow paved path, for reaching a building no road goes past.
+   *
+   * Same ribbon treatment as a pavement but thinner and a shade darker,
+   * so it reads as a footpath rather than a road you could drive down.
+   */
+  buildWalkway(island, walk) {
+    const path = walk.points.map(p => ({ x: island.x + p.x, z: island.z + p.z }))
+    const quads = ribbonQuads(path, walk.width)
+    if (!quads.length) return
+
+    const positions = []
+    for (const { l0, r0, l1, r1 } of quads) {
+      positions.push(
+        l0.x, 0.1, l0.z, r0.x, 0.1, r0.z, l1.x, 0.1, l1.z,
+        l1.x, 0.1, l1.z, r0.x, 0.1, r0.z, r1.x, 0.1, r1.z
+      )
+    }
+
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position',
+      new THREE.BufferAttribute(new Float32Array(positions), 3))
+    const normals = new Float32Array(positions.length)
+    for (let i = 1; i < normals.length; i += 3) normals[i] = 1
+    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+      color: PALETTE.sandWet, roughness: 0.98, side: THREE.DoubleSide
+    }))
+    mesh.receiveShadow = true
+    this.game.add(mesh)
+  }
+
   buildRoadSurface(path, width, dashOffset = 0, y = 0.06) {
     if (!path || path.length < 2) return
 
@@ -476,6 +895,21 @@ export class World {
     this.addRoadMarkings(path, pathTangents(path), dashOffset, y)
   }
 
+  /**
+   * Is this world point inside a junction?
+   *
+   * `margin` differs by what's asking. A centre-line dash needs to stop
+   * well clear, or it sits half on the bare asphalt. A pavement should run
+   * right up to the junction, or the kerb disappears for metres either
+   * side of every crossing.
+   */
+  insideJunction(x, z, margin = 2.2) {
+    for (const j of this.noMarkings || []) {
+      if (Math.hypot(x - j.x, z - j.z) < j.radius + margin) return true
+    }
+    return false
+  }
+
   /** Dashed centre line that follows the bend of the road. */
   addRoadMarkings(path, tangents, dashOffset = 0, roadY = 0.06) {
     const dashMat = new THREE.MeshStandardMaterial({
@@ -506,6 +940,12 @@ export class World {
         const z = a.z + (b.z - a.z) * t
 
         const tan = tangents[i]
+        // No centre line through a junction. Real intersections are bare
+        // asphalt, and painting one road's dashes across another's surface
+        // is exactly what made them look like two overlapping textures
+        // rather than one merged crossing.
+        if (this.insideJunction(x, z)) { nextDash += stride; continue }
+
         const dash = new THREE.Mesh(
           new THREE.PlaneGeometry(0.22, dashLength), dashMat
         )
@@ -555,6 +995,17 @@ export class World {
    * single unbroken surface.
    */
   createConnectingRoads() {
+    // Every junction in the world, so a bridge road stops painting its
+    // centre line where it runs into an island's ring.
+    this.noMarkings = []
+    for (const island of ISLANDS) {
+      for (const j of getIslandJunctions(island)) {
+        this.noMarkings.push({
+          x: island.x + j.x, z: island.z + j.z, radius: j.radius
+        })
+      }
+    }
+
     for (const road of getBridgeRoadPaths()) {
       this.buildRoadSurface(road.points, road.width)
     }
@@ -600,7 +1051,13 @@ export class World {
         post.castShadow = true
         this.game.add(post)
 
-        if (side === 1 && i % 4 === 2) this.addStreetlight(px, pz)
+        // Aimed at the deck's centre line rather than out to sea
+        if (side === 1 && i % 4 === 2) {
+          this.addStreetlight(px, pz, {
+            x: bridge.x + sin * bridge.length * t,
+            z: bridge.z + cos * bridge.length * t
+          })
+        }
       }
     }
   }
@@ -621,11 +1078,29 @@ export class World {
       this.buildPlacedBuilding(island, building)
     }
 
+    // Then the town: rows of buildings squared up to the streets.
+    //
+    // Anything you placed by hand wins, because these are generated and
+    // yours aren't - a plot that would land on one of your buildings is
+    // dropped rather than built through it.
+    const plots = getTownPlots(island)
+    for (const plot of plots) {
+      if (!this.clearOfPlaced(plot.x, plot.z)) continue
+      this.buildPlacedBuilding(island, {
+        ...plot,
+        floors: 2 + Math.floor(this.rand() * 4)
+      })
+    }
+
     for (const district of island.districts || []) {
       this.buildDistrict(island, district, roads)
     }
 
-    this.scatterTheme(island, roads)
+    // Random scatter is what a town looked like before it had streets.
+    // Running it as well would drop buildings at odd angles between the
+    // rows and undo the tidiness.
+    if (!plots.length) this.scatterTheme(island, roads)
+    else this.dressStreets(island, roads, plots)
 
     const palmCount = island.palms !== undefined ? island.palms : 8
     if (palmCount > 0) this.ringOfPalms(island, palmCount, roads)
@@ -667,6 +1142,286 @@ export class World {
       model: def.model,
       colour: def.colour
     })
+  }
+
+  /**
+   * Everything that makes a street look inhabited rather than laid out:
+   * shopfronts, street trees, benches, bins, planters and parked cars.
+   *
+   * All of it hangs off the plot layout rather than being scattered.
+   * A bench belongs on a pavement facing the road, a parked car belongs
+   * at the kerb pointing along it, a tree belongs in the gap between two
+   * buildings - none of which a random scatter can know.
+   */
+  dressStreets(island, roads, plots) {
+    const streets = roads.filter(r => r.street || r.ring)
+
+    for (let i = 0; i < plots.length; i++) {
+      const plot = plots[i]
+      const road = streets[plot.roadIndex]
+      if (!road) continue
+
+      const facing = (plot.rotation * Math.PI) / 180
+      // Unit vector from the building toward its road
+      const fx = Math.sin(facing)
+      const fz = Math.cos(facing)
+      // And along the kerb
+      const ax = fz
+      const az = -fx
+
+      const wx = island.x + plot.x
+      const wz = island.z + plot.z
+
+      // Ground floor gets a shopfront on the busier streets. Not every
+      // building - a street of nothing but shops reads as a film set.
+      if (this.rand() < 0.45) {
+        this.addShopfront(wx + fx * (plot.depth / 2), wz + fz * (plot.depth / 2), facing, plot.width)
+      }
+
+      // Kerbside dressing sits on the pavement between wall and road
+      const kerb = plot.depth / 2 + PAVEMENT_WIDTH * 0.55
+      const kx = wx + fx * kerb
+      const kz = wz + fz * kerb
+      const roll = this.rand()
+
+      if (roll < 0.22) {
+        this.addBench(kx, kz, facing)
+      } else if (roll < 0.34) {
+        this.addBin(kx + ax * plot.width * 0.3, kz + az * plot.width * 0.3)
+      } else if (roll < 0.52) {
+        this.addPlanter(kx + ax * plot.width * 0.3, kz + az * plot.width * 0.3)
+      }
+
+      // A street tree in the gap between this plot and the next
+      if (this.rand() < 0.5) {
+        const gapX = wx + ax * (plot.width / 2 + PLOT_GAP / 2) + fx * (kerb - 0.4)
+        const gapZ = wz + az * (plot.width / 2 + PLOT_GAP / 2) + fz * (kerb - 0.4)
+        this.addStreetTree(gapX, gapZ)
+      }
+
+      // Parked car at the kerb, nose along the road
+      if (this.rand() < 0.3) {
+        const parkX = wx + fx * (plot.depth / 2 + PAVEMENT_WIDTH + 1.6)
+        const parkZ = wz + fz * (plot.depth / 2 + PAVEMENT_WIDTH + 1.6)
+        this.addParkedCar(parkX, parkZ, Math.atan2(ax, az))
+      }
+    }
+  }
+
+  /** A glazed ground floor with an awning, flush to the building's front. */
+  addShopfront(x, z, facing, width) {
+    const group = new THREE.Group()
+
+    const glass = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.8, 2.6, 0.25),
+      this.registerNightLight(new THREE.MeshStandardMaterial({
+        color: PALETTE.glass, roughness: 0.25, metalness: 0.35,
+        emissive: new THREE.Color(PALETTE.windowLit), emissiveIntensity: 0
+      }), 1.6)
+    )
+    glass.position.y = 1.4
+    group.add(glass)
+
+    const awning = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.85, 0.18, 1.5),
+      new THREE.MeshStandardMaterial({
+        color: this.pick([PALETTE.wallTerracotta, PALETTE.wallTeal, PALETTE.wallCoral]),
+        roughness: 0.85, flatShading: true
+      })
+    )
+    awning.position.set(0, 3.1, 0.75)
+    awning.castShadow = true
+    group.add(awning)
+
+    group.position.set(x, 0, z)
+    group.rotation.y = facing
+    this.game.add(group)
+  }
+
+  /** Slatted bench, back to the building, facing the road. */
+  addBench(x, z, facing) {
+    const group = new THREE.Group()
+    const wood = new THREE.MeshStandardMaterial({
+      color: PALETTE.timber, roughness: 0.9, flatShading: true
+    })
+
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.12, 0.6), wood)
+    seat.position.y = 0.45
+    seat.castShadow = true
+    group.add(seat)
+
+    const back = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.5, 0.12), wood)
+    back.position.set(0, 0.72, -0.24)
+    group.add(back)
+
+    for (const side of [-0.9, 0.9]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.45, 0.5), wood)
+      leg.position.set(side, 0.22, 0)
+      group.add(leg)
+    }
+
+    group.position.set(x, 0, z)
+    group.rotation.y = facing + Math.PI
+    this.game.add(group)
+  }
+
+  addBin(x, z) {
+    const bin = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.32, 0.26, 0.85, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0x5a6470, roughness: 0.85, flatShading: true
+      })
+    )
+    bin.position.set(x, 0.42, z)
+    bin.castShadow = true
+    this.game.add(bin)
+  }
+
+  /** Planter box with something growing out of it. */
+  addPlanter(x, z) {
+    const group = new THREE.Group()
+
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 0.5, 1.2),
+      new THREE.MeshStandardMaterial({
+        color: PALETTE.concrete, roughness: 0.95, flatShading: true
+      })
+    )
+    box.position.y = 0.25
+    box.castShadow = true
+    group.add(box)
+
+    const shrub = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(0.55, 0),
+      new THREE.MeshStandardMaterial({
+        color: PALETTE.bush, roughness: 0.95, flatShading: true
+      })
+    )
+    shrub.position.y = 0.85
+    group.add(shrub)
+    this.swayables.push({ object: shrub, phase: this.rand() * Math.PI * 2, scale: 0.3 })
+
+    group.position.set(x, 0, z)
+    this.game.add(group)
+  }
+
+  /** A narrow street tree - tidier than the palms, which are for beaches. */
+  addStreetTree(x, z) {
+    const model = this.assets && this.assets.get && this.assets.get('tree_a')
+    if (model) {
+      const tree = model.clone()
+      tree.position.set(x, 0, z)
+      tree.rotation.y = this.rand() * Math.PI * 2
+      tree.scale.setScalar(this.randRange(0.8, 1.1))
+      this.game.add(tree)
+      return
+    }
+
+    const group = new THREE.Group()
+
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.22, 2.6, 6),
+      new THREE.MeshStandardMaterial({
+        color: PALETTE.palmTrunk, roughness: 0.95, flatShading: true
+      })
+    )
+    trunk.position.y = 1.3
+    trunk.castShadow = true
+    group.add(trunk)
+
+    const canopy = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(this.randRange(1.1, 1.5), 0),
+      new THREE.MeshStandardMaterial({
+        color: this.rand() < 0.5 ? PALETTE.frond : PALETTE.frondLight,
+        roughness: 0.9, flatShading: true
+      })
+    )
+    canopy.position.y = 3.1
+    canopy.castShadow = true
+    group.add(canopy)
+    this.swayables.push({ object: canopy, phase: this.rand() * Math.PI * 2, scale: 0.4 })
+
+    group.position.set(x, 0, z)
+    this.game.add(group)
+  }
+
+  /** A parked car at the kerb. Uses the car model if one is loaded. */
+  addParkedCar(x, z, heading) {
+    const model = this.assets && this.assets.get && this.assets.get('car')
+    if (model) {
+      const car = model.clone()
+      car.position.set(x, 0, z)
+      car.rotation.y = heading
+      // Repaint it, or the street fills up with copies of the one you drive
+      car.traverse(node => {
+        if (node.isMesh && node.material && node.material.color) {
+          node.material = node.material.clone()
+          node.material.color = new THREE.Color(this.pick([
+            0xd94f4f, 0x4f7fd9, 0xe4c05a, 0xf4eee2, 0x4a4f57, 0x63a06a
+          ]))
+        }
+      })
+      this.game.add(car)
+      return
+    }
+
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(1.7, 0.75, 3.6),
+      new THREE.MeshStandardMaterial({
+        color: this.pick([0xd94f4f, 0x4f7fd9, 0xe4c05a, 0xf4eee2, 0x4a4f57]),
+        roughness: 0.5, metalness: 0.25, flatShading: true
+      })
+    )
+    body.position.set(x, 0.5, z)
+    body.rotation.y = heading
+    body.castShadow = true
+    this.game.add(body)
+  }
+
+  /**
+   * Lamps down both sides of every road on an island, alternating, each
+   * aimed at the carriageway it lights.
+   *
+   * Applies to all islands, not just towns - the hub's plaza had no
+   * lighting whatsoever because this used to be part of the town dressing.
+   */
+  lightRoads(island, roads) {
+    const outline = islandOutline(island)
+
+    for (const road of roads) {
+      // Bridge approaches are lit by the bridge's own lamps
+      if (road.auto) continue
+
+      const spacing = LAMP_SPACING
+      const tangents = pathTangents(road.points)
+      let travelled = 0
+      let side = 1
+
+      for (let i = 1; i < road.points.length; i++) {
+        const step = Math.hypot(
+          road.points[i].x - road.points[i - 1].x,
+          road.points[i].z - road.points[i - 1].z
+        )
+        travelled += step
+        if (travelled < spacing) continue
+        travelled = 0
+        side *= -1
+
+        const tan = tangents[i]
+        const offset = road.width / 2 + PAVEMENT_WIDTH * 0.45
+        const lx = road.points[i].x - tan.z * offset * side
+        const lz = road.points[i].z + tan.x * offset * side
+
+        // Not in the sea, and not on some other road
+        if (inlandDistance(island, lx, lz) < 2) continue
+        if (distanceToNearestRoad(roads, lx, lz) < 0.8) continue
+
+        this.addStreetlight(island.x + lx, island.z + lz, {
+          x: island.x + road.points[i].x,
+          z: island.z + road.points[i].z
+        })
+      }
+    }
   }
 
   /** Is this island-local point clear of every hand-placed building? */
@@ -1187,10 +1942,24 @@ export class World {
     )
   }
 
-  addStreetlight(x, z) {
+  /**
+   * A street lamp. `aim` is the point it should lean over - normally the
+   * middle of the road it's lighting.
+   *
+   * The arm and lamp head stick out along the group's local +X, so the
+   * whole group is turned to put +X on the road. This used to be
+   * `rand() * PI * 2` - every lamp pointing somewhere different, most of
+   * them lighting the sea or a wall.
+   */
+  addStreetlight(x, z, aim = null) {
+    const heading = aim
+      ? Math.atan2(-(aim.z - z), aim.x - x)
+      : this.rand() * Math.PI * 2
+
     if (this.assets && this.assets.has('streetlight')) {
       const model = this.assets.clone('streetlight')
       model.position.set(x, 0, z)
+      model.rotation.y = heading
       this.game.add(model)
       return
     }
@@ -1214,15 +1983,22 @@ export class World {
       emissive: new THREE.Color(PALETTE.lampLit),
       emissiveIntensity: 0
     })
-    this.registerNightLight(lampMat, 2.6)
+    this.registerNightLight(lampMat, 4.5)
 
     const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.18, 0.32), lampMat)
     lamp.position.set(0.75, 4.44, 0)
     group.add(lamp)
 
     group.position.set(x, 0, z)
-    group.rotation.y = this.rand() * Math.PI * 2
+    group.rotation.y = heading
     this.game.add(group)
+
+    // Light the road, not just the lamp. Offset toward whatever it's
+    // aimed at, because that's where a lamp on an arm actually throws it.
+    const reach = 11
+    const px = aim ? x + (aim.x - x) * 0.45 : x
+    const pz = aim ? z + (aim.z - z) * 0.45 : z
+    this.addLightPool(px, pz, reach, 1)
   }
 
   createHubSign() {
@@ -1269,6 +2045,12 @@ export class World {
     for (const entry of this.nightEmissives) {
       entry.material.emissiveIntensity = glow * entry.strength
     }
+
+    // Pools of light on the ground, fading in with the emissives
+    for (const pool of this.lightPools) {
+      pool.mesh.material.opacity = glow * pool.strength
+      pool.mesh.visible = pool.mesh.material.opacity > 0.01
+    }
   }
 
   update(delta) {
@@ -1277,6 +2059,10 @@ export class World {
     if (this.seaUniforms) {
       this.seaUniforms.uTime.value = this.elapsed
     }
+
+    // Lights run day and night - they aren't part of the night-emissive
+    // set, because a red light is a red light at noon.
+    this.updateTrafficLights()
 
     const env = this.game.environment
     if (!env) return

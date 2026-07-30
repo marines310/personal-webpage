@@ -23,7 +23,11 @@ const SUITES = [
   'cont.mjs',          // bridge roads run ring to ring without gaps
   'approach.mjs',      // editable bridge approaches, pinned at the shore
   'network.mjs',       // the road graph: connections and reachability
+  'town.mjs',          // street grids, and buildings squared up to them
   'stress.mjs',        // 3000 deliberately awful hand-drawn roads
+  'worldsanity.mjs',   // World.js read statically: it can't be run here
+  'lights.mjs',        // the traffic light cycle: never two greens at once
+  'zebra.mjs',         // crossing bars run along the road, side by side
 
   // The editor, driven through real events
   'alltools.mjs',      // every tool does what it claims

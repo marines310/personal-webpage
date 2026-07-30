@@ -20,6 +20,10 @@ prints PASS/FAIL lines and exits non-zero if anything failed.
 | `approach.mjs` | Editable bridge approaches stay pinned at the shore |
 | `network.mjs` | The road graph: what connects to what, and whether you can drive everywhere |
 | `stress.mjs` | 3,000 deliberately awful hand-drawn roads — hairpins, zigzags, paths doubling back |
+| `town.mjs` | Street grids, buildings squared to the kerb, junction patches, signal placement, crossings, pavements, walkways |
+| `worldsanity.mjs` | `World.js` read statically — it needs a browser, so it can't be run |
+| `lights.mjs` | The traffic light cycle: never two greens, amber only between green and red |
+| `zebra.mjs` | Crossing bars run ALONG the road, set side by side across it |
 
 **The editor**
 
@@ -55,6 +59,36 @@ report the wrong thing:
   every suite that ran after it
 
 If a result surprises you, check the harness before the product.
+
+## The trap to watch for
+
+**A test that measures a proxy agrees with code that measures a proxy, and
+both are wrong together.**
+
+This shipped once. To stop pavements crossing junctions, the code tested
+the quad's *corner* distance against `width/2` — but the corner sits
+exactly on `width/2` by construction, so it deleted every pavement in the
+world. The test measured the *centre line*, which is comfortably clear, so
+it passed. Every kerb vanished with 396 checks green.
+
+Where a test replicates renderer logic, replicate it **step for step** and
+say so. `town.mjs` sections 9c and 9d2 do exactly this.
+
+**And check the test is asking the right question.** Crossings were sitting
+skewed while every test confirmed they were "square to the road" — which a
+bar parallel to the road also is. `zebra.mjs` now asks which way the bar's
+*length* points and which way successive bars *step*.
+
+**Then I made it worse, which is the sharper lesson.** Having fixed the
+skew, I decided the bars were oriented wrongly and rebuilt them to span the
+carriageway and step along it — reasoning that a driver crosses one after
+another. Zebra bars are paint; real ones run ALONG the direction of travel,
+side by side across the width. I broke correct geometry from a mental model
+and wrote a test asserting the wrong property, which would have kept it
+broken. It took a photograph of a real crossing to settle it.
+
+If a visual property is being changed on intuition rather than a
+measurement or a reference, stop and ask.
 
 ## Not in `npm test`
 

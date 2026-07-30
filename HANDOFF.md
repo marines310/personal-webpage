@@ -1,7 +1,8 @@
 # Project handoff
 
 Written so a fresh conversation can pick this up without re-deriving
-anything. Last updated: 29 July 2026.
+anything. Last updated: 29 July 2026 (after the map redesign, the town generator,
+and a long run of geometry fixes driven by screenshots).
 
 ---
 
@@ -157,12 +158,86 @@ loads completely blank with no error, because every asset 404s.
 `public/models/Textures/` with a capital T. A capitalisation slip works
 perfectly locally and fails only once published.
 
+**10. Inset the ring by a PROPORTION of the local coast distance.**
+A fixed number of units works out as a fraction of the island's longest
+axis, which is more than a short axis has to give. On a stretched island
+the sides bottom out at the minimum width while the ends stay wide, and
+the ring becomes two lobes joined by a pinch — 2-unit hairpins on a
+7-unit road. Caught by `tests/ring.mjs` when the map was redesigned.
+
+**11. Measure a road's direction where the thing ends up, not where it
+started.** Stepping 10 units off a curve moves you *along* it as well as
+away from it. Taking the tangent at the start point put building
+frontages up to 28° off square to the kerb they face.
+
+**12. Thinning a curve to draggable handles is lossy — measure it.**
+Baking a 385-point ring to handles moved it 5.4 units at 18-unit spacing
+and 0.8 at 8-unit spacing. The number was chosen from that measurement,
+not guessed. Interpolate *through* handles (Catmull-Rom), never round the
+corners off them (Chaikin), or the loop shrinks every time it's edited.
+
+**13. If the site looks stale, check which folder Vite is running in
+BEFORE anything else.** There were two copies of this project for a
+while; the dev server was serving an eight-hour-old one from a scratch
+folder while the repo was current. The scratch copy has been deleted, but
+the failure mode is worth remembering — it looks exactly like a caching
+problem and isn't.
+
+---
+
+## The single most important lesson
+
+**Ask the geometry where the object ends up. Never a proxy for it.**
+
+Every placement bug in this project has been the same mistake wearing a
+different hat. Something is positioned, and then its orientation, size or
+validity is decided using a direction or a distance taken from *somewhere
+else* — the start point instead of the finish, a radius instead of a
+surface, a centre line instead of a corner.
+
+The tally so far:
+
+| What went wrong | The proxy used | Should have used |
+|---|---|---|
+| Building frontages up to 28° off square | tangent at the walk position | tangent where the plot lands |
+| Crossings up to 44° off square | the merged approach direction | tangent of the road it lands on |
+| Pavements crossing junctions in an X | a circle round the junction centre | the other road's actual surface |
+| Every pavement in the world deleted | corner distance vs `width/2` | quad centre, with tolerance |
+| Traffic poles standing in the road | `junction.radius * 0.8` | stepped out until measurably clear |
+| Junction patches leaving bare corners | `max(width)/2` | `hypot(wA/2, wB/2)` |
+| Parallel-run measured along the wrong road | length along the ring | length along the street |
+| Snap distance ≠ network tolerance | a screen-space radius | the same constant the graph uses |
+
+**And the corollary, which is worse:** when a test measures a proxy too, it
+agrees with the code and both are wrong together. That is how a completely
+blank pavement shipped with 396 checks green. Where a test replicates
+renderer logic, it must replicate it *step for step* — `tests/town.mjs`
+sections 9c and 9d2 do this deliberately and say so in comments.
+
+**A test that asks the wrong question passes for the wrong reason.** The
+crossings were reported skewed, and every test confirmed they were "square
+to the road" — which a bar parallel to the road also is. `tests/zebra.mjs`
+now asks which way the bar's *length* points and which way successive bars
+*step*.
+
+**Worst of all: don't change working geometry from a mental model. Look at
+a reference.** Having fixed the crossing skew, I then decided the bars were
+oriented wrongly and rebuilt them to span the road and step along it,
+reasoning that a driver crosses one bar after another. Zebra bars are paint
+— you feel nothing — and real ones run ALONG the direction of travel, side
+by side across the width. I broke geometry that was already right, and then
+wrote a test asserting the wrong property, which would have kept it broken.
+Mike had to send a photograph of a real crossing to settle it.
+
+If a visual property is being changed on the strength of intuition rather
+than a measurement or a reference, that is the moment to stop and ask.
+
 ---
 
 ## Testing
 
 ```bash
-npm test          # all 17 suites, ~330 checks
+npm test          # all 21 suites, ~408 checks
 ```
 
 There's no framework. Each file in `tests/` is a plain script that prints
@@ -206,25 +281,54 @@ HTTP, and checks every asset the published site requests actually returns
 - **Demolish tool** — click anything
 - **Bridge tool merged into Road** — draw onto another island and the
   bridge is built for you
+- **Map redesigned**: hub and spoke, 2.2x bigger, every bridge crossing
+  solved to exactly 130 units of open water. Car raised to 18 u/s (boost
+  29) with braking and camera pullback scaled to match. Fog eased from
+  0.0035 to 0.0018 or the far side of the map would be invisible.
+- **Town generator** on `theme: 'town'` islands: street grid clipped to
+  the ring, buildings squared up to the kerb at a constant setback (worst
+  0.43° off), pavements both sides that stop at the kerb they meet, zebra
+  crossings square to the road they're painted on
+- **Working traffic signals** — clustered so one junction gets one set,
+  one pole per approach, 3–4 per junction, none in the carriageway, 18s
+  cycle with 2.5s amber and never two greens at once
+- **Street lighting on every island**, each lamp aimed at its carriageway,
+  with a faked pool of light on the ground (emissive materials glow in
+  Three.js but illuminate nothing, so the road stayed black)
+- **Street dressing**: shopfronts that light at night, benches, bins,
+  planters, street trees, parked cars in six colours
 - Deployed, auto-publishing on push
 
-**Open:**
+**Open — agreed order, 29 July:**
 
-1. **Street grids on town islands** — a block grid inside the ring on
-   `theme: 'town'` islands, buildings placed in blocks. Mike asked for
-   this; not started.
-2. **Map redesign** — Mike wants to rethink island placement and sizes
-   *with* me, designed around driving rather than a symmetric hub-and-spoke.
-   Worth doing **before** the grid, or the grid work gets redone.
-3. **Better/more 3D models** — his standing top priority. Only
-   `car`, `building_a/b/c`, `tree_a/b` exist. `rock` and `streetlight` are
-   commented out of `modelManifest.js` until the files exist.
-4. **`BLOG_URL` placeholder** in `ZoneManager.js` still points at
-   `https://your-blog-url.com`. Live and reachable by visitors.
-5. **Custom domain** — Mike wants help buying one. `DEPLOY.md` Part 3 has
-   registrar comparison and DNS records. Remember rule 8.
-6. **AI traffic** — cars and pedestrians using the road graph. His stated
-   reason for wanting connections modelled properly.
+1. **Make the towns feel lived in.** Shopfronts, benches, bins, planters,
+   street trees, parked cars, undergrowth. Biggest visible gain per unit
+   of work, and it builds straight on the plot layout that already
+   exists. `getTownPlots()` gives position, facing and footprint for
+   every building; the gaps between plots and the pavement strips are
+   where clutter goes.
+2. **Back-lot walkways.** Pavements exist along streets. This is the
+   narrow paths reaching buildings with no road frontage.
+3. **Terrain height — hills, ridges, ponds.** THE BIG ONE. Everything
+   built so far assumes the ground is flat at y=0: road surfaces,
+   junction patches, pavements, crossings, plot placement, and the
+   physics trimesh. Adding height means revisiting all of it, and things
+   will look wrong for a while in the middle. Mike has been told this.
+4. **Cities-Skylines-style editor UX.** Ongoing.
+
+**Also open, from earlier:**
+
+- **Better/more 3D models** — his standing top priority. Only `car`,
+  `building_a/b/c`, `tree_a/b` exist. Every generated town building picks
+  from those three, so a street reads as repetitive. `rock` and
+  `streetlight` are commented out of `modelManifest.js` until the files
+  exist.
+- **`BLOG_URL`** in `ZoneManager.js` still points at
+  `https://your-blog-url.com`. Live and reachable.
+- **Custom domain** — he wants help buying one. `DEPLOY.md` Part 3.
+  Remember rule 8.
+- **AI traffic** — cars and pedestrians on the road graph. His stated
+  reason for wanting connections modelled properly.
 
 **Direction:** he wants the editor to feel like **Cities: Skylines**. The
 tool merge and demolish tool were the first steps.

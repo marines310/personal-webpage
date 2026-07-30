@@ -228,7 +228,7 @@ import { MODEL_MANIFEST } from './src/world/modelManifest.js'
 // version of these and it quietly drifted out of step with the game, so
 // the preview showed roads where they weren't.
 import { sampleSpline, bowedPath } from './src/world/curves.js'
-import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, getStoredRing, buildNetwork, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
+import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, getStoredRing, buildNetwork, getTownGrid, getTownPlots, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
 import { ISLANDS as MAP_ISLANDS, BRIDGES as MAP_BRIDGES } from './src/world/mapData.js'
 
 /** key -> { footprint:{x,y,z}, thumb: dataURL } */
@@ -1072,6 +1072,21 @@ function drawIsland(island) {
     }
   }
 
+  // Town streets, from the same generator the game uses
+  for (const st of getTownGrid(island)) {
+    const curve = smoothRoad(st.points, st.width);
+    const traceSt = () => {
+      ctx.beginPath();
+      curve.forEach((q, k) => {
+        const s = w2s(island.x + q.x, island.z + q.z);
+        if (k === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+      });
+    };
+    ctx.strokeStyle = P.asphalt;
+    ctx.lineWidth = Math.max(1.5, st.width * view.zoom);
+    traceSt(); ctx.stroke();
+  }
+
   // Bridge approach roads, shaped exactly the way the game shapes them
   for (const ap of approachRoads(island)) {
     const idx = ap.edited ? approachIndex(island, ap.to) : -1;
@@ -1113,6 +1128,23 @@ function drawIsland(island) {
       });
     }
   }
+  // Generated town buildings. Drawn hollow so they read differently from
+  // the ones you placed yourself - these regenerate, yours don't.
+  if (showProps) {
+    ctx.strokeStyle = 'rgba(255,255,255,.5)';
+    ctx.lineWidth = 1;
+    for (const plot of getTownPlots(island)) {
+      const c = w2s(island.x + plot.x, island.z + plot.z);
+      const a = (plot.rotation * Math.PI) / 180;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      ctx.rotate(-a);
+      ctx.strokeRect(-plot.width * view.zoom / 2, -plot.depth * view.zoom / 2,
+                     plot.width * view.zoom, plot.depth * view.zoom);
+      ctx.restore();
+    }
+  }
+
   // Junction patches - the same discs the game lays to fill the corners
   // where two roads meet. Drawn here so the preview shows the road
   // surface you'll actually get, not a set of separate strips.

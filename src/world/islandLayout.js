@@ -19,7 +19,8 @@ import {
   rayDistanceToBoundary,
   distanceToEdge,
   polygonBounds,
-  insetPolygon
+  insetPolygon,
+  pointInPolygon
 } from './shapes.js'
 import { ISLANDS, BRIDGES } from './mapData.js'
 import {
@@ -85,6 +86,102 @@ export const ROAD_POINT_SPACING = 2.2
  * `noRing: true`.
  */
 export const RING_INSET_FRACTION = 0.34
+
+/**
+ * Streets inside a town are narrower than the ring road and the bridge
+ * roads, which reads as a hierarchy: main road round the edge, side
+ * streets within.
+ */
+export const DEFAULT_STREET_WIDTH = 5.5
+
+/**
+ * How far apart the streets of a town grid run. This is the block size,
+ * so it has to fit two rows of buildings back to back plus their gardens
+ * - about 34 units for 8-deep buildings.
+ */
+export const DEFAULT_BLOCK_SIZE = 34
+
+/** Shorter than this and a clipped street is a stub, not a road. */
+export const MIN_STREET_LENGTH = 18
+
+/** Pavement between the kerb and the building line. */
+export const PAVEMENT_WIDTH = 2.4
+
+/** Default footprint of a plot in a town row, and the gap between them. */
+export const DEFAULT_PLOT_WIDTH = 9
+export const DEFAULT_PLOT_DEPTH = 8
+export const PLOT_GAP = 2.5
+
+/** Footpaths to buildings no road passes. Narrower than a pavement. */
+export const WALKWAY_WIDTH = 1.8
+
+/**
+ * Beyond this a building isn't on a back lot, it's standing in a field,
+ * and a long path out to it looks stranger than no path at all.
+ */
+export const MAX_WALKWAY_LENGTH = 40
+
+/**
+ * Clear ground that must be left between two roads that aren't meeting.
+ *
+ * A street clipped from a grid can end up running almost alongside the
+ * ring, leaving a sliver of pavement between two carriageways - which
+ * looks like a mistake, because it is one. Streets that spend most of
+ * their length this close to another road are dropped.
+ */
+export const MIN_ROAD_SEPARATION = 9
+
+/**
+ * How far two roads may run alongside each other before one of them is a
+ * mistake, in world units.
+ *
+ * Measured as a LENGTH, not as a fraction of the street, because that's
+ * what's actually objectionable: 30 units of double carriageway looks
+ * wrong whether the street is 40 units long or 200.
+ */
+export const MAX_PARALLEL_RUN = 26
+
+/**
+ * The shallowest angle at which a street may join the ring, in degrees.
+ *
+ * A street meeting the ring at 8 degrees doesn't read as a junction - the
+ * two carriageways converge over tens of units and leave a long thin
+ * wedge of pavement between them, which looks like a mistake. Below this
+ * the street is dropped rather than trimmed: a grid line grazing the edge
+ * of the island wasn't worth having.
+ */
+export const MIN_JUNCTION_ANGLE = 32
+
+/**
+ * Junctions closer together than this are treated as one for signalling.
+ *
+ * Where a street meets the ring at an angle, the crossing maths finds two
+ * or three separate contact points a dozen units apart. Signalling each
+ * one gave a dozen poles in one place. Drivers see one junction there, so
+ * it gets one set of lights.
+ */
+export const SIGNAL_MERGE_DISTANCE = 22
+
+/**
+ * Approaches within this many degrees of each other count as one.
+ *
+ * Two roads meeting at a shallow angle arrive from nearly the same
+ * direction; signalling both puts two poles side by side facing the same
+ * way, which reads as a mistake rather than as traffic control.
+ */
+export const ARM_MERGE_ANGLE = 40
+
+/** Clear ground a signal pole needs between itself and any carriageway. */
+export const POLE_CLEARANCE = 1.2
+
+/**
+ * Clear ground kept around a bridge landing.
+ *
+ * The arrival at an island is the one view every visitor gets, and a
+ * building on the kerb right where the bridge lands stands directly in
+ * it. Nothing is placed within this of a landing.
+ */
+export const LANDING_CLEARANCE = 26
 
 // ---------------------------------------------------------------------------
 // THE MAP DATA lives in mapData.js - that's the file you edit (or that the
@@ -285,7 +382,16 @@ export function getIslandRoads(island) {
     roads.push({
       points: ring,
       width: DEFAULT_ROAD_WIDTH,
-      ring: true
+      ring: true,
+      closed: true
+    })
+  }
+
+  for (const street of getTownGrid(island)) {
+    roads.push({
+      points: smoothRoad(street.points, street.width),
+      width: street.width,
+      street: true
     })
   }
 
@@ -534,6 +640,418 @@ export function getIslandRing(island) {
   return ring
 }
 
+/** Does this island get a town laid out on it? */
+export function isTown(island) {
+  if (!island) return false
+  return island.grid !== undefined ? island.grid : island.theme === 'town'
+}
+
+/**
+ * A grid of streets inside the ring, island-local.
+ *
+ * Only for town islands - a grid on a jungle island would look absurd -
+ * and only inside the ring, so the ring stays the edge of the built-up
+ * area and the coast stays open.
+ *
+ * Each street is clipped to the ring and stops exactly on it, which is
+ * what makes the junctions work: getIslandJunctions() sees the ends
+ * touching the loop and lays a patch there without being told to.
+ *
+ * Islands can set `grid: false` to opt out, `blockSize` to change how big
+ * the blocks are, and `gridAngle` (degrees) to turn the whole grid.
+ */
+export function getTownGrid(island) {
+  if (!isTown(island) || island.noAutoRoad) return []
+
+  const ring = getIslandRing(island)
+  if (!ring) return []
+
+  const spacing = island.blockSize || DEFAULT_BLOCK_SIZE
+
+  // Seeded off the island's name, so a town is laid out the same way on
+  // every visit but no two towns line up with each other.
+  const angle = island.gridAngle !== undefined
+    ? (island.gridAngle * Math.PI) / 180
+    : (hashString(island.id) % 90) * (Math.PI / 180)
+
+  const bounds = polygonBounds(ring)
+  const span = Math.hypot(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ)
+  const streets = []
+
+  // Two sets of parallel lines at right angles, swept across the island
+  for (const axis of [0, 1]) {
+    const dirX = axis ? Math.cos(angle) : -Math.sin(angle)
+    const dirZ = axis ? Math.sin(angle) : Math.cos(angle)
+    const perpX = -dirZ
+    const perpZ = dirX
+
+    const lines = Math.ceil(span / spacing)
+
+    for (let i = -lines; i <= lines; i++) {
+      const offset = i * spacing
+      const ox = perpX * offset
+      const oz = perpZ * offset
+
+      // Walk the full length of this line and keep the stretches that
+      // fall inside the ring. A concave island can give more than one.
+      for (const run of runsInsideRing(ring, ox, oz, dirX, dirZ, span)) {
+        const candidate = {
+          points: [run.from, run.to],
+          width: DEFAULT_STREET_WIDTH,
+          street: true
+        }
+
+        // Reject anything running alongside a road already there. The
+        // ring is the usual culprit: a grid line clipped near the edge of
+        // the island can shadow it for most of its length, leaving two
+        // carriageways with a sliver of pavement between them.
+        if (crowdsAnother(candidate, [{ points: ring, width: DEFAULT_ROAD_WIDTH }, ...streets])) {
+          continue
+        }
+
+        // And reject anything meeting the ring at a glancing angle
+        if (meetsTooShallow(candidate, ring)) continue
+
+        streets.push(candidate)
+      }
+    }
+  }
+
+  return streets
+}
+
+/**
+ * Where buildings go in a town: in rows along the streets, square to the
+ * kerb, at a constant setback.
+ *
+ * The scatter that used to fill town islands put buildings at random
+ * angles in random places, which reads as debris rather than a street.
+ * Walking the roads and placing plots along them is what makes a row of
+ * frontages line up.
+ *
+ * Returns island-local { x, z, rotation, width, depth, facing } where
+ * `facing` is the direction the front looks, and rotation is in degrees
+ * to match the map format.
+ */
+export function getTownPlots(island) {
+  if (!isTown(island)) return []
+
+  const streets = getIslandRoads(island).filter(r => r.street || r.ring)
+  if (!streets.length) return []
+
+  const outline = getOutline(island)
+  const plots = []
+
+  // Where each bridge comes ashore, island-local
+  const landings = getBridgeLandings(island).map(l => {
+    const reach = Math.max(2, l.shore - 1)
+    return { x: l.dirX * reach, z: l.dirZ * reach }
+  })
+
+  const depth = island.plotDepth || DEFAULT_PLOT_DEPTH
+  const width = island.plotWidth || DEFAULT_PLOT_WIDTH
+
+  streets.forEach((road, roadIndex) => {
+    // Setback measured from the centre line: half the road, the pavement,
+    // then half the building. Constant for every plot, which is what
+    // makes the frontages line up.
+    const setback = road.width / 2 + PAVEMENT_WIDTH + depth / 2
+
+    const path = resamplePath(road.points, width + PLOT_GAP)
+
+    // Skip the first and last - a building right on a junction blocks the
+    // corner and looks wrong from every direction.
+    for (let i = 1; i < path.length - 1; i++) {
+      // The plot's position comes from the coarse walk, but the direction
+      // it faces must come from the road itself.
+      //
+      // Taking the tangent across the coarse spacing means measuring a
+      // 23-unit chord, which on a curved ring points up to 28 degrees away
+      // from the kerb the building actually sits on - visibly skewed.
+      const tan = tangentAt(road.points, path[i].x, path[i].z)
+      if (!tan) continue
+      const tx = tan.x
+      const tz = tan.z
+
+      // One plot each side, facing back toward the road
+      for (const side of [1, -1]) {
+        const nx = -tz * side
+        const nz = tx * side
+
+        const x = path[i].x + nx * setback
+        const z = path[i].z + nz * setback
+
+        // Reject the inside of a tight bend.
+        //
+        // Where the road curves tighter than the setback, stepping inward
+        // lands you near the centre of the curve - the plot ends up closer
+        // to a different part of the same road than to the stretch it was
+        // meant to front, so it faces off at an angle and crowds its
+        // neighbours. Physically there is no room for a building there.
+        const nearest = nearestOnPath(road.points, x, z)
+        if (!nearest ||
+            Math.hypot(nearest.x - path[i].x, nearest.z - path[i].z) > setback * 0.5) {
+          continue
+        }
+
+        // Clear of every bridge landing. Arriving at an island is the one
+        // view every visitor gets; a building on the kerb right where the
+        // bridge lands stands squarely in it.
+        if (landings.some(l => Math.hypot(l.x - x, l.z - z) < LANDING_CLEARANCE)) {
+          continue
+        }
+
+        // On land, clear of the coast
+        if (distanceToEdge(outline, x, z) < depth) continue
+
+        // Clear of every OTHER road, not just the one it fronts.
+        //
+        // Without this, plots near an intersection sit almost on the
+        // cross street - they measured 6.9 units from its centre line
+        // against a 9.9 setback, so they'd be built halfway into it and
+        // face the wrong way relative to the road you'd see them from.
+        const others = streets.filter((_, k) => k !== roadIndex)
+        if (others.length &&
+            distanceToNearestRoad(others, x, z) < depth / 2 + PAVEMENT_WIDTH) {
+          continue
+        }
+
+        // Face the road as seen FROM WHERE THE BUILDING ENDS UP, not from
+        // where it started. Stepping 10 units off a curve moves you along
+        // it as well as away from it, so the kerb in front of the finished
+        // plot runs at a slightly different angle to the one at the start.
+        const settled = tangentAt(road.points, x, z) || { x: tx, z: tz }
+        const fx = -(-settled.z * side)
+        const fz = -(settled.x * side)
+
+        plots.push({
+          x: Math.round(x * 10) / 10,
+          z: Math.round(z * 10) / 10,
+          // The front faces back at the road
+          rotation: Math.round((Math.atan2(fx, fz) * 180) / Math.PI),
+          width,
+          depth,
+          // Which road this plot fronts, so the frontage can be checked
+          // against the right one
+          roadIndex
+        })
+      }
+    }
+  })
+
+  // Two streets running close together can both claim the same ground
+  return dropOverlapping(plots, width * 0.9)
+}
+
+/**
+ * The direction a path runs at the point nearest (x, z), measured on the
+ * path's own points rather than any coarser sampling of it.
+ */
+function tangentAt(points, x, z) {
+  let best = 0
+  let bestDist = Infinity
+
+  for (let i = 0; i < points.length; i++) {
+    const d = Math.hypot(points[i].x - x, points[i].z - z)
+    if (d < bestDist) { bestDist = d; best = i }
+  }
+
+  const a = points[Math.max(0, best - 1)]
+  const b = points[Math.min(points.length - 1, best + 1)]
+  const dx = b.x - a.x
+  const dz = b.z - a.z
+  const len = Math.hypot(dx, dz)
+
+  return len < 1e-6 ? null : { x: dx / len, z: dz / len }
+}
+
+/**
+ * Footpaths reaching buildings that no road goes past, island-local.
+ *
+ * Generated town plots always front a street - that's how they're placed.
+ * Buildings you put down by hand don't: drop one in the middle of a block
+ * and it sits on grass with no way to reach it on foot. This runs a narrow
+ * path from each of those out to the nearest road.
+ *
+ * Returns { points: [from, to], width } - the same shape as a road, so it
+ * can be drawn with the same ribbon code.
+ */
+export function getWalkways(island) {
+  if (!island) return []
+
+  const roads = getIslandRoads(island)
+  if (!roads.length) return []
+
+  const walkways = []
+
+  for (const building of island.buildings || []) {
+    const bx = building.x || 0
+    const bz = building.z || 0
+    const half = Math.max(building.width || 6, building.depth || 6) / 2
+
+    // Which road is nearest, and where on it
+    let target = null
+    let gap = Infinity
+
+    for (const road of roads) {
+      const near = nearestOnPath(road.points, bx, bz)
+      if (!near) continue
+      const d = Math.hypot(near.x - bx, near.z - bz) - road.width / 2
+      if (d < gap) { gap = d; target = near }
+    }
+
+    if (!target) continue
+
+    // Already on a pavement: no path needed. Further than this and it
+    // isn't a back lot, it's a building in a field - a long path to it
+    // would look stranger than none.
+    if (gap <= half + PAVEMENT_WIDTH * 1.5) continue
+    if (gap > MAX_WALKWAY_LENGTH) continue
+
+    // Start at the building's wall, not its centre, or the path would
+    // appear to run out from underneath it.
+    let dx = target.x - bx
+    let dz = target.z - bz
+    const len = Math.hypot(dx, dz)
+    if (len < 1e-6) continue
+    dx /= len
+    dz /= len
+
+    walkways.push({
+      points: [
+        { x: bx + dx * half, z: bz + dz * half },
+        { x: target.x, z: target.z }
+      ],
+      width: WALKWAY_WIDTH
+    })
+  }
+
+  return walkways
+}
+
+/** Remove plots that landed on top of each other. */
+function dropOverlapping(plots, minGap) {
+  const kept = []
+  for (const p of plots) {
+    if (kept.some(k => Math.hypot(k.x - p.x, k.z - p.z) < minGap)) continue
+    kept.push(p)
+  }
+  return kept
+}
+
+/**
+ * Does this street spend most of its length hugging another road?
+ *
+ * Crossing one is fine - that's a junction. Running parallel a few units
+ * away is not, so the test is how MUCH of the street is too close, not
+ * whether any of it is.
+ */
+function crowdsAnother(candidate, others) {
+  const [from, to] = candidate.points
+  const length = Math.hypot(to.x - from.x, to.z - from.z)
+  if (length < 1e-6) return true
+
+  const dirX = (to.x - from.x) / length
+  const dirZ = (to.z - from.z) / length
+
+  const STEP = 2
+  let run = 0
+
+  for (let travelled = 0; travelled <= length; travelled += STEP) {
+    const x = from.x + dirX * travelled
+    const z = from.z + dirZ * travelled
+
+    // Ignore the approach to each end: every street meets the ring there,
+    // so of course it's close - that's the junction, not crowding.
+    //
+    // Expressed as a fraction of the street so it matches how this is
+    // measured in tests/town.mjs. A fixed number of units disagreed with
+    // it on long streets, and the generator accepted one the test then
+    // rejected.
+    const along = travelled / length
+    if (Math.min(along, 1 - along) < 0.15) continue
+
+    for (const other of others) {
+      const near = nearestOnPath(other.points, x, z)
+      if (!near) continue
+
+      const gap = Math.hypot(near.x - x, near.z - z)
+        - candidate.width / 2 - other.width / 2
+      if (gap >= MIN_ROAD_SEPARATION) continue
+
+      // Close is only a problem if they're going the SAME WAY. Two roads
+      // crossing at an angle are a junction; two roads a few units apart
+      // running parallel are a mistake.
+      const tan = tangentAt(other.points, x, z)
+      if (!tan) continue
+      if (Math.abs(dirX * tan.x + dirZ * tan.z) > 0.9) { run += STEP; break }
+    }
+  }
+
+  return run > MAX_PARALLEL_RUN
+}
+
+/**
+ * Does this street run into the ring at a glancing angle?
+ *
+ * Both ends are checked. A street that grazes the ring converges with it
+ * over a long distance instead of crossing it, which reads as two roads
+ * squeezed together rather than as a junction.
+ */
+function meetsTooShallow(candidate, ring) {
+  const [from, to] = candidate.points
+  const length = Math.hypot(to.x - from.x, to.z - from.z)
+  if (length < 1e-6) return true
+
+  const dirX = (to.x - from.x) / length
+  const dirZ = (to.z - from.z) / length
+  const limit = Math.cos((MIN_JUNCTION_ANGLE * Math.PI) / 180)
+
+  for (const end of [from, to]) {
+    const tan = tangentAt(ring, end.x, end.z)
+    if (!tan) continue
+    // Parallel means dot product near 1; a right angle means near 0
+    if (Math.abs(dirX * tan.x + dirZ * tan.z) > limit) return true
+  }
+
+  return false
+}
+
+/**
+ * The stretches of a line that lie inside the ring.
+ *
+ * Sampled rather than solved: a ring is a many-sided polygon and an
+ * island can be concave, so a line may enter and leave more than once.
+ * Walking it and noting where it crosses is simpler than the algebra and
+ * cannot miss a lobe.
+ */
+function runsInsideRing(ring, ox, oz, dirX, dirZ, span) {
+  const STEP = 1.5
+  const runs = []
+  let start = null
+
+  for (let t = -span; t <= span; t += STEP) {
+    const x = ox + dirX * t
+    const z = oz + dirZ * t
+    const inside = pointInPolygon(ring, x, z)
+
+    if (inside && start === null) start = t
+    if ((!inside || t + STEP > span) && start !== null) {
+      const from = { x: ox + dirX * start, z: oz + dirZ * start }
+      const to = { x, z }
+
+      // Ignore slivers clipped off a corner of the ring - a three-unit
+      // stub of road leading nowhere is worse than no road.
+      if (Math.hypot(to.x - from.x, to.z - from.z) >= MIN_STREET_LENGTH) {
+        runs.push({ from, to })
+      }
+      start = null
+    }
+  }
+
+  return runs
+}
+
 /**
  * The whole drivable network, in world coordinates.
  *
@@ -654,6 +1172,149 @@ export function buildNetwork(segments) {
 }
 
 /**
+ * Where traffic signals belong, island-local.
+ *
+ * Not simply "every junction": the crossing maths finds several contact
+ * points where a street meets the ring at an angle, and signalling each
+ * of them put a dozen poles in one place. Junctions within
+ * SIGNAL_MERGE_DISTANCE are one junction as far as a driver is concerned.
+ *
+ * Each signal reports its `arms` - one per approach. A crossroads has
+ * four, a T has three, and a bend has two and gets no lights at all.
+ * That's what stops a plain corner sprouting signals.
+ */
+export function getTrafficSignals(island) {
+  // Bridge approaches count. They're marked `auto` because they're drawn
+  // as part of the continuous bridge run rather than separately, but where
+  // one meets the ring a driver arrives at a T-junction and expects to be
+  // told what to do. Leaving them out was why the hub had no lights at
+  // all: its five junctions each saw only the ring, so only two arms.
+  const roads = getIslandRoads(island)
+    .filter(r => r.street || r.ring || r.auto)
+  if (!roads.length) return []
+
+  // Cluster the raw junctions
+  const clusters = []
+  for (const j of getIslandJunctions(island)) {
+    const near = clusters.find(c =>
+      Math.hypot(c.x - j.x, c.z - j.z) < SIGNAL_MERGE_DISTANCE)
+
+    if (near) {
+      near.members.push(j)
+      near.x = near.members.reduce((a, m) => a + m.x, 0) / near.members.length
+      near.z = near.members.reduce((a, m) => a + m.z, 0) / near.members.length
+      near.radius = Math.max(near.radius, j.radius)
+    } else {
+      clusters.push({ x: j.x, z: j.z, radius: j.radius, members: [j] })
+    }
+  }
+
+  const signals = []
+
+  for (const cluster of clusters) {
+    const arms = []
+
+    for (const road of roads) {
+      let nearest = Infinity
+      let index = 0
+      road.points.forEach((p, i) => {
+        const d = Math.hypot(p.x - cluster.x, p.z - cluster.z)
+        if (d < nearest) { nearest = d; index = i }
+      })
+      if (nearest > cluster.radius + SIGNAL_MERGE_DISTANCE * 0.7) continue
+
+      const tan = tangentAt(road.points, cluster.x, cluster.z)
+      if (!tan) continue
+
+      // A road that STOPS here is one approach. A road that carries on
+      // through is two. Counting every road as two was what turned every
+      // T-junction into a four-way.
+      const fromStart = index
+      const fromEnd = road.points.length - 1 - index
+      const terminates = !road.closed &&
+        Math.min(fromStart, fromEnd) < road.points.length * 0.12
+
+      if (terminates) {
+        // Point back along the road, away from the junction
+        const sign = fromStart < fromEnd ? -1 : 1
+        arms.push({ x: tan.x * sign, z: tan.z * sign })
+      } else {
+        arms.push({ x: tan.x, z: tan.z })
+        arms.push({ x: -tan.x, z: -tan.z })
+      }
+    }
+
+    // Merge approaches pointing much the same way. Two roads crossing at
+    // a shallow angle arrive from nearly the same direction, and a driver
+    // reads that as one approach - two poles side by side just look like a
+    // mistake.
+    const distinct = []
+    for (const arm of arms) {
+      const same = distinct.find(d =>
+        d.x * arm.x + d.z * arm.z > Math.cos((ARM_MERGE_ANGLE * Math.PI) / 180))
+      if (!same) distinct.push(arm)
+    }
+
+    // Work out where each pole actually stands.
+    //
+    // Offsetting a fixed amount sideways from the junction centre put half
+    // of them in the middle of the carriageway: the junction disc is 3.5
+    // units across but the roads are 5.5 to 7 wide. So step outwards until
+    // the spot is genuinely clear of every road, and drop the pole if no
+    // such spot exists.
+    const withPoles = []
+
+    for (const arm of distinct) {
+      const pole = clearSpotBeside(cluster, arm, roads)
+      if (pole) withPoles.push({ ...arm, pole })
+    }
+
+    if (withPoles.length >= 3) {
+      signals.push({
+        x: cluster.x, z: cluster.z, radius: cluster.radius, arms: withPoles
+      })
+    }
+  }
+
+  return signals
+}
+
+/**
+ * A spot for a signal pole beside an approach: back from the junction and
+ * off to the right, stepped outwards until it clears every carriageway.
+ *
+ * Returns null if nothing within reach is clear, which is better than
+ * planting a pole in the road.
+ */
+function clearSpotBeside(cluster, arm, roads) {
+  // Candidates in order of preference: near the junction and to the right
+  // of oncoming traffic first, then further back, then the left side.
+  //
+  // Only searching one side at one setback failed at exactly the junctions
+  // that matter most - where a bridge approach meets the ring, there's
+  // another carriageway on the right, so no spot was found and the whole
+  // junction went unsignalled.
+  for (const back of [3.4, 6, 9, 12]) {
+    for (const hand of [-1, 1]) {
+      for (let side = 3; side <= 15; side += 0.75) {
+        const reach = cluster.radius + back
+        const x = cluster.x + arm.x * reach + arm.z * side * hand
+        const z = cluster.z + arm.z * reach - arm.x * side * hand
+
+        // Round FIRST, then test. Rounding after the test can shift the
+        // pole by up to 0.05 and push a borderline spot back into the road.
+        const spot = { x: Math.round(x * 10) / 10, z: Math.round(z * 10) / 10 }
+        if (distanceToNearestRoad(roads, spot.x, spot.z) >= POLE_CLEARANCE) {
+          return spot
+        }
+      }
+    }
+  }
+
+  return null
+}
+
+/**
  * Every place two roads on an island meet or cross, island-local.
  *
  * A road is a ribbon with square ends. Where one runs into another they
@@ -672,7 +1333,12 @@ export function getIslandJunctions(island) {
 
   for (let a = 0; a < roads.length; a++) {
     for (let b = a + 1; b < roads.length; b++) {
-      const radius = Math.max(roads[a].width, roads[b].width) / 2
+      // Big enough to reach the CORNERS of the crossing, not just the
+      // edge of the wider road. Two roads crossing at right angles form a
+      // diamond whose corners sit hypot(wA/2, wB/2) from the centre -
+      // using max(w)/2 left those corners bare, which is what read as one
+      // road's surface overlapping the other's.
+      const radius = Math.hypot(roads[a].width / 2, roads[b].width / 2) + 0.6
 
       for (const point of pathCrossings(roads[a].points, roads[b].points, radius)) {
         hits.push({ ...point, radius })

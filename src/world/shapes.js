@@ -321,6 +321,36 @@ export function rayDistanceToBoundary(pts, dx, dz) {
  * bisector of its two edges. Good for gentle shapes; very sharp spikes may
  * pinch, so the result is clamped to stay sane.
  */
+/**
+ * Pull a polygon inward, in polar form.
+ *
+ * The bisector method in insetPolygon() self-intersects when the inset is
+ * large relative to the shape's wobble: the edges cross and the polygon
+ * ties itself in a knot. Triangulated, that shows as a star-shaped hole
+ * where whatever is underneath shows through - which is what put a pale
+ * patch of sand in the middle of About island's grass.
+ *
+ * Sweeping a radius around the centroid cannot self-intersect, because
+ * there is exactly one point per direction. Only valid for shapes that
+ * are star-shaped about their centre, which every island outline is.
+ */
+export function insetPolygonRadial(pts, d, steps = 96) {
+  if (pts.length < 3 || d <= 0) return pts.map(p => ({ ...p }))
+
+  const out = []
+
+  for (let i = 0; i < steps; i++) {
+    const angle = (i / steps) * Math.PI * 2
+    const dx = Math.cos(angle)
+    const dz = Math.sin(angle)
+    const reach = rayDistanceToBoundary(pts, dx, dz)
+    const r = Math.max(0.5, reach - d)
+    out.push({ x: dx * r, z: dz * r })
+  }
+
+  return out
+}
+
 export function insetPolygon(pts, d) {
   const n = pts.length
   if (n < 3 || d <= 0) return pts.map(p => ({ ...p }))
