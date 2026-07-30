@@ -137,6 +137,18 @@ const localFunctions = new Set([
   ...[...code.matchAll(/\bfunction\s+([\w$]+)/g)].map(m => m[1]),
   ...[...code.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>/g)]
     .map(m => m[1]),
+  // Parameters. A function that TAKES a function and calls it - polygonMesh
+  // takes `heightAt` - is a bare call to a name that is neither imported nor
+  // declared at the top level, and the check has no way to tell that from a
+  // missing import. Everything inside a parameter list counts, which is
+  // broader than strictly needed and errs towards silence rather than towards
+  // crying wolf: a guard that reports things that are fine gets ignored.
+  ...[...code.matchAll(/(?:function\s*[\w$]*|^\s*[\w$]+)\s*\(([^)]*)\)\s*{/gm)]
+    .flatMap(m => m[1].split(',').map(p => p.trim().split(/[\s=]/)[0]))
+    .filter(Boolean),
+  ...[...code.matchAll(/\(([^)]*)\)\s*=>/g)]
+    .flatMap(m => m[1].split(',').map(p => p.trim().split(/[\s=]/)[0]))
+    .filter(Boolean),
   // Anything JavaScript or the language itself provides
   'if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'new',
   'function', 'else', 'do', 'try', 'super', 'this', 'await', 'yield',
@@ -149,6 +161,50 @@ const missingFns = [...bareCalls].filter(fn =>
 
 chk(`${bareCalls.size} bare calls, all imported or declared`, missingFns.length === 0,
     'nowhere defined: ' + missingFns.join(', '))
+
+// ---------------------------------------------------------------------------
+console.log('\n8. Nothing is left standing at sea level on a hill')
+// World.js can't be run here, so this reads it. Every place that puts an
+// object on the ground by its own x and z has to ask how high the ground is;
+// one that still writes a literal 0, or a bare small number, is an object
+// hovering over a hill or buried in it.
+//
+// Written as a scan rather than a list of allowed exceptions, because the
+// list would go stale the moment someone adds a prop - and a prop floating
+// two units above a hillside is exactly the thing nobody notices in a diff.
+// The x and z have to be NAMES, not numbers. A part positioned inside its
+// own model group - a wing mirror at (0, 2.9, 0.34) - is a local offset, not
+// a point on the ground, and matching those buried the real ones.
+const flatPlacements = [...code.matchAll(
+  /([\w$.]+)\.position\.set\(\s*([A-Za-z_$][\w$.]*)\s*,\s*(-?[\d.]+)\s*,\s*([A-Za-z_$][\w$.]*)\s*\)/g)]
+  .filter(m => {
+    // The honest exceptions, each for a reason:
+    //
+    //   cx/cz    - island shells and the sea. They carry their height in the
+    //              geometry and sit at the island's centre, not at a point on
+    //              the ground.
+    //   bridge   - a bridge deck spans WATER at a stated height. Raising it
+    //              clear of the shipping is its own job (task 88).
+    //   px/pz    - the railings that stand on that deck.
+    //   ship     - afloat.
+    const where = `${m[1]} ${m[2]} ${m[4]}`
+    return !/\bcx\b|\bcz\b|\bbridge\.|\bpx\b|\bpz\b|\bship\b/.test(where)
+  })
+
+console.log(`   ${flatPlacements.length} placements still at a fixed height`)
+chk('everything placed by x and z asks the ground how high it is',
+    flatPlacements.length === 0,
+    flatPlacements.slice(0, 5).map(m => m[0]).join('  '))
+
+// And the two that would be worst: the ground mesh and its collider have to
+// come from the same field, or the car drives on an invisible surface.
+chk('the ground mesh is built from the terrain',
+    /polygonMesh\([^)]*\}\s*,\s*height\)/.test(code) ||
+    code.includes('}, height)'),
+    'the grass and sand are still flat')
+chk('and so is the collider it collides with',
+    code.includes('terrain.heightAt(p.x, p.z), p.z'),
+    'buildLandCollider is still flat')
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

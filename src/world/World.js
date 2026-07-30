@@ -31,6 +31,8 @@ import {
   getSeaGraph,
   getLaneNetwork,
   getBusStops,
+  getIslandTerrain,
+  groundHeight,
   getStations,
   STATION_SETBACK,
   makeTraffic,
@@ -61,6 +63,48 @@ import {
   PLAZA_FOUNTAIN_OFFSET
 } from './islandLayout.js'
 import { findWindowFaces, windowGeometry } from './windows.js'
+import {
+  subdivideTriangles,
+  GROUND_MESH_EDGE
+} from './terrain.js'
+
+/**
+ * How far the decorative ground ducks beneath a road, a pavement or a
+ * building's forecourt.
+ *
+ * The grass and the sand are drawn three centimetres under the road. That was
+ * fine while the world was flat, and cannot work on a hill: the two surfaces
+ * are meshed at DIFFERENT points, and a flat triangle spanning two samples of
+ * a surface that curves away sits above it. Near a kerb the ground falls off
+ * within a metre, so the grass came up through the tarmac in green shards -
+ * which is what Mike photographed.
+ *
+ * Chasing it with mesh resolution does not work: the error only halves as the
+ * triangles quarter, and it was still thirty centimetres out at a cost of five
+ * seconds an island. So the grass gets out of the way instead. It is hidden
+ * under the road there, and the road is what you are meant to see.
+ */
+export const GROUND_SINK = 0.7
+
+/**
+ * How far the grass cap sits above the sand it covers.
+ *
+ * Three centimetres, while the ground was flat. On a hill it cannot be: the
+ * sand is triangulated from the island's outline and the grass from a ring
+ * inset inside it, so the two meshes have DIFFERENT corners. Both follow the
+ * same height field at their own corners and cross each other everywhere in
+ * between, which shows as thin slivers of sand through the grass and grass
+ * through the sand - hairlines rather than the shards a road produced,
+ * because the two surfaces are nearly parallel.
+ *
+ * Thirty centimetres clears the worst of that, and reads as a low bank where
+ * the grass meets the beach.
+ *
+ * The general rule, now written down twice: **two meshes with different
+ * vertices cannot be stacked closer than the error between them.** Either
+ * give them the same vertices, or leave a real gap.
+ */
+export const GRASS_ABOVE_SAND = 0.3
 import { insetPolygon, insetPolygonRadial, polygonCentroid, rayDistanceToBoundary } from './shapes.js'
 import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
 
@@ -83,6 +127,7 @@ import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
 // ---------------------------------------------------------------
 /** How far apart street lamps run along a road. */
 export const LAMP_SPACING = 26
+
 
 /**
  * How tall each kind of traffic is. Only the collider needs this - the meshes
@@ -148,7 +193,6 @@ export const TRAFFIC_HEIGHTS = {
   fire: 2.7,
   bus: 3
 }
-
 
 export const PALETTE = {
   // Sea and shore
@@ -392,7 +436,7 @@ export class World {
     pool.rotation.x = -Math.PI / 2
     // Above the road surface, the pavements and the crossings, so it
     // lights all of them rather than being hidden under one.
-    pool.position.set(x, 0.15, z)
+    pool.position.set(x, this.groundAt(x, z) + 0.15, z)
     this.game.add(pool)
     this.lightPools.push({ mesh: pool, strength })
     return pool
@@ -540,10 +584,20 @@ export class World {
     const { x: cx, z: cz } = island
     const outline = islandOutline(island)
 
+    // Everything on this island asks the same height field, so the sand, the
+    // grass, the collider and the roads cannot disagree about where the
+    // ground is.
+    //
+    // The DRAWN ground ducks under anything flat - see GROUND_SINK. The
+    // collider does not: what you drive on stays the true surface.
+    const terrain = getIslandTerrain(island)
+    const height = (x, z) =>
+      terrain.heightAt(x, z) - GROUND_SINK * terrain.claimAt(x, z)
+
     // --- Top face (sand) ---
     const sandTop = this.polygonMesh(outline, cx, 0, cz, {
       color: PALETTE.sand, roughness: 1, metalness: 0, flatShading: true
-    })
+    }, height)
     sandTop.receiveShadow = true
     this.game.add(sandTop)
 
@@ -557,9 +611,9 @@ export class World {
     const grassRing = insetPolygonRadial(outline, beachWidth)
 
     if (grassRing.length >= 3) {
-      const grass = this.polygonMesh(grassRing, cx, 0.03, cz, {
+      const grass = this.polygonMesh(grassRing, cx, GRASS_ABOVE_SAND, cz, {
         color: PALETTE.grass, roughness: 0.95, metalness: 0, flatShading: true
-      })
+      }, height)
       grass.receiveShadow = true
       this.game.add(grass)
     }
@@ -593,19 +647,29 @@ export class World {
    * Triangulate a polygon into a flat horizontal mesh at height `y`.
    * Points are island-local; cx/cz place it in the world.
    */
-  polygonMesh(points, cx, y, cz, materialOptions) {
+  polygonMesh(points, cx, y, cz, materialOptions, heightAt = null) {
     // THREE triangulates in the XY plane, so feed it (x, z) and lay it flat
     const contour = points.map(p => new THREE.Vector2(p.x, p.z))
     const faces = THREE.ShapeUtils.triangulateShape(contour, [])
 
-    const positions = new Float32Array(faces.length * 9)
+    // Island-local triangles, before any height is applied
+    let triangles = faces.map(face => [face[2], face[1], face[0]].map(
+      idx => ({ x: contour[idx].x, z: contour[idx].y })))
+
+    // Ground that goes up and down needs vertices to go up and down WITH, and
+    // a triangulated coastline has triangles a hundred units across. Split
+    // them until every edge is short enough to follow a hill.
+    if (heightAt) {
+      triangles = subdivideTriangles(triangles, GROUND_MESH_EDGE, heightAt)
+    }
+
+    const positions = new Float32Array(triangles.length * 9)
     let o = 0
-    for (const face of faces) {
-      // Reversed winding so the surface faces up after the flip below
-      for (const idx of [face[2], face[1], face[0]]) {
-        positions[o++] = contour[idx].x
-        positions[o++] = y
-        positions[o++] = contour[idx].y
+    for (const triangle of triangles) {
+      for (const p of triangle) {
+        positions[o++] = p.x
+        positions[o++] = (heightAt ? heightAt(p.x, p.z) : 0) + y
+        positions[o++] = p.z
       }
     }
 
@@ -618,6 +682,11 @@ export class World {
     )
     mesh.position.set(cx, 0, cz)
     return mesh
+  }
+
+  /** How high the ground is, in world coordinates. Sea level over water. */
+  groundAt(x, z) {
+    return groundHeight(x, z)
   }
 
   /**
@@ -665,13 +734,19 @@ export class World {
 
     const push = (x, y, z) => { verts.push(x + cx, y, z + cz) }
 
-    // Top surface
+    // Top surface. Subdivided and lifted by the SAME height field the grass
+    // mesh uses - if the collider were left flat the car would drive along an
+    // invisible plane at sea level with the hillside passing through it.
+    const terrain = getIslandTerrain(island)
     const contour = outline.map(p => new THREE.Vector2(p.x, p.z))
     const faces = THREE.ShapeUtils.triangulateShape(contour, [])
-    for (const face of faces) {
-      for (const idx of [face[2], face[1], face[0]]) {
-        push(contour[idx].x, 0, contour[idx].y)
-      }
+
+    const flat = faces.map(face => [face[2], face[1], face[0]].map(
+      idx => ({ x: contour[idx].x, z: contour[idx].y })))
+
+    const height = (x, z) => terrain.heightAt(x, z)
+    for (const triangle of subdivideTriangles(flat, GROUND_MESH_EDGE, height)) {
+      for (const p of triangle) push(p.x, terrain.heightAt(p.x, p.z), p.z)
     }
 
     // Walls, so you bump the cliff rather than sliding through it
@@ -750,7 +825,7 @@ export class World {
     const patch = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
       color: PALETTE.asphalt, roughness: 0.92, metalness: 0.05
     }))
-    patch.position.set(x, 0.065, z)
+    patch.position.set(x, this.groundAt(x, z) + 0.065, z)
     patch.receiveShadow = true
     this.game.add(patch)
   }
@@ -816,9 +891,17 @@ export class World {
         ) - road.width / 2
         if (clearOfKerb < PAVEMENT_WIDTH * 0.2) continue
 
+        // Kerb height above the GROUND, which the road corridor has already
+        // levelled - so a pavement climbs a hill alongside its road rather
+        // than staying at sea level while the road leaves it behind.
+        const yl0 = this.groundAt(l0.x, l0.z) + 0.12
+        const yr0 = this.groundAt(r0.x, r0.z) + 0.12
+        const yl1 = this.groundAt(l1.x, l1.z) + 0.12
+        const yr1 = this.groundAt(r1.x, r1.z) + 0.12
+
         positions.push(
-          l0.x, 0.12, l0.z, r0.x, 0.12, r0.z, l1.x, 0.12, l1.z,
-          l1.x, 0.12, l1.z, r0.x, 0.12, r0.z, r1.x, 0.12, r1.z
+          l0.x, yl0, l0.z, r0.x, yr0, r0.z, l1.x, yl1, l1.z,
+          l1.x, yl1, l1.z, r0.x, yr0, r0.z, r1.x, yr1, r1.z
         )
       }
       if (!positions.length) continue
@@ -913,7 +996,7 @@ export class World {
       lamps[name] = mat
     }
 
-    group.position.set(x, 0, z)
+    group.position.set(x, this.groundAt(x, z), z)
     group.rotation.y = heading
     this.game.add(group)
 
@@ -1028,7 +1111,9 @@ export class World {
         const stripe = new THREE.Mesh(
           new THREE.BoxGeometry(barWidth, 0.02, barLength), stripeMat
         )
-        stripe.position.set(island.x + lx + ox, 0.08, island.z + lz + oz)
+        const sx2 = island.x + lx + ox
+        const sz2 = island.z + lz + oz
+        stripe.position.set(sx2, this.groundAt(sx2, sz2) + 0.08, sz2)
         stripe.rotation.y = Math.atan2(tan.x, tan.z)
         this.game.add(stripe)
       }
@@ -1048,9 +1133,14 @@ export class World {
 
     const positions = []
     for (const { l0, r0, l1, r1 } of quads) {
+      const yl0 = this.groundAt(l0.x, l0.z) + 0.1
+      const yr0 = this.groundAt(r0.x, r0.z) + 0.1
+      const yl1 = this.groundAt(l1.x, l1.z) + 0.1
+      const yr1 = this.groundAt(r1.x, r1.z) + 0.1
+
       positions.push(
-        l0.x, 0.1, l0.z, r0.x, 0.1, r0.z, l1.x, 0.1, l1.z,
-        l1.x, 0.1, l1.z, r0.x, 0.1, r0.z, r1.x, 0.1, r1.z
+        l0.x, yl0, l0.z, r0.x, yr0, r0.z, l1.x, yl1, l1.z,
+        l1.x, yl1, l1.z, r0.x, yr0, r0.z, r1.x, yr1, r1.z
       )
     }
 
@@ -1080,10 +1170,17 @@ export class World {
 
     const positions = []
 
+    // `y` is now a clearance above the GROUND rather than an absolute height.
+    // The terrain holds a road's corridor level across its width, so the two
+    // sides of a quad come out at the same height and the carriageway stays
+    // unbanked - that is the terrain's job, not this function's.
+    const lift = (p) => this.groundAt(p.x, p.z) + y
+
     for (const { l0, r0, l1, r1 } of quads) {
+      const yl0 = lift(l0), yr0 = lift(r0), yl1 = lift(l1), yr1 = lift(r1)
       positions.push(
-        l0.x, y, l0.z,  r0.x, y, r0.z,  l1.x, y, l1.z,
-        l1.x, y, l1.z,  r0.x, y, r0.z,  r1.x, y, r1.z
+        l0.x, yl0, l0.z,  r0.x, yr0, r0.z,  l1.x, yl1, l1.z,
+        l1.x, yl1, l1.z,  r0.x, yr0, r0.z,  r1.x, yr1, r1.z
       )
     }
 
@@ -1091,9 +1188,10 @@ export class World {
     geometry.setAttribute('position',
       new THREE.BufferAttribute(new Float32Array(positions), 3))
 
-    // The road is flat, so every normal points straight up. Setting them
-    // directly rather than deriving them from the triangles means an
-    // overlapping fold can't shade itself darker than the rest.
+    // Normals straight up rather than derived from the triangles: an
+    // overlapping fold through a tight bend would otherwise shade itself
+    // darker than the rest. A road is never steep enough here - eight per
+    // cent - for the cheat to show.
     const normals = new Float32Array(positions.length)
     for (let i = 1; i < normals.length; i += 3) normals[i] = 1
     geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
@@ -1165,7 +1263,7 @@ export class World {
         )
         dash.rotation.x = -Math.PI / 2
         dash.rotation.z = Math.atan2(tan.x, tan.z)
-        dash.position.set(x, markY, z)
+        dash.position.set(x, this.groundAt(x, z) + markY, z)
         this.game.add(dash)
 
         nextDash += stride
@@ -1361,8 +1459,12 @@ export class World {
 
   /** One column, with a cross-head where it meets the beam. */
   buildMonorailPier(pier) {
+    // The BEAM stays level - a train that undulated with the ground would
+    // look like a rollercoaster - so the pillars take up the difference and
+    // come out different lengths. This is the whole of that: the top is
+    // fixed, the foot is wherever the ground happens to be.
     const top = MONORAIL_HEIGHT - MONORAIL_BEAM_DEPTH
-    const base = pier.island ? 0 : SEA_LEVEL - 2.5
+    const base = pier.island ? this.groundAt(pier.x, pier.z) : SEA_LEVEL - 2.5
     const height = top - base
 
     const column = new THREE.Mesh(
@@ -1490,17 +1592,20 @@ export class World {
       this.game.add(sign)
     }
 
-    // Stair tower, and a walkway from it to the platform
-    const towerHeight = deckY
+    // Stair tower, and a walkway from it to the platform. Like the pillars,
+    // it starts at the ground and reaches a fixed deck, so it is taller on
+    // low ground and shorter on a hill.
+    const towerFoot = this.groundAt(tower.x, tower.z)
+    const towerHeight = deckY - towerFoot
     const shaft = new THREE.Mesh(
       new THREE.BoxGeometry(3.2, towerHeight, 3.2), concrete)
-    shaft.position.set(tower.x, towerHeight / 2, tower.z)
+    shaft.position.set(tower.x, towerFoot + towerHeight / 2, tower.z)
     shaft.rotation.y = heading
     shaft.castShadow = true
     this.game.add(shaft)
 
     this.game.physics.createStaticBoxAt(
-      tower.x, towerHeight / 2, tower.z, 3.2, towerHeight, 3.2, heading)
+      tower.x, towerFoot + towerHeight / 2, tower.z, 3.2, towerHeight, 3.2, heading)
 
     // The bridge across from the tower to the nearest platform edge
     const bridgeFromX = tower.x
@@ -1677,13 +1782,14 @@ export class World {
     for (const v of this.traffic) {
       v.mesh = this.buildTrafficVehicle(v)
       const at = trafficPosition(this.lanes, v)
-      v.mesh.position.set(at.x, 0, at.z)
+      const ground = this.groundAt(at.x, at.z)
+      v.mesh.position.set(at.x, ground, at.z)
       v.mesh.rotation.y = at.heading
       v.heading = at.heading
       this.game.add(v.mesh)
 
       v.body = this.game.physics.createKinematicBox(
-        at.x, TRAFFIC_HEIGHTS[v.kind] / 2, at.z,
+        at.x, ground + TRAFFIC_HEIGHTS[v.kind] / 2, at.z,
         TRAFFIC_WIDTHS[v.kind], TRAFFIC_HEIGHTS[v.kind], TRAFFIC_LENGTHS[v.kind],
         at.heading)
     }
@@ -2072,12 +2178,13 @@ export class World {
 
       const post = new THREE.Mesh(
         new THREE.CylinderGeometry(0.09, 0.11, 2.8, 7), postMat)
-      post.position.set(x, 1.4, z)
+      const stopGround = this.groundAt(x, z)
+      post.position.set(x, stopGround + 1.4, z)
       post.castShadow = true
       this.game.add(post)
 
       const flag = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.5, 0.06), postMat)
-      flag.position.set(x, 2.65, z)
+      flag.position.set(x, stopGround + 2.65, z)
       flag.rotation.y = stop.heading
       this.game.add(flag)
 
@@ -2091,7 +2198,7 @@ export class World {
       const bz = z - sz * SHELTER_DEPTH
 
       const roof = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.12, 3.6), roofMat)
-      roof.position.set(bx, 2.5, bz)
+      roof.position.set(bx, this.groundAt(bx, bz) + 2.5, bz)
       roof.rotation.y = stop.heading
       this.game.add(roof)
 
@@ -2132,7 +2239,7 @@ export class World {
     const fz = Math.cos(station.heading)
 
     const group = new THREE.Group()
-    group.position.set(station.x, 0, station.z)
+    group.position.set(station.x, this.groundAt(station.x, station.z), station.z)
     group.rotation.y = station.heading
 
     const wall = new THREE.MeshStandardMaterial({
@@ -2218,7 +2325,9 @@ export class World {
     // Solid to the player. One box for the building, minus the front strip so
     // a fire engine on the apron isn't sitting inside a collider.
     this.game.physics.createStaticBoxAt(
-      station.x - fx * 0.9, height / 2, station.z - fz * 0.9,
+      station.x - fx * 0.9,
+      this.groundAt(station.x, station.z) + height / 2,
+      station.z - fz * 0.9,
       station.width, height, Math.max(1, station.depth - 1.8), station.heading)
 
     this.buildStationYard(station)
@@ -2298,9 +2407,12 @@ export class World {
       }))
     apron.rotation.x = -Math.PI / 2
     apron.rotation.z = -station.heading
+    const apronX = station.x + fx * (STATION_SETBACK / 2 + station.depth / 2 - 1)
+    const apronZ = station.z + fz * (STATION_SETBACK / 2 + station.depth / 2 - 1)
+    // Above the grass cap, not under it: the apron is a raised forecourt, so
+    // it does not have to claim the ground and sink the plots around it.
     apron.position.set(
-      station.x + fx * (STATION_SETBACK / 2 + station.depth / 2 - 1), 0.05,
-      station.z + fz * (STATION_SETBACK / 2 + station.depth / 2 - 1))
+      apronX, this.groundAt(apronX, apronZ) + GRASS_ABOVE_SAND + 0.05, apronZ)
     apron.receiveShadow = true
     this.game.add(apron)
 
@@ -2323,16 +2435,20 @@ export class World {
           new THREE.PlaneGeometry(0.2, long), paint)
         line.rotation.x = -Math.PI / 2
         line.rotation.z = -bay.heading
+        const lineX = bay.x + sx * side * wide / 2
+        const lineZ = bay.z + sz * side * wide / 2
         line.position.set(
-          bay.x + sx * side * wide / 2, 0.07, bay.z + sz * side * wide / 2)
+          lineX, this.groundAt(lineX, lineZ) + GRASS_ABOVE_SAND + 0.07, lineZ)
         this.game.add(line)
       }
 
       const end = new THREE.Mesh(new THREE.PlaneGeometry(wide, 0.2), paint)
       end.rotation.x = -Math.PI / 2
       end.rotation.z = -bay.heading
+      const endX = bay.x - bx * long / 2
+      const endZ = bay.z - bz * long / 2
       end.position.set(
-        bay.x - bx * long / 2, 0.07, bay.z - bz * long / 2)
+        endX, this.groundAt(endX, endZ) + GRASS_ABOVE_SAND + 0.07, endZ)
       this.game.add(end)
     }
   }
@@ -2429,14 +2545,22 @@ export class World {
         v.drawn = { x: at.x, z: at.z }
       }
 
-      v.mesh.position.set(v.drawn.x, 0, v.drawn.z)
-      v.mesh.rotation.y = v.heading
+      // On the ground, and pitched to it. The road corridor is level across
+      // its width, so a vehicle only ever tips along its own length - which is
+      // why one pitch angle is enough and no roll is needed.
+      const ground = this.groundAt(v.drawn.x, v.drawn.z)
+      const ahead = this.groundAt(
+        v.drawn.x + Math.sin(v.heading) * 2,
+        v.drawn.z + Math.cos(v.heading) * 2)
+
+      v.mesh.position.set(v.drawn.x, ground, v.drawn.z)
+      v.mesh.rotation.set(-Math.atan2(ahead - ground, 2), v.heading, 0, 'YXZ')
 
       // The collider follows the DRAWN position, not the simulated one, or you
       // could bump a car that isn't where you can see it.
       if (v.body) {
         this.game.physics.moveKinematic(v.body, v.drawn.x,
-          TRAFFIC_HEIGHTS[v.kind] / 2, v.drawn.z, v.heading)
+          ground + TRAFFIC_HEIGHTS[v.kind] / 2, v.drawn.z, v.heading)
       }
 
       // Brake lights, which is most of what makes traffic look like traffic
@@ -2607,14 +2731,15 @@ export class World {
       })
       const shed = new THREE.Mesh(
         new THREE.BoxGeometry(yard.shed.width, 8, yard.shed.depth), shedMat)
-      shed.position.set(yard.shed.x, 4, yard.shed.z)
+      shed.position.set(
+        yard.shed.x, this.groundAt(yard.shed.x, yard.shed.z) + 4, yard.shed.z)
       shed.rotation.y = yard.shed.heading
       shed.castShadow = true
       shed.receiveShadow = true
       this.game.add(shed)
 
       this.game.physics.createStaticBoxAt(
-        yard.shed.x, 4, yard.shed.z,
+        yard.shed.x, this.groundAt(yard.shed.x, yard.shed.z) + 4, yard.shed.z,
         yard.shed.width, 8, yard.shed.depth, yard.shed.heading)
     }
 
@@ -3045,7 +3170,7 @@ export class World {
     awning.castShadow = true
     group.add(awning)
 
-    group.position.set(x, 0, z)
+    group.position.set(x, this.groundAt(x, z), z)
     group.rotation.y = facing
     this.game.add(group)
   }
@@ -3072,7 +3197,7 @@ export class World {
       group.add(leg)
     }
 
-    group.position.set(x, 0, z)
+    group.position.set(x, this.groundAt(x, z), z)
     group.rotation.y = facing + Math.PI
     this.game.add(group)
   }
@@ -3084,7 +3209,7 @@ export class World {
         color: 0x5a6470, roughness: 0.85, flatShading: true
       })
     )
-    bin.position.set(x, 0.42, z)
+    bin.position.set(x, this.groundAt(x, z) + 0.42, z)
     bin.castShadow = true
     this.game.add(bin)
   }
@@ -3113,7 +3238,7 @@ export class World {
     group.add(shrub)
     this.swayables.push({ object: shrub, phase: this.rand() * Math.PI * 2, scale: 0.3 })
 
-    group.position.set(x, 0, z)
+    group.position.set(x, this.groundAt(x, z), z)
     this.game.add(group)
   }
 
@@ -3122,7 +3247,7 @@ export class World {
     const model = this.assets && this.assets.get && this.assets.get('tree_a')
     if (model) {
       const tree = model.clone()
-      tree.position.set(x, 0, z)
+      tree.position.set(x, this.groundAt(x, z), z)
       tree.rotation.y = this.rand() * Math.PI * 2
       tree.scale.setScalar(this.randRange(0.8, 1.1))
       this.game.add(tree)
@@ -3153,7 +3278,7 @@ export class World {
     group.add(canopy)
     this.swayables.push({ object: canopy, phase: this.rand() * Math.PI * 2, scale: 0.4 })
 
-    group.position.set(x, 0, z)
+    group.position.set(x, this.groundAt(x, z), z)
     this.game.add(group)
   }
 
@@ -3239,7 +3364,10 @@ export class World {
         })
       )
       plaza.rotation.x = -Math.PI / 2
-      plaza.position.set(cx, 0.05, cz)
+      // Above the grass, not just above the ground: the grass cap is drawn
+      // GRASS_ABOVE_SAND up, and ducks GROUND_SINK under anything that claims
+      // the ground - which a district now does - so this clears both.
+      plaza.position.set(cx, this.groundAt(cx, cz) + 0.05, cz)
       plaza.receiveShadow = true
       this.game.add(plaza)
 
@@ -3371,7 +3499,7 @@ export class World {
         color: PALETTE.wallWhite, roughness: 0.85, flatShading: true
       })
     )
-    basin.position.set(x, 0.4, z)
+    basin.position.set(x, this.groundAt(x, z) + 0.4, z)
     basin.castShadow = true
     basin.receiveShadow = true
     this.game.add(basin)
@@ -3382,7 +3510,7 @@ export class World {
         color: PALETTE.seaShallow, roughness: 0.15, metalness: 0.5
       })
     )
-    pool.position.set(x, 0.82, z)
+    pool.position.set(x, this.groundAt(x, z) + 0.82, z)
     this.game.add(pool)
 
     this.game.physics.createStaticCylinder(x, 0.4, z, 3.8, 0.4)
@@ -3403,7 +3531,7 @@ export class World {
 
     if (this.assets && this.assets.has(modelKey)) {
       const model = this.assets.clone(modelKey)
-      model.position.set(x, 0, z)
+      model.position.set(x, this.groundAt(x, z), z)
 
       // IMPORTANT: measure and scale BEFORE rotating.
       //
@@ -3459,7 +3587,7 @@ export class World {
       // Collider gets the true footprint, with the rotation applied
       // separately - not a re-measured (and therefore inflated) box.
       this.game.physics.createStaticBoxAt(
-        x, footprint.y / 2, z,
+        x, this.groundAt(x, z) + footprint.y / 2, z,
         footprint.x, footprint.y, footprint.z,
         rotation
       )
@@ -3577,12 +3705,12 @@ export class World {
       group.add(sign)
     }
 
-    group.position.set(x, 0, z)
+    group.position.set(x, this.groundAt(x, z), z)
     group.rotation.y = rotation
     this.game.add(group)
 
     this.game.physics.createStaticBoxAt(
-      x, height / 2, z, width, height, depth, rotation
+      x, this.groundAt(x, z) + height / 2, z, width, height, depth, rotation
     )
   }
 
@@ -3751,7 +3879,7 @@ export class World {
 
     if (this.assets && this.assets.has(modelKey)) {
       const model = this.assets.clone(modelKey)
-      model.position.set(x, 0, z)
+      model.position.set(x, this.groundAt(x, z), z)
       model.rotation.y = this.rand() * Math.PI * 2
       model.scale.multiplyScalar(this.randRange(0.85, 1.25))
 
@@ -3833,7 +3961,7 @@ export class World {
     }
 
     group.add(crown)
-    group.position.set(x, 0, z)
+    group.position.set(x, this.groundAt(x, z), z)
     group.rotation.y = this.rand() * Math.PI * 2
     this.game.add(group)
 
@@ -3871,7 +3999,7 @@ export class World {
       }
     }
 
-    group.position.set(x, 0, z)
+    group.position.set(x, this.groundAt(x, z), z)
     this.game.add(group)
     this.swayables.push({ object: group, phase: this.rand() * Math.PI * 2, scale: 0.35 })
   }
@@ -3912,7 +4040,7 @@ export class World {
     door.position.set(0, 0.75, 1.42)
     group.add(door)
 
-    group.position.set(x, 0, z)
+    group.position.set(x, this.groundAt(x, z), z)
     group.rotation.y = this.rand() * Math.PI * 2
     this.game.add(group)
 
@@ -3923,7 +4051,7 @@ export class World {
     if (this.assets && this.assets.has('rock')) {
       const model = this.assets.clone('rock')
       const s = this.randRange(0.7, 1.4)
-      model.position.set(x, 0, z)
+      model.position.set(x, this.groundAt(x, z), z)
       model.rotation.y = this.rand() * Math.PI * 2
       model.scale.multiplyScalar(s)
       this.game.add(model)
@@ -3965,7 +4093,7 @@ export class World {
 
     if (this.assets && this.assets.has('streetlight')) {
       const model = this.assets.clone('streetlight')
-      model.position.set(x, 0, z)
+      model.position.set(x, this.groundAt(x, z), z)
       model.rotation.y = heading
       this.game.add(model)
       return
@@ -3996,7 +4124,7 @@ export class World {
     lamp.position.set(0.75, 4.44, 0)
     group.add(lamp)
 
-    group.position.set(x, 0, z)
+    group.position.set(x, this.groundAt(x, z), z)
     group.rotation.y = heading
     this.game.add(group)
 

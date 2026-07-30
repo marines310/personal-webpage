@@ -53,7 +53,22 @@ import {
 /** Where the car spawns and respawns. Should sit on an island. */
 export const SPAWN_POINT = { x: 0, y: 2, z: 0 }
 
-/** How thick the island slabs are. Their top face always sits at y = 0. */
+/**
+ * Where the car actually starts, with the ground taken into account.
+ *
+ * SPAWN_POINT's `y` is now a drop HEIGHT rather than an absolute one: put a
+ * hill under the starting point and a fixed y would spawn the car inside it,
+ * where it would either be flung out or fall through and respawn for ever.
+ */
+export function spawnPoint() {
+  return {
+    x: SPAWN_POINT.x,
+    y: groundHeight(SPAWN_POINT.x, SPAWN_POINT.z) + SPAWN_POINT.y,
+    z: SPAWN_POINT.z
+  }
+}
+
+/** How thick the island slabs are, below the ground at that point. */
 export const ISLAND_DEPTH = 8
 
 /** Height of the sea surface. */
@@ -832,7 +847,11 @@ export function getIslandTerrain(island) {
   // arrive at the same height, or the ground steps between them.
   const shapes = getIslandRoads(island).map(road => ({
     points: road.points,
-    width: road.width
+    width: road.width,
+    // How far the DRAWN paving reaches: the carriageway plus its pavements.
+    // The renderer ducks the grass under this; the height blends over a much
+    // wider corridor, and using that instead sank the ground under buildings.
+    pavedHalf: road.width / 2 + PAVEMENT_WIDTH
   }))
   const profiles = roadNetworkProfile(shapes, openGround)
   const roads = shapes.map((road, i) => ({ ...road, heights: profiles[i] }))
@@ -854,6 +873,25 @@ export function getIslandTerrain(island) {
       height: heightOnRoads(roads, plot.x, plot.z, openGround)
     }))
 
+  // A district - the hub's plaza - is a paved area laid on the ground, so it
+  // has to claim that ground the same way a building does. Without it the
+  // plaza is drawn five centimetres over a hillside the grass is still
+  // following, and the grass comes through it.
+  for (const district of island.districts || []) {
+    const size = (district.size || 14) / 2
+    pads.push({
+      x: district.x || 0,
+      z: district.z || 0,
+      halfWidth: size,
+      halfDepth: size,
+      heading: 0,
+      // Paved: it draws a surface of its own, so the grass may duck under it.
+      // A building's plot may not - see claimAt() in terrain.js.
+      paved: true,
+      height: heightOnRoads(roads, district.x || 0, district.z || 0, openGround)
+    })
+  }
+
   for (const placed of island.buildings || []) {
     pads.push({
       x: placed.x,
@@ -862,6 +900,52 @@ export function getIslandTerrain(island) {
       halfDepth: (placed.depth || 6) / 2,
       heading: ((placed.rotation || 0) * Math.PI) / 180,
       height: heightOnRoads(roads, placed.x, placed.z, openGround)
+    })
+  }
+
+  terracePads(pads)
+
+  // A provisional field, cached before the stations are asked for.
+  //
+  // Station siting consults monorailCeiling(), which asks how high the ground
+  // is - so without something already in the cache, asking for the stations
+  // from here would call straight back into this function and never return.
+  // The provisional field has everything except the stations, which is all
+  // the siting actually needs.
+  terrainCache.set(island.id,
+    makeHeightField({ hills, inlandAt, beach, roads, pads }))
+
+  // Fire stations, police stations and hospitals stand on ground too. Without
+  // a terrace of their own a hospital sat on the height at its centre while
+  // the ground fell away around it, and you could drive underneath it.
+  for (const station of getStations().filter(s => s.island === island)) {
+    pads.push({
+      x: station.x - island.x,
+      z: station.z - island.z,
+      halfWidth: station.width / 2,
+      halfDepth: station.depth / 2,
+      heading: station.heading,
+      height: heightOnRoads(roads, station.x - island.x, station.z - island.z,
+                            openGround)
+    })
+
+    // And the apron in front. Level, but NOT marked paved: a station's
+    // forecourt overlaps the plots of nine ordinary buildings on this map,
+    // and a paved claim would sink the ground under those too and leave them
+    // floating. It is drawn as a raised forecourt instead - see the apron in
+    // World.js, which sits above the grass rather than under it.
+    const fx = Math.sin(station.heading)
+    const fz = Math.cos(station.heading)
+    const out = STATION_SETBACK / 2 + station.depth / 2 - 1
+
+    pads.push({
+      x: station.x - island.x + fx * out,
+      z: station.z - island.z + fz * out,
+      halfWidth: (station.width + 4) / 2,
+      halfDepth: (STATION_SETBACK - 2) / 2,
+      heading: station.heading,
+      height: heightOnRoads(roads, station.x - island.x, station.z - island.z,
+                            openGround)
     })
   }
 
@@ -4791,7 +4875,15 @@ export function monorailCeiling(route, x, z) {
   const near = distanceToPath(route.points, x, z)
   if (near > MONORAIL_CORRIDOR) return Infinity
 
+  // Headroom above the GROUND, not above sea level. The beam stays level
+  // while the land does not, so a building on a six-unit hill has six units
+  // less room under it - and if this returned the same figure everywhere,
+  // that building would grow straight through the line.
+  //
+  // Safe to ask the terrain from here: nothing the terrain is assembled from
+  // consults the monorail's ceiling, so this cannot come back round on itself.
   return MONORAIL_HEIGHT - MONORAIL_BEAM_DEPTH - MONORAIL_CLEARANCE
+    - groundHeight(x, z)
 }
 
 /**

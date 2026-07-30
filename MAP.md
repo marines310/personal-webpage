@@ -677,6 +677,28 @@ If you raise the hills a long way, the thing to watch is not the height - it
 is what the ground does BETWEEN a road and a building, because that is where
 all three rules meet. `tests/terrain.mjs` measures all of it on the real map.
 
+### Why the grass sits under the roads
+
+The drawn grass and sand duck about half a metre beneath anything flat - a
+road, a pavement, a building's forecourt (`GROUND_SINK` in `World.js`). The
+collider does not: what you drive on is the true ground.
+
+**The rule behind it: two meshes with different corners cannot be stacked
+closer than the error between them.** Either give them the same vertices, or
+leave a real gap. It caught three pairs in a row here - grass against road,
+grass against sand (the grass cap is a ring inset inside the island's
+outline, so its corners are nowhere near the sand's), and grass against the
+hub's plaza. The plaza is now a claim on the ground like a building is, so
+the ground under it is flat and the grass ducks beneath it.
+
+That looks like a fudge and is not. Two surfaces meshed at different points
+cannot be reliably stacked three centimetres apart: between its own corners
+the grass is a flat triangle, and wherever the ground curves away - which it
+does within a metre of every kerb - that triangle sits above the true surface
+and comes up through the tarmac. Finer triangles only halve the error each
+time you quadruple the count. Ducking out of sight is exact, free, and hides
+nothing you were meant to see.
+
 ### Where it lives
 
 `src/world/terrain.js` is the maths - hills, coast taper, road profiles, pads -

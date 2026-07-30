@@ -54,16 +54,33 @@ export const ROAD_BLEND = 9
 /**
  * How far past its footprint a building holds its pad level.
  *
- * Smaller than half the gap between neighbouring plots (PLOT_GAP is 2.5), on
- * purpose. Any wider and every plot on a street shares ground with the next
- * one, and asking which is in charge in the overlap gives a different answer
- * on each side of the boundary. Smaller than the pavement too, so a pad never
- * reaches into the carriageway it fronts.
+ * Small, and for a reason worth understanding before changing it. Plots on a
+ * street sit PLOT_GAP (2.5) apart, and on an 8% street the next plot along is
+ * up to a metre lower. That drop has to happen in the gap BETWEEN the two
+ * level zones, so the wider each zone, the narrower the gap and the steeper
+ * the bank: at 1.2 the zones left a tenth of a unit to fall 1.4 metres in,
+ * which is a vertical cliff. No mesh can follow a vertical cliff, so the grass
+ * cut straight up through the road beside it.
+ *
+ * At 0.4 there is 1.7 units of gap - a bank you can see, but a bank rather
+ * than a wall. Still comfortably past the footprint, which is what Mike asked
+ * for: the ground fully supports the base.
  */
-export const PAD_MARGIN = 1.2
+export const PAD_MARGIN = 0.4
 
 /** And the blend out from a pad. Shorter than a road's: a pad is a terrace. */
 export const PAD_BLEND = 5
+
+/**
+ * How far past the edge of a PAVED surface the drawn ground stays ducked.
+ *
+ * Short. This is not the height blend - it is the footprint of the tarmac,
+ * the kerbs and the paving that are actually drawn over the hole. Using the
+ * height blend instead put every building's plot inside a road's claim, nine
+ * units from the kerb, and sank the grass under buildings that had nothing
+ * covering them.
+ */
+export const PAVED_FADE = 1.5
 
 /**
  * A smooth bump, 1 at the middle and 0 at the rim, with zero slope at both.
@@ -447,7 +464,7 @@ export function rectanglesOverlap(a, b, margin = 0) {
  * and a half off the other. A row of houses on a slope is a terrace; this
  * makes it one.
  */
-export function terracePads(pads, margin = PAD_MARGIN * 2) {
+export function terracePads(pads, margin = PAD_MARGIN * 2 + 0.5) {
   const parent = pads.map((_, i) => i)
   const find = (i) => {
     while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i] }
@@ -484,6 +501,26 @@ export function terracePads(pads, margin = PAD_MARGIN * 2) {
   }
 
   return pads
+}
+
+/**
+ * Cache a function of (x, z) on a one-centimetre grid.
+ *
+ * Keyed on a single number rather than a string: building two million strings
+ * costs more than the lookups save.
+ */
+function remember(fn) {
+  const cache = new Map()
+
+  return (x, z) => {
+    const key = Math.round(x * 100) * 4194304 + Math.round(z * 100)
+    const hit = cache.get(key)
+    if (hit !== undefined) return hit
+
+    const value = fn(x, z)
+    cache.set(key, value)
+    return value
+  }
 }
 
 /** How strongly a flat thing holds, from its edge out through its blend. */
@@ -532,22 +569,39 @@ export function makeHeightField(spec) {
     hillHeight(hills, x, z) * coastFactor(inlandAt(x, z), beach)
 
   function heightAt(x, z) {
-    const shore = coastFactor(inlandAt(x, z), beach)
-    let height = hillHeight(hills, x, z) * shore
-
-    // The roads, blended and weighted heavily towards the nearest.
+    // The coast is applied HERE, to the open ground, and nowhere else.
     //
-    // Winner-takes-all left a seam wherever two corridors met: the ground
-    // jumped from one road's height to the other's at the midpoint between
-    // them, and a car crossing that seam met a step. Cubing the strengths
-    // keeps the road you are standing on firmly in charge while making the
-    // handover continuous.
-    let sum = 0
-    let weight = 0
-    let roadClaim = 0
-    let onCarriageway = false
-    let nearest = Infinity
-    let nearestHeight = 0
+    // It used to gate the finished height as well, which put a two-and-a-half
+    // metre cliff around every terrace near the shore: inside the footprint
+    // the pad's height was returned whole, and one step outside it the same
+    // height came back multiplied by a third. Everything that can claim the
+    // ground - road profiles, building pads - already takes its height from
+    // this tapered ground, so gating twice was gating what had already been
+    // gated.
+    const shore = coastFactor(inlandAt(x, z), beach)
+    const open = hillHeight(hills, x, z) * shore
+
+    // Every flat thing that has a say here, and how strongly.
+    //
+    // ONE rule for roads and terraces together, and it is a blend rather than
+    // a winner. Picking the strongest claim - or the nearest, or the one you
+    // are most inside - steps the moment the winner changes, and two claims
+    // whose blends overlap swap over somewhere in the middle. That showed as a
+    // 59-centimetre cliff in the ground between two building plots, which the
+    // grass mesh then cut straight up through the road with.
+    //
+    // The weight is s / (1 - s): it runs away to infinity as a claim reaches
+    // full strength, so inside a carriageway or a footprint the answer is
+    // exactly that claim and nothing else gets a look in, and it falls to zero
+    // at the outside of the blend. Continuous everywhere in between, which is
+    // the property that actually matters - a mesh can only follow ground that
+    // is smooth enough to be sampled.
+    let sum = open
+    let weight = 1
+    let full = 0
+    let fullSum = 0
+    let roadFull = 0
+    let roadFullSum = 0
 
     for (let i = 0; i < roads.length; i++) {
       const box = bounds[i]
@@ -560,77 +614,87 @@ export function makeHeightField(spec) {
       const strength = holdStrength(
         near.distance, road.width / 2 + ROAD_SHOULDER, ROAD_BLEND)
       if (strength <= 0) continue
-      // A hair of tolerance: the kerb sample sits EXACTLY on width/2, and
-      // whether it counted came down to the last bit of the float. One side
-      // of the road took its own profile and the other took a neighbouring
-      // building's terrace, which is a 10% camber from a rounding error.
-      if (near.distance <= road.width / 2 + 0.05) onCarriageway = true
 
       const a = road.heights[near.index]
       const b = road.heights[near.index + 1] ?? a
       const here = a + (b - a) * near.t
-      const w = strength * strength * strength
 
+      if (strength >= 1) { roadFull++; roadFullSum += here; continue }
+      // Fading a claim's WEIGHT at the shore, rather than gating the finished
+      // height, is what lets the land meet the sea without putting a step
+      // around everything that stands near it.
+      const w = (strength / (1 - strength)) * shore
       sum += w * here
       weight += w
-      roadClaim = Math.max(roadClaim, strength)
-
-      if (near.distance < nearest) { nearest = near.distance; nearestHeight = here }
     }
-
-    // Inside the carriageway the answer is that road's own profile and
-    // nothing else - not a terrace, not a neighbouring corridor, and not even
-    // a blend with one. A profile varies only ALONG its road, so taking it
-    // whole is what makes the carriageway level across its width; blending at
-    // the kerb left a 10% camber where two roads ran close together, which is
-    // a car sliding towards the gutter.
-    if (onCarriageway) return nearestHeight
-
-    // Off the carriageway, a corridor lets go of the ground as it reaches the
-    // water - it is holding the land level for the benefit of a road, and
-    // there is no road out on the sand. Applied only HERE, after the
-    // carriageway has already been answered, so it can never tilt the road
-    // itself: doing it earlier cambered every coast road by ten per cent.
-    // A building's terrace, which outranks the open ground, the road corridor
-    // beside it and the coast taper below: Mike's requirement is that a
-    // building stands vertical on ground that fully supports its base, so
-    // inside its own footprint the answer is the pad, flat, full stop.
-    let padClaim = 0
-    let padHeight = 0
-
-    // The pad you are most deeply inside wins, not the first one asked. With
-    // terracing they agree anyway, but an answer that depends on array order
-    // is an answer waiting to change.
-    let inside = Infinity
 
     for (const pad of pads) {
-      const distance = rectangleDistance(x, z, pad)
-      const strength = holdStrength(distance, PAD_MARGIN, PAD_BLEND)
+      const strength = holdStrength(
+        rectangleDistance(x, z, pad), PAD_MARGIN, PAD_BLEND)
       if (strength <= 0) continue
 
-      if (strength > padClaim || (strength === padClaim && distance < inside)) {
-        padClaim = strength
-        padHeight = pad.height
-        inside = distance
-      }
+      if (strength >= 1) { full++; fullSum += pad.height; continue }
+      const w = (strength / (1 - strength)) * shore
+      sum += w * pad.height
+      weight += w
     }
 
-    if (padClaim >= 1) return padHeight
+    // Anything at full strength owns the ground outright. Two of the same
+    // kind only overlap where they have been made to agree - roads pinned at
+    // their junctions, plots terraced with their neighbours - so averaging is
+    // a formality rather than a compromise.
+    //
+    // A road beats a terrace, though. Where a plot has been laid out with a
+    // corner over a carriageway, the carriageway has to stay level: a car
+    // drives on it, and nobody walks on the last half metre of a forecourt.
+    if (roadFull) return roadFullSum / roadFull
+    if (full) return fullSum / full
 
-    if (weight > 0) height += (sum / weight - height) * roadClaim
+    return sum / weight
+  }
 
-    // Outside the carriageway a terrace still gives way to the road corridor
-    // as far as the corridor holds. Inside its own footprint a pad is at full
-    // strength and has already returned above, so this only settles the blend
-    // between the two.
-    if (padClaim > 0) height += (padHeight - height) * padClaim * (1 - roadClaim)
+  /**
+   * How strongly the flat things - roads, terraces - hold this point.
+   *
+   * 1 on a carriageway or inside a building's footprint, falling to 0 at the
+   * outside of their blends. The renderer uses it to duck the grass out of
+   * the way underneath them: a decorative surface three centimetres below a
+   * road will always find a way to poke through it, and no amount of mesh
+   * resolution fixes that - the two surfaces are sampled at different points
+   * and a flat triangle between two samples cuts above a surface that curves
+   * away.
+   */
+  function claimAt(x, z) {
+    let strongest = 0
 
-    // And the coast has the last word over everything that is left, which is
-    // open ground and the outer blends. Stated as a hard gate rather than
-    // hoped for: the promise is that the land meets the sea, and the two
-    // things that legitimately stand above the waterline - a road crossing
-    // the beach, and a building's own terrace - have both answered above.
-    return height * shore
+    for (let i = 0; i < roads.length; i++) {
+      const box = bounds[i]
+      if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue
+
+      const near = nearestOnPath(roads[i].points, x, z)
+      if (!near) continue
+
+      // The carriageway and its pavements - what is actually drawn - not the
+      // corridor the HEIGHT blends over, which reaches three times as far.
+      const paved = roads[i].pavedHalf ?? (roads[i].width / 2)
+      strongest = Math.max(strongest, holdStrength(near.distance, paved, PAVED_FADE))
+      if (strongest >= 1) return 1
+    }
+
+    // PAVED pads only - a plaza, not a building's plot.
+    //
+    // A road, a pavement and a plaza all draw a surface over the hole they
+    // make. A building's terrace does not: the ground around a building is
+    // just grass, so ducking it left every building standing a metre up in
+    // the air over a moat of its own.
+    for (const pad of pads) {
+      if (!pad.paved) continue
+      strongest = Math.max(strongest, holdStrength(
+        rectangleDistance(x, z, pad), PAD_MARGIN, PAVED_FADE))
+      if (strongest >= 1) return 1
+    }
+
+    return strongest
   }
 
   /** Rise per unit, sampled. Used to pitch vehicles and to test gradients. */
@@ -640,5 +704,115 @@ export function makeHeightField(spec) {
     return { dx, dz, grade: Math.hypot(dx, dz) }
   }
 
-  return { heightAt, slopeAt, roads, pads, hills }
+  // Both of these are asked the same question over and over: the ground mesh
+  // subdivides by testing the midpoint of every edge, and neighbouring
+  // triangles share edges, so the same point comes up again and again. Without
+  // this the six islands took 34 seconds to mesh - which reads as a portfolio
+  // that does not load.
+  //
+  // Quantised to a centimetre. The field is smooth at that scale, and it is
+  // ten times finer than the smallest gap between any two surfaces.
+  return {
+    heightAt: remember(heightAt),
+    slopeAt,
+    claimAt: remember(claimAt),
+    roads, pads, hills
+  }
+}
+
+// ---------------------------------------------------------------------------
+// THE GROUND MESH
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a ground-mesh edge may be before it is split.
+ *
+ * The islands are triangulated from their outlines, which gives triangles up
+ * to a hundred units across - fine when the ground was flat at zero, useless
+ * for following a hill, because the surface between the corners is a plane
+ * and the road laid on it is not.
+ */
+export const GROUND_MESH_EDGE = 6
+
+/**
+ * How far the flat mesh may stray from the true ground before it is split
+ * again.
+ *
+ * This is the one that matters. Splitting by LENGTH alone assumes the ground
+ * bends evenly, and it does not: it is nearly flat across open grass and then
+ * drops a metre over three units at the edge of a building's terrace. A
+ * six-unit triangle across that bank sat half a metre proud of the ground,
+ * and since the road is only six centimetres above the grass, the grass came
+ * up through the road - which is exactly what Mike saw.
+ *
+ * Two centimetres is comfortably inside the smallest clearance in the world
+ * (the grass sits three below the road).
+ */
+export const GROUND_MESH_TOLERANCE = 0.06
+
+/** But never smaller than this, or a bad field could subdivide for ever. */
+export const GROUND_MESH_MIN_EDGE = 0.8
+
+/**
+ * Split triangles until every edge is shorter than `maxEdge`.
+ *
+ * Splits the LONGEST edge each time, which keeps the pieces from growing
+ * slivers, and always at its midpoint - so two triangles sharing an edge
+ * split it in the same place and the mesh stays watertight. A crack in the
+ * ground is a hole you can see the sea through.
+ */
+export function subdivideTriangles(triangles, maxEdge, heightAt = null,
+                                   tolerance = GROUND_MESH_TOLERANCE) {
+  const out = []
+  const queue = [...triangles]
+  const limit = maxEdge * maxEdge
+  const floor = GROUND_MESH_MIN_EDGE * GROUND_MESH_MIN_EDGE
+
+  // A cap, so a pathological field cannot hang the loader
+  let guard = 600000
+
+  while (queue.length && guard-- > 0) {
+    const t = queue.pop()
+
+    // The longest edge, and how far the mesh strays from the ground along it.
+    // Splitting the longest edge each time keeps the pieces from turning into
+    // slivers, and always at its midpoint - so two triangles sharing an edge
+    // split it in the same place and the mesh stays watertight. A crack in
+    // the ground is a hole you can see the sea through.
+    let worst = 0
+    let at = -1
+    for (let i = 0; i < 3; i++) {
+      const a = t[i]
+      const b = t[(i + 1) % 3]
+      const d = (a.x - b.x) * (a.x - b.x) + (a.z - b.z) * (a.z - b.z)
+      if (d > worst) { worst = d; at = i }
+    }
+
+    const a = t[at]
+    const b = t[(at + 1) % 3]
+    const c = t[(at + 2) % 3]
+    const mid = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 }
+
+    let split = worst > limit
+
+    // Every edge, not just the longest one. A triangle lying across a bank
+    // that runs parallel to its longest edge has no error along THAT edge at
+    // all, and a test that only looks there passes it - which is how banks
+    // three quarters of a metre out survived a tolerance of two centimetres.
+    if (!split && heightAt && worst > floor) {
+      for (let i = 0; i < 3 && !split; i++) {
+        const p = t[i]
+        const q = t[(i + 1) % 3]
+        const m = { x: (p.x + q.x) / 2, z: (p.z + q.z) / 2 }
+        const chord = (heightAt(p.x, p.z) + heightAt(q.x, q.z)) / 2
+        if (Math.abs(heightAt(m.x, m.z) - chord) > tolerance) split = true
+      }
+    }
+
+    if (!split) { out.push(t); continue }
+
+    queue.push([a, mid, c], [mid, b, c])
+  }
+
+  return out.concat(queue)
 }

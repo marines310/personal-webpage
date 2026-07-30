@@ -100,7 +100,7 @@ src/systems/               Camera, Inputs, Physics, Assets, Environment.
 map-editor.html            The whole editor: one file, Vite entry, imports
                            the real modules from src/world/.
 
-tests/                     29 suites, ~835 checks. `npm test`.
+tests/                     30 suites, ~865 checks. `npm test`.
 MAP.md                     How to edit the world. Written for Mike.
 DEPLOY.md                  How to publish. Written for Mike.
 ROADMAP.md                 Longer-term wishlist.
@@ -245,7 +245,7 @@ than a measurement or a reference, that is the moment to stop and ask.
 ## Testing
 
 ```bash
-npm test          # all 29 suites, ~835 checks
+npm test          # all 30 suites, ~865 checks
 ```
 
 There's no framework. Each file in `tests/` is a plain script that prints
@@ -899,6 +899,131 @@ HTTP, and checks every asset the published site requests actually returns
     which looks like the editor is broken when the editor never moved. It
     copies the whole folder now. **A list of files that shadows a directory is
     a second copy of that directory**, and rule 1 applies to it.
+
+28. **Terrain, part two: the world stands on it.** ✅ 30 July. The ground mesh
+    and its collider are subdivided and lifted by the height field; roads,
+    pavements, crossings, markings and junction patches carry a height per
+    vertex; every prop, building, sign, bus stop and station bay sits on the
+    ground; the AI traffic sits on the road and pitches to the slope; the
+    monorail pillars and stair towers run from the ground to a beam that stays
+    level, so the train does not undulate.
+
+    - **The mesh has to be subdivided or nothing else matters.** An island is
+      triangulated from its outline, which gives triangles up to a hundred
+      units across; lifting three corners of one of those leaves a flat plane
+      with the road floating over it. `subdivideTriangles` splits the longest
+      edge at its midpoint until nothing is longer than `GROUND_MESH_EDGE`,
+      which keeps shared edges split in the same place - a mesh that cracks is
+      a hole you can see the sea through.
+    - **`monorailCeiling` now measures from the GROUND.** It returned a height
+      above sea level, which was the same everywhere; on a six-unit hill a
+      building would have grown straight through the beam.
+    - **`SPAWN_POINT.y` is a drop height, not a position.** Put a hill under
+      the start and a fixed y spawns the car inside it.
+
+    And a new guard: `worldsanity.mjs` section 8 scans for anything placed by
+    its own x and z at a FIXED height - the signature of a prop hovering over a
+    hillside or buried in it. Written as a scan rather than a list of
+    exceptions, because a list goes stale the moment someone adds a prop.
+    Verified by putting a bin back at sea level and watching it fail.
+
+    **The car flew off crests.** Reported straight away, and it is the
+    horizontal-thrust problem: the car is pushed along a HORIZONTAL heading and
+    left to gravity, so at any convex change of slope it carries on while the
+    ground drops away - at 18 units a second that is a jump. When grounded it
+    now descends at least as fast as the ground does. Downwards only: pushing a
+    car UP to meet a slope would shove it through whatever it was climbing, and
+    gravity handles that direction already.
+
+    **Still to do:** the car on slopes needs checking with hands on
+    the keyboard (it is a Rapier body that never touches its own vertical
+    velocity, so it should climb, but its thrust is horizontal and loses bite
+    on a gradient), and the bridges are still flat over the water.
+
+29. **Green shards through the roads.** ✅ 30 July, from a screenshot. Grass
+    poking up through the tarmac, the pavements and the plaza.
+
+    Not z-fighting, and not a resolution problem. **Two surfaces meshed at
+    different points cannot be stacked three centimetres apart.** The grass
+    samples the height field at its own triangle corners; between them it is a
+    flat chord, and where the ground curves away - which it does within a
+    metre of every kerb - the chord sits above the true surface. Chasing it
+    with subdivision halved the error each time the triangle count quadrupled,
+    and was still 30cm out at five seconds an island.
+
+    Three fixes, in the order they were found:
+
+    - **The field had genuine cliffs in it.** Picking a single winner among
+      overlapping claims - nearest road, most-inside pad - steps the moment the
+      winner changes. Now every claim contributes with weight `s / (1 - s)`,
+      which runs to infinity as a claim reaches full strength: on a carriageway
+      or inside a footprint the answer is exactly that claim, and it is
+      continuous everywhere else. And the coast taper is applied to the open
+      ground and to the claim WEIGHTS, never to the finished height - gating
+      twice put a 2.45-metre cliff around every terrace near the shore.
+    - **`PAD_MARGIN` was too wide.** Plots sit 2.5 apart and on an 8% street the
+      next one is a metre lower; at a margin of 1.2 the two level zones left a
+      tenth of a unit to fall a metre in. It is 0.4 now, which leaves 1.7 units
+      of bank.
+    - **And then the grass gets out of the way.** `GROUND_SINK`: the DRAWN
+      ground ducks 45cm under anything flat, in proportion to how strongly that
+      thing claims the point. The collider does not - what you drive on is
+      still the true surface. Hiding a decorative surface under the one you are
+      meant to see is cheaper and more reliable than making the two agree to
+      the centimetre.
+
+    **And then the same bug twice more, in thinner slivers.** The grass cap is
+    a ring inset inside the island's outline, so it is triangulated from a
+    different polygon than the sand and their corners are nowhere near each
+    other; at three centimetres apart they crossed constantly. It is 30cm now
+    (`GRASS_ABOVE_SAND`), which reads as a low bank at the top of the beach.
+    And the hub's plaza was drawn 5cm over ground the grass was still
+    following - districts are claims on the ground now, like buildings, so the
+    ground under them is flat and the grass ducks beneath.
+
+    **And then the ducking itself floated every building.** Ducking the ground
+    is only safe where something is DRAWN over the hole. A road, a pavement and
+    a plaza all draw one; a building's plot does not, so sinking the ground
+    under a building left it standing in the air over a moat of its own.
+    `claimAt` now answers "is this covered by paving" - the carriageway plus
+    its pavements, `pavedHalf` - rather than "does anything flatten the height
+    here", which reached three times as far and swallowed every plot on the
+    map. `tests/terrain.mjs` section 7 checks both halves of that.
+
+    **And it took 34 seconds to load.** Not an error - the page came up
+    eventually, which is worse, because nothing reports it. Subdividing the
+    ground asks the height field for the midpoint of every edge, neighbouring
+    triangles share edges, and the field walks every road on the island for
+    every question. `heightAt` and `claimAt` are memoised on a one-centimetre
+    grid now (`remember()` in terrain.js) and the same work takes 3.2 seconds.
+
+    Still worth another pass: the sand, the grass and the collider each
+    subdivide the island separately, and the collider could reuse the sand's
+    triangles.
+
+    **And the stations were missed entirely.** Fire stations, police stations
+    and hospitals are buildings, but they are not PLOTS, so nothing gave them a
+    terrace: the hospital on CONTACT stood on the height at its own centre
+    while the ground fell away around it, and you could drive underneath it.
+    They get pads now - which needed a two-phase build, because siting a
+    station asks how high the ground is, and the ground now depends on where
+    the stations are. A provisional field goes into the cache first, the
+    stations are sited against it, then the field is rebuilt with them in.
+
+    Their aprons are deliberately NOT marked paved. A station forecourt
+    overlaps nine ordinary plots on this map, and a paved claim would sink the
+    ground under those and float them; the apron is drawn as a raised forecourt
+    above the grass instead.
+
+    **The rule, stated once so it stops being rediscovered: two meshes with
+    different vertices cannot be stacked closer than the error between them.**
+    Give them the same vertices, or leave a real gap. And when you move one out
+    of the way, check what was standing on it.
+
+    `subdivideTriangles` moved to `terrain.js` on the way, because it is pure
+    logic and it was sitting in the one file no test can run - and its error
+    test only looked along the longest edge, so a bank running parallel to
+    that edge sailed past it.
 
 **Also open, from earlier:**
 

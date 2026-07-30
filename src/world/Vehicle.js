@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { Game } from '../core/Game.js'
-import { FALL_LIMIT, SPAWN_POINT } from './islandLayout.js'
+import { FALL_LIMIT, spawnPoint, groundSlope } from './islandLayout.js'
 
 /**
  * How big the car is, and everything that follows from it.
@@ -26,7 +26,9 @@ const WHEEL_RADIUS = 0.25 * CAR_SCALE
 
 // Spawn position comes from the map file, so moving the starting island
 // in islandLayout.js moves the car with it.
-const SPAWN = SPAWN_POINT
+// Worked out rather than fixed, because the ground under the starting point
+// is no longer guaranteed to be at zero.
+const SPAWN = spawnPoint()
 
 /**
  * Vehicle - Arcade car using the kinematic "bicycle model".
@@ -475,10 +477,27 @@ export class Vehicle {
     // Frame-rate independent decay of the sideways component
     const lateralKept = Math.pow(1 - p.lateralGrip, delta)
 
+    // Follow the ground down, rather than flying off the top of every crest.
+    //
+    // The car is driven along a HORIZONTAL heading and left to gravity for the
+    // rest, which was right while the world was flat. On terrain it means that
+    // at any convex change of slope - the top of a rise, the lip of a bank -
+    // the car carries straight on while the ground falls away, and at 18 units
+    // a second that is a jump.
+    //
+    // So when it is on the ground, it descends at least as fast as the ground
+    // does. Only DOWNWARDS: pushing a car up to meet a slope would shove it
+    // through whatever it was climbing, and gravity plus the collider handle
+    // that direction perfectly well already.
+    const at = this.body.translation()
+    const slope = groundSlope(at.x, at.z)
+    const falling = this.currentSpeed *
+      (slope.dx * this._forwardDir.x + slope.dz * this._forwardDir.z)
+
     this.body.setLinvel(
       {
         x: this._forwardDir.x * this.currentSpeed + this._lateral.x * lateralKept,
-        y: vel.y, // never touch gravity
+        y: falling < 0 ? Math.min(vel.y, falling) : vel.y,
         z: this._forwardDir.z * this.currentSpeed + this._lateral.z * lateralKept
       },
       true

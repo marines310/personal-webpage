@@ -326,14 +326,16 @@ buildings get a flat terrace under their whole footprint, and the land still
 meets the sea at the waterline. `tests/terrain.mjs` measures all three on the
 real map.
 
-**Nothing is drawn on it yet** — `World.js` still builds a flat world, so the
-game looks unchanged. What remains:
+The world now stands on it:
 
-- [ ] the ground mesh and the physics collider follow the height field
-- [ ] roads, pavements and crossings get a height per vertex
-- [ ] props, buildings, signs and station bays sit on the ground
-- [ ] the AI traffic sits on the road and pitches to the slope
-- [ ] the monorail beam stays level and its pillars vary in length
+- [x] the ground mesh and the physics collider follow the height field
+- [x] roads, pavements and crossings get a height per vertex
+- [x] props, buildings, signs and station bays sit on the ground
+- [x] the AI traffic sits on the road and pitches to the slope
+- [x] the monorail beam stays level and its pillars vary in length
+- [x] the car follows the ground down instead of flying off crests
+- [ ] the player's car checked on the steepest slopes, by hand
+- [ ] load time: the sand, grass and collider each subdivide separately (3.2s)
 - [ ] bridges rise clear of the water, with ramps every vehicle can drive
 
 # Next up — ships, bridges and terrain
