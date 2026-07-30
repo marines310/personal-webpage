@@ -46,6 +46,13 @@ export const ISLANDS = [
     shapeSeed: 12,
     districts: [
       { type: 'plaza', x: 0, z: 0, size: 34 }
+    ],
+    // Deliberately gentle to begin with. See "Hills" in MAP.md: the roads and
+    // the building pads flatten themselves out of whatever you put here, so
+    // the thing to watch when you raise these is the SLOPE between them.
+    hills: [
+      { x: -34, z: 30, radius: 42, height: 3 },
+      { x: 40, z: -22, radius: 38, height: 2.5 }
     ]
   },
   {
@@ -58,7 +65,11 @@ export const ISLANDS = [
     name: 'ABOUT',
     palms: 10,
     shape: 'wide',
-    shapeSeed: 4
+    shapeSeed: 4,
+    hills: [
+      { x: -40, z: -18, radius: 50, height: 4.5 },
+      { x: 46, z: 34, radius: 44, height: 3 }
+    ]
   },
   {
     id: 'projects',
@@ -70,7 +81,11 @@ export const ISLANDS = [
     name: 'EXPERIENCE',
     palms: 10,
     shape: 'long',
-    shapeSeed: 9
+    shapeSeed: 9,
+    hills: [
+      { x: 10, z: -46, radius: 52, height: 5 },
+      { x: -20, z: 40, radius: 46, height: 3.5 }
+    ]
   },
   {
     id: 'skills',
@@ -82,7 +97,10 @@ export const ISLANDS = [
     name: 'SKILLS',
     palms: 14,
     shape: 'crescent',
-    shapeSeed: 3
+    shapeSeed: 3,
+    hills: [
+      { x: 0, z: 0, radius: 55, height: 6 }
+    ]
   },
   {
     id: 'blog',
@@ -94,7 +112,10 @@ export const ISLANDS = [
     name: 'BLOG',
     palms: 12,
     shape: 'blob',
-    shapeSeed: 21
+    shapeSeed: 21,
+    hills: [
+      { x: 18, z: 14, radius: 46, height: 5.5 }
+    ]
   },
   {
     id: 'contact',
@@ -106,7 +127,11 @@ export const ISLANDS = [
     name: 'CONTACT',
     palms: 12,
     shape: 'triangle',
-    shapeSeed: 6
+    shapeSeed: 6,
+    hills: [
+      { x: -26, z: -26, radius: 48, height: 4 },
+      { x: 34, z: 24, radius: 40, height: 2.5 }
+    ]
   }
 ]
 

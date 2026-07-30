@@ -630,6 +630,68 @@ Two consequences worth knowing:
 
 ---
 
+## Hills, and the ground under everything
+
+The world is no longer flat. Each island can declare `hills`, and everything
+that touches the ground asks one function how high it is:
+
+```js
+{
+  id: 'about',
+  ...
+  hills: [
+    { x: -40, z: -18, radius: 50, height: 4.5 },
+    { x: 46, z: 34, radius: 44, height: 3 }
+  ]
+}
+```
+
+`x`/`z` are island-local, like everything else in an island's entry. `radius`
+is how far the hill reaches, `height` how high it stands at the middle. They
+add up where they overlap, and each one is a smooth dome rather than a cone -
+a cone has a crease down its side that catches the light and reads as a tent.
+
+Start gentle. The current map tops out at six units, which is about two
+storeys, and that is deliberate: everything else in the world has to react to
+this, and mild ground makes it obvious when something doesn't.
+
+### The three promises
+
+The height field is not just the hills. Three rules are built into it, because
+each is something you would otherwise have to trust every single object to
+respect:
+
+1. **Roads can be driven.** A corridor around every road is level ACROSS its
+   width - no camber - and no steeper than `MAX_ROAD_GRADIENT` (8%) ALONG its
+   length. The roads on an island are solved together, so where two meet they
+   arrive at the same height rather than stepping.
+2. **Buildings stand vertical on ground that holds them.** Every plot gets a
+   flat terrace under its whole footprint and a little way beyond. Plots that
+   share ground are levelled together, so a row of houses on a slope reads as
+   a terrace rather than a set of tilted boxes.
+3. **The land still meets the sea.** Height fades to zero at the waterline.
+   The only things allowed above sea level at the shore are a road that
+   crosses the beach on purpose, and a building's own terrace.
+
+If you raise the hills a long way, the thing to watch is not the height - it
+is what the ground does BETWEEN a road and a building, because that is where
+all three rules meet. `tests/terrain.mjs` measures all of it on the real map.
+
+### Where it lives
+
+`src/world/terrain.js` is the maths - hills, coast taper, road profiles, pads -
+and knows nothing about islands. `getIslandTerrain()` in `islandLayout.js`
+feeds it the real roads and plots and caches the result. Everything outside
+the layout should call `groundHeight(x, z)` and `groundSlope(x, z)`, which
+work in world coordinates.
+
+**One implementation, consulted by everyone.** If the grass mesh worked out
+its own heights and the roads worked out theirs, they would disagree by a few
+centimetres and every road in the world would either float or sink into the
+hill it crosses.
+
+---
+
 ## Lights in the windows after dark
 
 Nearly nine buildings in ten light their windows at dusk

@@ -33,6 +33,18 @@ import {
   turningRadii,
   pathLength
 } from './curves.js'
+import {
+  makeHeightField,
+  hillHeight,
+  coastFactor,
+  roadProfile,
+  roadNetworkProfile,
+  terracePads,
+  nearestOnPath,
+  PAD_MARGIN,
+  ROAD_SHOULDER,
+  ROAD_BLEND
+} from './terrain.js'
 
 // ---------------------------------------------------------------------------
 // GLOBAL SETTINGS
@@ -772,6 +784,141 @@ export function inlandDistance(island, localX, localZ) {
 /** Bounding box of an island's outline, island-local. */
 export function islandBounds(island) {
   return polygonBounds(getOutline(island))
+}
+
+/**
+ * How wide the beach is on this island.
+ *
+ * Exported because three things have to agree about it: where the grass cap
+ * starts, where the ground stops being flat, and where the terrain's height
+ * has faded back to sea level. If they disagree you get grass standing proud
+ * of the sand, or a hill that walks out into the water.
+ */
+export function beachWidth(island) {
+  return Math.max(2, islandReach(island) * 0.13)
+}
+
+// ---------------------------------------------------------------------------
+// TERRAIN
+// ---------------------------------------------------------------------------
+
+const terrainCache = new Map()
+
+/**
+ * The height field for one island: `heightAt(localX, localZ)`.
+ *
+ * Assembled here because this is where the roads and the plots are known;
+ * the maths itself is in terrain.js, so a test can run any of it.
+ *
+ * Cached, and deliberately so - it walks every road on the island for every
+ * query, and the ground mesh alone asks tens of thousands of times.
+ */
+export function getIslandTerrain(island) {
+  if (!island) return null
+  if (terrainCache.has(island.id)) return terrainCache.get(island.id)
+
+  const beach = beachWidth(island)
+  const inlandAt = (x, z) => inlandDistance(island, x, z)
+
+  // The open ground: hills, faded out at the coast. Roads take their heights
+  // from THIS rather than from the finished field, or each road would be
+  // reading the flattening left by the last one and the answer would depend
+  // on what order they happened to be in.
+  const hills = (island.hills || []).filter(h => h && h.radius > 0)
+  const openGround = (x, z) =>
+    hillHeight(hills, x, z) * coastFactor(inlandAt(x, z), beach)
+
+  // Solved together, not one at a time: where two roads meet they have to
+  // arrive at the same height, or the ground steps between them.
+  const shapes = getIslandRoads(island).map(road => ({
+    points: road.points,
+    width: road.width
+  }))
+  const profiles = roadNetworkProfile(shapes, openGround)
+  const roads = shapes.map((road, i) => ({ ...road, heights: profiles[i] }))
+
+  // A terrace under every building, so it stands vertical on ground that
+  // fully supports it - Mike's requirement, and the alternative is buildings
+  // tilted on a slope with daylight under one corner.
+  // Rectangles, not the circles round them - `rotation` on a plot is in
+  // DEGREES, which is what the map file stores and what the editor shows.
+  const pads = [...getTownPlots(island), ...getRoadsidePlots(island)]
+    .map(plot => ({
+      x: plot.x,
+      z: plot.z,
+      halfWidth: plot.width / 2,
+      halfDepth: plot.depth / 2,
+      heading: ((plot.rotation || 0) * Math.PI) / 180,
+      // The height of the road it fronts, so a building sits level with its
+      // own street rather than perched above or below it.
+      height: heightOnRoads(roads, plot.x, plot.z, openGround)
+    }))
+
+  for (const placed of island.buildings || []) {
+    pads.push({
+      x: placed.x,
+      z: placed.z,
+      halfWidth: (placed.width || 6) / 2,
+      halfDepth: (placed.depth || 6) / 2,
+      heading: ((placed.rotation || 0) * Math.PI) / 180,
+      height: heightOnRoads(roads, placed.x, placed.z, openGround)
+    })
+  }
+
+  terracePads(pads)
+
+  const field = makeHeightField({ hills, inlandAt, beach, roads, pads })
+  terrainCache.set(island.id, field)
+  return field
+}
+
+/** The height of the nearest road, or the open ground if there isn't one near. */
+function heightOnRoads(roads, x, z, openGround) {
+  let best = null
+
+  for (const road of roads) {
+    const near = nearestOnPath(road.points, x, z)
+    const reach = road.width / 2 + PAD_MARGIN + ROAD_SHOULDER + ROAD_BLEND
+    if (near.distance > reach) continue
+    if (best && near.distance >= best.distance) continue
+
+    const a = road.heights[near.index]
+    const b = road.heights[near.index + 1] ?? a
+    best = { distance: near.distance, height: a + (b - a) * near.t }
+  }
+
+  return best ? best.height : openGround(x, z)
+}
+
+/**
+ * How high the ground is anywhere in the world.
+ *
+ * Sea level over water. This is the one every caller outside the layout
+ * should use - World.js for placing things, the traffic for sitting on the
+ * road, the monorail for the length of its pillars.
+ */
+export function groundHeight(x, z) {
+  const island = islandAt(x, z)
+  if (!island) return 0
+
+  const terrain = getIslandTerrain(island)
+  return terrain ? terrain.heightAt(x - island.x, z - island.z) : 0
+}
+
+/** Which way the ground tilts, in world coordinates. */
+export function groundSlope(x, z) {
+  const island = islandAt(x, z)
+  if (!island) return { dx: 0, dz: 0, grade: 0 }
+
+  const terrain = getIslandTerrain(island)
+  return terrain
+    ? terrain.slopeAt(x - island.x, z - island.z)
+    : { dx: 0, dz: 0, grade: 0 }
+}
+
+/** Forget the cached height fields. The editor needs this after an edit. */
+export function invalidateTerrain() {
+  terrainCache.clear()
 }
 
 /** Look an island up by id. */
@@ -5234,34 +5381,6 @@ function segmentIntersection(p1, p2, p3, p4) {
 
   if (t < 0 || t > 1 || u < 0 || u > 1) return null
   return { x: p1.x + d1x * t, z: p1.z + d1z * t }
-}
-
-/** The point on a path closest to a given island-local point. */
-function nearestOnPath(path, x, z) {
-  let best = null
-  let bestDist = Infinity
-
-  for (let i = 1; i < path.length; i++) {
-    const a = path[i - 1]
-    const b = path[i]
-    const dx = b.x - a.x
-    const dz = b.z - a.z
-    const lenSq = dx * dx + dz * dz
-    if (lenSq < 1e-12) continue
-
-    let t = ((x - a.x) * dx + (z - a.z) * dz) / lenSq
-    t = Math.max(0, Math.min(1, t))
-    const px = a.x + dx * t
-    const pz = a.z + dz * t
-    const d = Math.hypot(x - px, z - pz)
-
-    if (d < bestDist) {
-      bestDist = d
-      best = { x: px, z: pz }
-    }
-  }
-
-  return best
 }
 
 export function approachControls(island, dx, dz, def, bridges = BRIDGES) {

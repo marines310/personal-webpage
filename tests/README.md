@@ -199,6 +199,19 @@ The lesson: when a guard is written for a specific slip, ask what the *class*
 of slip is. "A name used but never imported" is the class; "a CONSTANT used
 but never imported" was half of it.
 
+## A list of files that shadows a folder is a second copy of it
+
+`approachedit.mjs` runs the GAME against the map the editor just exported, and
+to do that it copies `src/world` into a scratch directory. It used to copy
+three named files. Adding `terrain.js` to `src/world` therefore broke it - with
+a module-not-found from `/tmp`, which reads like the editor is broken when
+nothing about the editor had changed.
+
+It copies the whole folder now. The rule this project already had - *one
+implementation, never two* - applies to lists of files as much as to code: a
+list that has to be kept in step with a directory is a copy of that directory,
+and it will go stale.
+
 ## Not in `npm test`
 
 `linkcheck.mjs` needs a built site and a running server, because it checks

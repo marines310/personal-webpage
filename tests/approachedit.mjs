@@ -72,9 +72,18 @@ chk('export mentions approachTo', out.includes('approachTo'))
 // project's real mapData.js and leave it changed, which quietly poisoned
 // every test that ran afterwards.
 const { writeFileSync, mkdirSync, cpSync } = await import('fs')
+// The whole folder, not a list of files.
+//
+// It used to copy three named modules, and adding a fourth to src/world broke
+// this suite with a module-not-found from a scratch directory - which reads
+// like the editor is broken when nothing about the editor changed. A list of
+// files that has to be kept in step with a folder is a second copy of the
+// folder, and this project has been bitten by second copies before.
+//
+// mapData.js is written afterwards, because the whole point is to run the
+// game against the map the EDITOR just exported.
 mkdirSync(PROBE + 'src/world', { recursive: true })
-for (const f of ['curves.js','shapes.js','islandLayout.js'])
-  cpSync(ROOT + 'src/world/' + f, PROBE + 'src/world/' + f)
+cpSync(ROOT + 'src/world', PROBE + 'src/world', { recursive: true })
 writeFileSync(PROBE + 'src/world/mapData.js', out)
 
 const { execFileSync } = await import('child_process')

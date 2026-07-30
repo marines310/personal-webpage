@@ -301,8 +301,9 @@ the notes on what each one can reuse.
       streets for a shift, navigates back to its own station and parks
 - [x] **Police cars in the proper livery** — black body, white doors, built as
       their own vehicle rather than a recoloured sedan
-- [x] **Window lights at night** — two buildings in three, which had never
-      once worked before: the code lived in a branch no building reaches
+- [x] **Window lights at night** — glass laid over the models' own window
+      faces, found by sampling their texture. Had never once worked before:
+      the code lived in a branch no building reaches
 - [x] Fixed: **the patience valve was teleporting cars queueing at a red**,
       including service vehicles seconds from their own door
 - [x] Fixed: **window glass floating above the rooftops** — it is now cut from
@@ -310,6 +311,66 @@ the notes on what each one can reuse.
       on the glass whatever the model is scaled to
 - [x] Fixed: **shipping containers hanging in mid-air** beside the coast road —
       stacks are stacks, and every one is tested by its own four corners
+
+---
+
+# Terrain — the height field is in, 30 July
+
+The ground can have hills, and one function answers how high it is anywhere.
+Islands declare them (`hills` in `mapData.js`); the current map is deliberately
+mild, topping out at six units.
+
+Three rules are built into the field rather than left to whoever draws things:
+roads are level across their width and no steeper than 8% along their length,
+buildings get a flat terrace under their whole footprint, and the land still
+meets the sea at the waterline. `tests/terrain.mjs` measures all three on the
+real map.
+
+**Nothing is drawn on it yet** — `World.js` still builds a flat world, so the
+game looks unchanged. What remains:
+
+- [ ] the ground mesh and the physics collider follow the height field
+- [ ] roads, pavements and crossings get a height per vertex
+- [ ] props, buildings, signs and station bays sit on the ground
+- [ ] the AI traffic sits on the road and pitches to the slope
+- [ ] the monorail beam stays level and its pillars vary in length
+- [ ] bridges rise clear of the water, with ramps every vehicle can drive
+
+# Next up — ships, bridges and terrain
+
+### Ships sail through the bridges
+
+They clip straight through the decks today. Two ways out, and the second is
+the one worth having:
+
+- **Route around.** Treat each bridge as an obstacle in the sea graph, so no
+  leg crosses a deck. Cheap and quick. Worth checking it doesn't strand a port:
+  the bridges radiate from the hub, and the ring waypoints out at the map edge
+  are what would keep everything connected.
+- **Sail underneath.** Which needs the bridges raised, which needs terrain
+  height — below.
+
+### Elevated bridges, on real terrain height
+
+The reason to finally do the terrain work: bridges standing clear of the water
+with ships passing beneath them.
+
+- A height field for the world. Everything so far assumes flat ground at y=0 —
+  road surfaces, junction patches, pavements, crossings, plot and prop
+  placement, and the physics mesh.
+- Decks lifted to a stated air draught, measured against the tallest mast in
+  the fleet rather than picked by eye. Same rule as the monorail beam and the
+  chase camera: when two numbers have to clear each other, derive one from the
+  other and assert it.
+- **Ramps up to and down from every deck**, at a gradient the car can climb —
+  and that every AI vehicle can climb too, buses included. The lane network
+  carries height as well, and the following distances and speeds have to hold
+  up on a slope.
+- Ships then route *under* the deck rather than around it, which replaces the
+  first option above rather than adding to it.
+
+Order: terrain, then deck height, then ramps, then lanes. The world will look
+wrong in the middle of this one.
 
 ---
 

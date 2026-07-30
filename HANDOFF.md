@@ -87,6 +87,10 @@ src/world/islandLayout.js  THE MACHINERY. Ring roads, bridge approaches,
                            junctions, the road network graph, validation.
                            Mike should not edit this.
 
+src/world/terrain.js       HOW HIGH THE GROUND IS. Hills, the coast taper,
+                           road profiles, building terraces. Pure maths;
+                           getIslandTerrain() in islandLayout feeds it.
+
 src/world/curves.js        Splines, smoothing, resampling, ribbon meshes.
 src/world/shapes.js        Island outline polygons and polygon geometry.
 src/world/World.js         Builds the 3D world from the above.
@@ -96,7 +100,7 @@ src/systems/               Camera, Inputs, Physics, Assets, Environment.
 map-editor.html            The whole editor: one file, Vite entry, imports
                            the real modules from src/world/.
 
-tests/                     28 suites, ~810 checks. `npm test`.
+tests/                     29 suites, ~835 checks. `npm test`.
 MAP.md                     How to edit the world. Written for Mike.
 DEPLOY.md                  How to publish. Written for Mike.
 ROADMAP.md                 Longer-term wishlist.
@@ -241,7 +245,7 @@ than a measurement or a reference, that is the moment to stop and ask.
 ## Testing
 
 ```bash
-npm test          # all 28 suites, ~810 checks
+npm test          # all 29 suites, ~835 checks
 ```
 
 There's no framework. Each file in `tests/` is a plain script that prints
@@ -638,8 +642,9 @@ HTTP, and checks every asset the published site requests actually returns
 19. **Six fixes, 29 July, and the traffic ones were nearly all the same bug.**
 
     - **Building lights.** Every building registered a night-emissive window
-      material, so the whole city lit at dusk like a switch. Two in three now
-      do; the rest stay dark. `WINDOWS_LIT_CHANCE`.
+      material, so the whole city lit at dusk like a switch. `WINDOWS_LIT_CHANCE`
+      thinned it out. (Superseded twice since: see 21 and 23 - the constant was
+      in a branch that never ran, and then the glass was in the wrong place.)
     - **Jagged turns.** The heading was already rate-limited; the POSITION
       jumped. A car turning moves from one road's right-hand lane to another's,
       and those are up to 3.6 units apart at the corner. Tapering the lanes
@@ -822,6 +827,78 @@ HTTP, and checks every asset the published site requests actually returns
     bounding box for a window, a centre point for a six-unit box. And both
     were invisible to every existing test, because nothing asked where the
     thing ended up.
+
+    **And then a tuning change, from the same screenshots.** With the glass
+    finally in the right place, a third of the town was still black at
+    midnight - `WINDOWS_LIT_CHANCE` was 0.65. That was deliberate and it was
+    wrong: on a street of four or five buildings, "one in three is dark" reads
+    as broken rather than as people being out. It is 0.88 now, and the variety
+    comes from `WINDOW_DARK_CHANCE` (0.3) instead - unlit ROOMS in an occupied
+    building, which is where you actually notice it.
+
+**Added 30 July, Mike's next list:**
+
+24. **Ships sail through the bridges.** Not fixed yet. Either the sea graph
+    treats a bridge as land - `seaLegIsClear()` already walks each leg in
+    steps, so it is a small change - or the bridges go up and the ships go
+    under, which is 25.
+
+25. **Elevated bridges with ramps, on real terrain height.** The reason to do
+    the terrain work at last. Decks raised to clear the tallest mast, ramps at
+    both ends that the player AND every AI vehicle can drive, and the lane
+    network carrying height. Blocked on the terrain height field, and it
+    touches everything that assumes flat ground.
+
+26. **Terrain, part one: the height field.** ✅ 30 July. The ground is no
+    longer flat at y=0. Islands declare `hills`; `terrain.js` turns those into
+    a height field that also enforces the three things Mike asked for - roads
+    drivable, buildings vertical on ground that supports them, and a coast
+    that still meets the sea.
+
+    **Nothing is drawn on it yet.** The data is right and every test passes,
+    but `World.js` still builds a flat world, so the game looks exactly as it
+    did. That is a deliberate stopping point: the foundation can be checked
+    without half a rendered world in the way. Tasks 90-93 are the visible half.
+
+    What it cost, and what to know before touching it:
+
+    - **Roads have to be solved together.** Each road profiled on its own gave
+      two different heights where two roads met, and the ground stepped
+      between them - one stretch measured a 276% gradient, which is a wall.
+      They are one network now, pinned wherever their corridors overlap.
+    - **And solved exactly, not approximately.** Nudging heights towards each
+      other by halves was still 290% out after forty rounds. It is a
+      shortest-path problem - every point is at most (some other point's
+      ground, plus the gradient times the distance to it) - and relaxing edges
+      until nothing changes gives the answer outright.
+    - **Merging points by distance alone flattened the entire map.** Road
+      points are resampled every couple of units, so a plain proximity test
+      merged each road into a single node and every island came out perfectly
+      level. Only a DIFFERENT road, or a distant part of the same one, is a
+      junction.
+    - **A building's pad is a rectangle.** The circle around it reaches a
+      third of the way into the road it fronts, and the pad then cambered the
+      carriageway. Third time this project has made that mistake.
+    - **The carriageway outranks everything.** Inside a road's own width the
+      answer is that road's profile, full stop - no terrace, no neighbouring
+      corridor, not even a blend with one. A blend at the kerb left a 10%
+      camber, from a sample sitting exactly on the boundary.
+    - **`PAD_MARGIN` is smaller than half `PLOT_GAP` on purpose.** Any wider
+      and every plot on a street chains into one terrace, which then sits
+      several units off the street it fronts.
+
+    And one about tests: three of these took pages of iteration because the
+    TEST was asking for more than was ever promised - level ground on a circle
+    round a rectangular plot, out where open hillside was always going to be.
+    A test stricter than the thing gets weakened until it catches nothing.
+
+27. **And a test that broke for a reason nothing to do with what changed.**
+    `approachedit.mjs` copies `src/world` into a scratch folder so it can run
+    the game against the map the editor just exported. It copied three NAMED
+    files, so adding `terrain.js` broke it - a module-not-found from `/tmp`,
+    which looks like the editor is broken when the editor never moved. It
+    copies the whole folder now. **A list of files that shadows a directory is
+    a second copy of that directory**, and rule 1 applies to it.
 
 **Also open, from earlier:**
 
