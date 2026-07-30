@@ -112,12 +112,114 @@ body {
   position: fixed;
   top: 20px;
   left: 20px;
+  min-width: 104px;
+  /* The box is clickable now, so this can't stay `none` - it was what made
+     the whole readout ignore the mouse. */
+  pointer-events: auto;
+}
+
+/* The readout itself is the button that opens the panel */
+#cond-toggle {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
   background: rgba(0, 0, 0, 0.42);
   padding: 10px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
   backdrop-filter: blur(10px);
-  min-width: 104px;
-  pointer-events: none;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+#cond-toggle:hover {
+  background: rgba(0, 0, 0, 0.56);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+/* Only shown while something is being held by hand */
+#conditions .cond-manual {
+  display: none;
+  margin-top: 5px;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  color: #ffd27f;
+}
+
+#conditions.manual .cond-manual { display: block; }
+
+#cond-panel {
+  margin-top: 8px;
+  width: 232px;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+  padding: 12px 14px 14px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+#cond-panel.hidden { display: none; }
+
+#cond-panel .cond-field,
+#cond-panel .cond-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 6px;
+}
+
+#cond-panel .cond-label { margin-top: 14px; }
+#cond-panel output { color: #fff; letter-spacing: 0.5px; }
+
+#cond-hour {
+  width: 100%;
+  margin: 0 0 10px;
+  accent-color: #ffd27f;
+}
+
+#cond-panel .cond-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+#cond-panel .cond-row button,
+#cond-panel .cond-auto {
+  flex: 1 1 auto;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 5px 8px;
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+#cond-panel .cond-row button:hover,
+#cond-panel .cond-auto:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+#cond-panel .cond-row button.on {
+  background: rgba(255, 210, 127, 0.9);
+  border-color: rgba(255, 210, 127, 0.9);
+  color: #1a1408;
+}
+
+#cond-panel .cond-auto {
+  width: 100%;
+  margin-top: 14px;
+  font-size: 0.7rem;
 }
 
 #conditions .cond-time {

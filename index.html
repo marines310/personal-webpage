@@ -27,13 +27,45 @@
       <div class="speed-label">MPH</div>
     </div>
 
-    <!-- Time of day and weather -->
+    <!-- Time of day and weather. Click it to take control. -->
     <div id="conditions">
-      <div class="cond-time">
-        <span class="cond-icon" id="cond-sky-icon">&#9728;</span>
-        <span id="cond-clock">06:00</span>
+      <button id="cond-toggle" type="button" aria-expanded="false"
+              aria-controls="cond-panel" title="Set the time and weather">
+        <div class="cond-time">
+          <span class="cond-icon" id="cond-sky-icon">&#9728;</span>
+          <span id="cond-clock">06:00</span>
+        </div>
+        <div class="cond-weather" id="cond-weather">Clear</div>
+        <div class="cond-manual" id="cond-manual">held</div>
+      </button>
+
+      <div id="cond-panel" class="hidden">
+        <label class="cond-field" for="cond-hour">
+          <span>Time</span>
+          <output id="cond-hour-value">06:00</output>
+        </label>
+        <input id="cond-hour" type="range" min="0" max="1439" step="5" value="360">
+
+        <div class="cond-row" id="cond-presets">
+          <button type="button" data-hour="6">Dawn</button>
+          <button type="button" data-hour="13">Noon</button>
+          <button type="button" data-hour="19">Dusk</button>
+          <button type="button" data-hour="1">Night</button>
+        </div>
+
+        <div class="cond-label">Weather</div>
+        <div class="cond-row" id="cond-weathers">
+          <button type="button" data-weather="clear">Clear</button>
+          <button type="button" data-weather="breezy">Breezy</button>
+          <button type="button" data-weather="cloudy">Cloudy</button>
+          <button type="button" data-weather="showers">Showers</button>
+          <button type="button" data-weather="storm">Storm</button>
+        </div>
+
+        <button type="button" id="cond-auto" class="cond-auto">
+          Back to the automatic cycle
+        </button>
       </div>
-      <div class="cond-weather" id="cond-weather">Clear</div>
     </div>
 
     <!-- Controls hint -->

@@ -168,10 +168,17 @@ export class Environment {
 
           vec3 col = mix(uBottom, uTop, pow(h, 0.75));
 
-          // Sun disc plus surrounding haze
+          // Haze around the sun, and ONLY the haze.
+          //
+          // There used to be a pow(d, 340.0) term here as well, drawing a
+          // hard disc - and there is already a sphere mesh out at 430 units
+          // doing exactly that. The two subtended different angles, so what
+          // you saw was two concentric rings. The mesh keeps the disc,
+          // because it also gets the right colour at sunset; this keeps the
+          // glow, which a mesh can't do.
           float d = max(dot(dir, uSunDir), 0.0);
-          col += uSunColor * pow(d, 340.0) * 1.6 * uSunPower;
-          col += uSunColor * pow(d, 7.0) * 0.30 * uSunPower;
+          col += uSunColor * pow(d, 8.0) * 0.34 * uSunPower;
+          col += uSunColor * pow(d, 90.0) * 0.45 * uSunPower;
 
           // Overcast: grey the sky out and add drifting bands
           if (uCloud > 0.01 && dir.y > -0.05) {
@@ -371,7 +378,10 @@ export class Environment {
   // Main update
   // -------------------------------------------------------------
   update(delta) {
-    if (!this.paused) {
+    // `timeLocked` is set when you scrub the clock by hand. The sun still
+    // moves through all the same code - only the clock stops advancing - so a
+    // hand-set time behaves exactly like a time the cycle arrived at.
+    if (!this.paused && !this.timeLocked) {
       this.time = (this.time + delta / this.dayLength) % 1
     }
 
@@ -409,6 +419,14 @@ export class Environment {
   updateWeather(delta) {
     this.weatherTimer += delta
 
+    // Held on whatever you picked. The easing below still runs, so a change
+    // you make by hand arrives over the same eight seconds as one the chain
+    // decided on - it doesn't snap.
+    if (this.weatherLocked) {
+      this.easeWeather(delta)
+      return
+    }
+
     if (this.weatherTimer >= this.weatherDuration) {
       this.weatherTimer = 0
       this.weatherDuration = 45 + Math.random() * 45
@@ -418,13 +436,7 @@ export class Environment {
       this.target = WEATHER_TYPES[this.weather]
     }
 
-    // Ease toward the target over roughly 8 seconds
-    const k = 1 - Math.exp(-delta * 0.13)
-    for (const key of ['cloud', 'rain', 'wind', 'fogMul', 'lightMul']) {
-      this.current[key] += (this.target[key] - this.current[key]) * k
-    }
-    this.current.label = this.target.label
-    this.current.lightning = this.target.lightning
+    this.easeWeather(delta)
 
     // Wind slowly changes direction
     this.windAngle += delta * 0.05
@@ -637,14 +649,86 @@ export class Environment {
 
   /** Clock time as HH:MM. t=0 is sunrise, which we call 06:00. */
   getClock() {
+    // Rounded to the nearest minute, then carried, rather than truncated.
+    //
+    // Truncating meant asking the panel for 19:45 and being shown 19:44: the
+    // clock goes through a fraction of a day and comes back as 19.7499999, and
+    // floor() of that is a minute early. Only visible once you could type a
+    // time in, but it was wrong before that too.
     const hours24 = (this.time * 24 + 6) % 24
-    const h = Math.floor(hours24)
-    const m = Math.floor((hours24 - h) * 60)
+    let h = Math.floor(hours24)
+    let m = Math.round((hours24 - h) * 60)
+    if (m >= 60) { m -= 60; h = (h + 1) % 24 }
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
   }
 
   getWeatherLabel() {
     return this.current.label || 'Clear'
+  }
+
+  // -------------------------------------------------------------
+  // Manual control
+  //
+  // The HUD box top-left opens onto these. The principle throughout: nothing
+  // here bypasses the normal path. Setting the clock moves `time`, which the
+  // same sun, sky, light and fog code reads; picking weather sets the same
+  // `target` the automatic chain would have set, and it eases in over the
+  // same eight seconds. So a hand-set world is indistinguishable from one the
+  // cycle arrived at, and there is no second code path to keep in step.
+  // -------------------------------------------------------------
+
+  /**
+   * Set the clock, in hours (0-24). Fractions are minutes.
+   *
+   * getClock() reads `hours24 = (time * 24 + 6) % 24`, so the six-hour offset
+   * has to be undone here. Derived from that expression rather than written
+   * out again - the two have to agree, and if the offset ever changes this
+   * follows it.
+   */
+  setClock(hours) {
+    this.time = (((hours - 6) / 24) % 1 + 1) % 1
+    this.timeLocked = true
+    this.updateSun()
+    return this
+  }
+
+  /** Which hour the clock is showing, as a number. The inverse of setClock. */
+  getHours() {
+    return (this.time * 24 + 6) % 24
+  }
+
+  /** Pick the weather. One of the keys of WEATHER_TYPES. */
+  setWeather(key) {
+    if (!WEATHER_TYPES[key]) return this
+    this.weather = key
+    this.target = WEATHER_TYPES[key]
+    this.weatherTimer = 0
+    this.weatherLocked = true
+    return this
+  }
+
+  /** Hand both back to the automatic cycle. */
+  resumeAuto() {
+    this.timeLocked = false
+    this.weatherLocked = false
+    this.weatherTimer = 0
+    this.weatherDuration = 20
+    return this
+  }
+
+  /** Is anything being held by hand? The HUD says so when it is. */
+  isManual() {
+    return !!(this.timeLocked || this.weatherLocked)
+  }
+
+  /** Ease the eased values toward the target. Shared by both paths. */
+  easeWeather(delta) {
+    const k = 1 - Math.exp(-delta * 0.13)
+    for (const key of ['cloud', 'rain', 'wind', 'fogMul', 'lightMul']) {
+      this.current[key] += (this.target[key] - this.current[key]) * k
+    }
+    this.current.label = this.target.label
+    this.current.lightning = this.target.lightning
   }
 
   isNight() {

@@ -463,14 +463,15 @@ choose a direction, roads are what you follow between them.
 
 ## Removing things
 
-The **Demolish** tool removes whatever you click — road, bridge, building,
-district or island. Things sitting *on* an island are checked before the
-island itself, so you can't wipe out an island while aiming at a building
-on it. Islands ask for confirmation.
+The **Demolish** tool removes whatever you click — road, town street,
+bridge, building, district or island. Things sitting *on* an island are
+checked before the island itself, so you can't wipe out an island while
+aiming at a building on it. Islands ask for confirmation.
 
 Demolishing a ring road you'd taken over switches the ring off, rather
 than handing it back to the generator — otherwise it would look like
-nothing happened.
+nothing happened. Town streets work the same way: the street is recorded as
+removed, so it stays removed.
 
 ---
 
@@ -572,6 +573,518 @@ In the data file an edited approach is an ordinary road carrying an
 
 Points are island-local and run **shore first, centre last**. Delete the
 entry and the road goes back to being generated.
+
+---
+
+## Moving the town streets
+
+Town islands get a grid of streets inside the ring. Like the ring and the
+bridge roads, these are *generated* — worked out from the island's shape
+every time — so for a while there was nothing to click.
+
+Now there is:
+
+- **Click a street** with the Select tool. It becomes yours, with handles
+  at each end, and it doesn't move as you claim it.
+- **Drag a handle** to move that end. You can do this with Select — the
+  handles are live for whichever road is selected.
+- **Alt-click the street** with the Road tool to add a handle, so you can
+  bend it rather than only move the ends. Alt-click a handle removes it.
+- **Demolish tool, or Delete** gets rid of the street for good.
+- **Back to the automatic street**, in the panel, hands it back.
+- Select the island and the panel says how many streets are automatic, how
+  many are yours and how many you've removed, with a button to
+  **bring back the removed ones**.
+
+In the data file, a street you've taken over is a road carrying the key of
+the generated street it replaces, and a street you've removed is just that
+key on the island:
+
+```js
+{
+  id: 'projects',
+  noStreets: ['s1.0.0'],           // this one isn't generated any more
+  roads: [
+    { streetKey: 's0.0.0', points: [ … ], width: 5.5 }   // this one is yours
+  ]
+}
+```
+
+The key says which sweep line of the grid the street came off (`s0` / `s1`
+are the two directions), which line along that direction, and which stretch
+of it — a concave island can cut one line into more than one street.
+
+**Why a key and not the geometry?** Because the grid is derived from the
+island's shape. Reshape the coast and the streets change with it, which is
+what you want. What has to survive is *which* of them you dealt with by
+hand, not where they happened to be at the time.
+
+Two consequences worth knowing:
+
+- Move the coastline a long way and the keys can end up pointing at
+  different streets. If your edits look scrambled after a big reshape, that
+  is why. Nothing is lost — clear the island's `noStreets` and start again.
+- A street you've taken over is still a street: it keeps its pavements, the
+  buildings lining it, and its share of the traffic signals. Draw a road by
+  hand in the same place and you'd get none of those.
+
+---
+
+## Lights in the windows after dark
+
+Nearly nine buildings in ten light their windows at dusk
+(`WINDOWS_LIT_CHANCE` in `World.js`), and within each of those about three
+rooms in ten stay dark (`WINDOW_DARK_CHANCE`). That split matters: the variety
+should come from unlit ROOMS, not unlit buildings. At the first setting - two
+in three - a third of the town stood completely black at midnight, which on a
+street of four or five buildings reads as broken rather than as people being
+out. Turn `WINDOWS_LIT_CHANCE` down if you want a sleepier town.
+
+**The glass goes on the windows the model already has.** Each building `.glb`
+is a single material called "colormap" over a shared 512x512 atlas, with no
+glass material to pick out by name - but the windows are there: 4 to 8 quads
+per building whose UVs point at one dark grey swatch, around (60, 60, 66)
+against a darkest wall of (90, 96, 120). `windows.js` samples the texture,
+keeps the triangles that land on the dark swatch, groups them into panes, and
+`World.js` lays a sheet of emissive glass over exactly those triangles.
+
+Two things that will bite anyone changing this:
+
+- **glTF puts UV (0,0) at the TOP left of the image**, and this atlas has its
+  top half empty. Sample with V flipped and every triangle comes back black,
+  so every wall is reported as glass.
+- **The outward offset is in MODEL units.** These buildings are one unit
+  across before the world scales them up, so a world-unit offset is a hundred
+  times too big.
+
+Both of those are what the first version got wrong. It hung a grid of panes on
+the model's *bounding box*, in world units, inside a group already scaled up -
+so the glass floated in the sky above the rooftops. Before that it did nothing
+at all, because the code lived in the procedural fallback that `addBuilding`
+only reaches when there is no model, and every building has a model. **A
+tunable in a branch that never runs looks exactly like a working feature.**
+
+Swap the models for better ones and `tests/windows.mjs` will tell you whether
+the new ones have windows this can find.
+
+---
+
+## Traffic
+
+Thirty-one vehicles drive the roads: sedans, convertibles, police cars,
+ambulances, fire engines, and four city buses that call at bus stops. The
+emergency vehicles flash red and blue. They stop at red lights, queue behind
+each other, give way at junctions, and you can bump into them.
+
+### Lanes
+
+The road network becomes a **directed lane network**. Three things make that
+more than an offset copy of the roads:
+
+- **Every road is cut at every junction on it.** Without that, a car on a
+  through road passes a crossroads with no decision to make - it can never
+  turn off, and has no stop line to stop at.
+- **Each piece becomes two lanes**, one per direction, a quarter of the
+  road's width to the right of the centre line. Right-hand traffic.
+- **Each lane knows what it can turn into**, whether its far end is
+  signalled, and which phase it waits for.
+
+Where a street runs alongside the ring - which the layout permits for up to
+26 units - both lanes occupy the same tarmac. The duplicate lane is dropped,
+so traffic only ever has one way through that space. The roads themselves are
+left alone.
+
+### Stopping at a red
+
+The stop line is set back from the junction by the **junction's own radius**
+plus a margin — not by a fraction of the lane's width, which is enough on a
+7-unit road and half a unit short on a 5.5-unit street meeting one. A car
+waiting inside the box blocks the arm that has the green, and chains of four
+stayed put for eighty seconds.
+
+And a vehicle stops with its **nose** on the line, not its middle. `at` is the
+centre of a vehicle, so stopping the centre there left half a length in the
+junction — six-tenths of a unit for a sedan, and 3.9 for a bus, which is most
+of the way across.
+
+Two of the twelve-unit ring pieces are shorter than a bus plus its stopping
+distance. A bus there carries on through instead of freezing, which is the only
+thing it can do.
+
+There's also a **don't-block-the-box** rule: a vehicle still behind its stop
+line waits properly if the road beyond the junction is occupied. Once past the
+line it is committed, and creeps until it is clear.
+
+### What can stop a vehicle
+
+Only three things bring one to a halt: a red light, the vehicle directly in
+front on the same lane, and the two-dimensional collision veto. Everything
+else - giving way at a junction, waiting for a lane entrance to clear - lowers
+a vehicle's speed but never below a crawl.
+
+That distinction is the whole reason the traffic moves. Every version where a
+give-way rule could stop a vehicle dead produced a deadlock:
+
+| The rule | What it did |
+|---|---|
+| Whoever is nearest owns the junction | A car stopped at a red was always nearest, so it held the junction shut against the arm that had a green. Cars faced a green light for minutes. |
+| Yield to anything on an onward lane | Two cars on adjacent 12-unit ring pieces each sat in the other's lane entrance. 286 seconds out of 300 stationary. |
+| Break every conflict by vehicle number | A low-numbered car cheerfully drove into the back of a stationary fire engine. |
+
+The rules now: whoever is *behind* gives way; where both have the other in
+front - a genuine imminent collision - the lower-numbered one goes; only
+something actually moving may claim a junction; and after fifteen seconds
+standing still a vehicle stops giving way altogether, because the collision
+veto means it still can't hit anything.
+
+### The collision veto
+
+Before any vehicle moves, the move is checked in two dimensions: would the
+rectangle it would occupy overlap another vehicle's? If so it doesn't move.
+Where the step crosses a junction, **every** onward lane is tried in
+preference order - checking only the favourite froze eleven vehicles of
+thirty-one.
+
+This exists because everything else works in one dimension, distance along a
+lane, and that is blind at the moment a vehicle changes lane: it arrives
+somewhere its old lane knew nothing about. A car turning out of a junction
+landed on top of a stationary fire engine parked on a spur that overlaps the
+ring.
+
+### Lights
+
+`signalState()` is the single source of truth for the cycle - 18 seconds, two
+phases, 2.5 seconds of amber at the end of each green. The lamps read it and
+so do the drivers, so they cannot disagree. It used to be implemented twice,
+once in `World.js` for the lamps and once in the test, and the offset of each
+junction came from the renderer's random number generator - which meant
+nothing outside the renderer could know whether a light was green.
+
+### When two of them do jam
+
+Four things conspire, and all four are handled:
+
+1. **Overlapping lanes.** A street may run alongside the ring for 26 units, so
+   two lanes can occupy the same tarmac. The duplicate is dropped — measured as
+   an absolute shared length, not a fraction, because two pairs on this map
+   overlapped for 16 and 18 units and a 60%-of-the-lane test found neither.
+   This matters more than it sounds: reversing along a road that runs *parallel*
+   to the obstruction never increases the gap, so cars caught this way could
+   never free themselves.
+2. **Swerving.** A vehicle blocked for a second and a half pulls out towards
+   the kerb — never towards oncoming traffic, which it used to do and then camp
+   there — and drifts back once the way is clear.
+3. **The unjam.** Anything that ends a step overlapping is put back where it
+   was; if that spot is taken too, it shuffles along its own lane, forwards or
+   backwards, until clear.
+4. **Giving up.** Blocked for 25 seconds and it leaves the road and reappears
+   somewhere clear, as though it had driven off. Crude, deliberately, and
+   `tests/traffic.mjs` reports how often it fires so it can't hide a jam.
+
+   **Waiting your turn is not being stuck.** This used to fire on anything
+   that hadn't moved for 25 seconds, including a car queueing lawfully at a
+   red - which is a car vanishing from a queue, not a jam being cleared, and
+   it was picking off service vehicles two seconds from their own station
+   door. `lawfulWait()` follows the chain of who is waiting for whom and
+   exempts anything that traces back to a red light, a bus at a stop or a
+   vehicle turning into its bay. A ring of vehicles all waiting on each other
+   is not exempt: that is the deadlock this exists for.
+
+   `STUCK_LIMIT` (35 seconds) is the backstop that moves anyone standing
+   still too long whatever the reason, so the exemption can't hide anything
+   either. And a relocated vehicle needs clear road **ahead**, not just a gap
+   to stand in - dropped into the back of a queue it stops again at once and
+   has gained nothing.
+
+### Colliders
+
+Every AI vehicle has a **kinematic** collider: it goes exactly where the
+simulation says and is never pushed off its lane, but your car collides with
+it properly. A fully dynamic AI car spends its life on its roof. The traffic
+also gives way to *you*, so pulling out in front of a bus gets you a stopped
+bus rather than a shove down the road.
+
+Parked cars are solid now too. They weren't, which is what made the streets
+feel like scenery.
+
+### How many vehicles
+
+`TRAFFIC_FLEET` is 52 vehicles: sedans, convertibles, buses, and a service
+fleet of 12 police cars, 8 ambulances and 8 fire engines. The figure is
+measured rather than chosen - at 52 every vehicle still covers at least 500
+units over five simulated minutes with a median around 1,000, and nothing
+stands still for more than the backstop. Push it much further and the median
+halves: the network has several 12-unit ring pieces, and once a few vehicles
+are queued across those there is nothing left for the give-way rules to give.
+
+There are no parked cars any more. They were placed a fixed distance out from
+each building, which on a narrow street put them in the carriageway, and the
+shape they fell back to was a flat slab that read as a car sunk into the road.
+Every car in the world moves.
+
+If you want busier streets, lengthen or widen the short ring pieces first, and
+let `tests/traffic.mjs` tell you whether it worked.
+
+### Where the numbers live
+
+`islandLayout.js`, as `TRAFFIC_*`, `LANE_*` and `BUS_*`. The whole simulation
+is there as well - `stepTraffic()` - for the same reason the trains and the
+ships are: `World.js` needs a browser, so the tests can only read it, and the
+traffic rules are the part with logic in them. `tests/traffic.mjs` runs the
+fleet for five simulated minutes and checks every pair of vehicles every
+frame.
+
+---
+
+## Fire stations, police stations and hospitals
+
+Seven of them, sited by `getStations()` on the same principle as everything
+else: it walks the lanes rather than guessing at a compass bearing, and asks
+whether the building's **rectangle** is clear of the coast and every road.
+(Testing the circle round it demanded 16 clear units for a fire station, which
+a town with streets every 34 units has nowhere, so the first version placed
+none at all.)
+
+Each station faces its street, with an apron in front and a marked bay per
+vehicle. A fire station's front wall is piers and lintels around **one opening
+per bay**, and the door width lives beside the bay spacing in
+`STATION_KINDS` - 5.6 units against a 2.4-wide engine, with a pier of
+brickwork between one door and the next - so the run-in from the apron is a
+straight line square to the opening. Nothing swings near a door frame. The doors lift when
+their own engine is coming or going and stay shut otherwise.
+
+Service vehicles work the streets for a while, then go home:
+
+- **How they find their way back.** Each station carries `toHome`, a
+  breadth-first search backwards from its own lane giving the number of turns
+  home from every lane in the network. A vehicle whose shift has ended takes
+  the turn that shortens it. Left to wander until it happened to pass its own
+  door, a fleet of twenty-two managed two visits in ten minutes.
+- **The bay path is two points**, `approach` then `bay`, and a parking vehicle
+  is off the lane network entirely - nothing can be in its way, because a bay
+  belongs to one vehicle.
+- **`STATION_DWELL` (70s) against `STATION_PATROL` (75s)** is what makes the
+  car parks look used. At 18 against 90 the parking worked perfectly and there
+  was almost never a vehicle in a bay to see.
+
+`tests/stations.mjs` measures the geometry and then runs ten simulated
+minutes, counting how many vehicles turn in, how long they take and how many
+are parked at a time.
+
+---
+
+## Ports and shipping
+
+Every island has a port, and **you can drive out onto the quay**. A road
+leaves the ring, crosses the beach and runs the length of the pier. The deck
+is solid; there are no railings, for the same reason a real quay has none.
+
+The two biggest islands (`radius` at or above `PORT_BIG_REACH`) get cargo
+terminals - gantry cranes, a shed, stacked containers, two berths. The rest
+get fishing jetties with one berth, a hut and some crates.
+
+### Where a port goes
+
+Chosen by sweeping the compass and scoring each bearing, not written down.
+What a port wants, in order of how much it matters:
+
+1. **Open water in front of it.** Walked step by step out to sea - how far a
+   ship could actually sail from there. The first version compared the
+   bearing against each island's bounding circle, decided it would "sail
+   past" almost everything, and so scored every bearing the same; hub ended
+   up with a quay facing a 36-unit gap between two islands.
+2. **Clear of the bridge landings.** The arrival at an island is the view
+   every visitor gets, and a container crane isn't it.
+3. **Clear of where the monorail crosses the coast**, so the beam doesn't
+   pass over the cranes.
+
+Set `port: false` on an island to leave it without one.
+
+### The shipping lanes
+
+A graph over the sea, derived like the road network:
+
+```
+berth -> approach -> lane ring -> ... -> lane ring -> approach -> berth
+berth -> approach -> lane ring -> off the edge of the world
+```
+
+The **lane ring** is a circle of waypoints at the map extent plus a margin,
+so every one of them is outside every island. A leg between two adjacent ring
+waypoints therefore cannot cross land, and needs no obstacle test. All the
+geometry risk sits in the short legs from each port out to the ring, and
+those *are* tested - walked in steps, because the islands are arbitrary
+polygons and a segment-versus-polygon test would have to be right for
+concave bays and atoll lagoons too.
+
+Ports are also joined directly to each other where the water allows it, which
+is what stops a run between neighbouring islands going out to the horizon
+and back.
+
+### The fleet
+
+Three cargo ships and five small boats. A ship sails to a berth, waits,
+and sails again - or heads off past the horizon. Roughly two voyages in five
+go off-world.
+
+**Going off-world is a real departure.** The ship sails to a waypoint 780
+units out, well past where the fog hides anything, and the hull is then
+re-used for an arrival from a different direction. Departures and arrivals
+balance without anything counting them, because a ship that is off-world
+always comes back to a berth.
+
+Other things worth knowing:
+
+- **A berth is reserved.** A ship claims its destination when it sets off,
+  so two hulls can't end up in the same twelve metres of water. Getting this
+  wrong at *start-up* rather than during a voyage was the actual bug: a
+  container ship and a fishing boat in the same berth on frame one.
+- **Cargo ships only use cargo berths**, so a container ship never ties up
+  at a fishing jetty.
+- **Headings are turned, not set.** A ship comes round at a fixed rate, which
+  is what a lane waypoint needs (a straight set would pivot a 46-unit hull on
+  the spot) and what leaving a berth needs (180 degrees, over a few seconds).
+- **No colliders on ships.** A moving collider has to be a kinematic body
+  told where it is every frame, and the payoff would be shunting a container
+  ship with a hatchback.
+
+Numbers live in `islandLayout.js` as `PORT_*`, `PIER_*`, `SEA_LANE_*`,
+`OFF_WORLD_*` and `SHIP_*`. The lane routing and the fleet's behaviour are
+there too, not in `World.js`, so the tests can run them: `tests/ports.mjs`
+sails the fleet for fifteen simulated minutes and asks every hull, every
+frame, whether it is standing on land.
+
+The map editor draws the quay and its road, but you can't drag them yet -
+the site is derived from the coastline, so there is nothing stored to move.
+
+---
+
+## The monorail
+
+An elevated loop calls at every island: **blog - contact - hub - about -
+projects - skills** and back round. Three trains run it, stopping at each
+station for four and a half seconds.
+
+Nothing about it is in the map file. The running order is worked out from
+where the islands are, so moving one in the editor reroutes the line rather
+than leaving it crossing itself. To have the line skip an island, add
+`monorail: false` to it.
+
+### How the route is built
+
+Straight spans between the islands, with a curve of a stated radius at each
+one - `MONORAIL_CURVE_RADIUS`, 40 units. That's a deliberate construction,
+not the first thing that worked:
+
+- **A spline through the station points** gives a curve that has to pass
+  through a point *and* turn 120 degrees around it, which it can only do in
+  almost no distance. Measured radius: 5.7 units. A hairpin.
+- **Chaikin smoothing** rounds a corner over about the length of the
+  segments either side of it. On the finely spaced loop it did nothing; on
+  the coarse six-point one it cut the corners off 60 units at a time.
+
+A curve of radius R turning through an angle passes the corner about
+`R x (1/sin(half the angle) - 1)` to the inside - 44 units on the sharpest
+corner here. So the corners of the underlying polygon are aimed *outward* by
+that much, and the curve comes back onto the island centre. Every platform
+now sits within 1.5 units of the middle of its island. The corners
+themselves end up offshore, which nobody sees, because only the arcs are
+built.
+
+### How high, and what gives way
+
+The beam's top runs at **11 units**, its underside at 9.5. It started at 16,
+chosen to fly over a five-floor building, and looked like a viaduct on
+stilts - too far above the town to belong to it.
+
+At 11 the beam is *below* the tallest thing the towns generate, so something
+has to give, and it can't be the line: the route is worked out before the
+towns exist, from the island shapes, so it has nothing to route around yet.
+What happens instead is what happens under a real elevated railway - the
+buildings beneath it are low ones.
+
+`monorailCeiling()` returns how tall anything may be at a given point:
+infinity everywhere except a 6-unit-wide strip either side of the beam,
+where it's about 8. Everything that puts an object on the ground consults it:
+
+- **Buildings** lose storeys until the roof clears - at most three floors
+  under the line, against five elsewhere. A `.glb` model has no storeys to
+  take away, so it shrinks whole.
+- **Palms** have their trunk capped, because the crown sits a further unit
+  above it and the fronds are what show through the beam.
+- Everything else - lamps at 4.6, traffic lights at 4.5, shopfronts at 2.6 -
+  is already well under and needs nothing.
+
+On the current map that touches **12 of 91** generated plots. The rest of
+each town is untouched.
+
+A building **you** placed by hand gets shortened too, but the validator says
+so on load, naming the island and the position - a silent change to your own
+file would just look like the file being ignored.
+
+The chase camera rides 5 to 7 units up, so it still passes under the beam.
+That's the floor on how low this can go: much lower and the beam would cut
+across the car every time you drove beneath it.
+
+### The yard
+
+The shed sits on ground measured clear of the coast and every road - as a
+**rectangle**, not as the circle around it, which had left a corner half a unit
+from the coast road on ABOUT.
+
+Containers are stacks of one to three on a grid in the yard's own axes,
+nearest the shed first, each position tested by its own four corners against
+`CONTAINER_ROAD_CLEARANCE`. Both parts of that sentence are fixes: each
+container used to get a random level of 0, 1 or 2 with **nothing underneath**,
+so two thirds of the cargo on the map hung in mid-air, and a six-unit box
+tested by its centre against a flat five units has a corner two units from the
+kerb.
+
+A cargo port's shed and containers are placed by measurement: on land, well
+inland, clear of every road, and clear of the monorail, with room for the
+whole footprint rather than just its middle. A big shed if there's room, a
+smaller one if not, and nothing at all if neither fits.
+
+The first version placed the shed by dead reckoning - a fixed 12 units back
+and 12 to the side of the pier root, no test of any kind. On EXPERIENCE that
+put a 22 x 13 x 8 concrete shed squarely across the coast road and out onto
+the beach. Same mistake as the signal poles in the carriageway and the piers
+through the bridge deck: **ask the geometry where the thing ends up, never a
+formula for it.**
+
+The gantry legs had the same problem in miniature - at 0.62 of the pier's
+width they stood a unit and a half outside a 13-wide deck, in the water,
+holding up nothing.
+
+### What gets built
+
+| Thing | Where it comes from |
+|---|---|
+| The beam | One swept box for the whole 1,800-unit loop - one mesh, not 500 |
+| Piers | Every 27 units, skipping the stretch under each station |
+| Stations | Two platforms, a canopy, the island's name lit at night |
+| Stair towers | Beside each platform, down to street level |
+| Trains | Three cars each, running the timetable |
+
+A pier that would land on a road slides along the beam until it finds room,
+and is left out entirely if there isn't any - which happens where the line
+runs *along* a street rather than across one. Better a 54-unit span than a
+column in a traffic lane.
+
+The piers and the stair towers are solid: you can crash into them. The beam
+isn't, because there's no way to reach it.
+
+### Where the numbers live
+
+All of it in `islandLayout.js`, as `MONORAIL_*` constants: the height (16
+units, chosen to clear a five-floor building and its roof), the line speed,
+the dwell at each stop, how many trains, how far apart the piers stand.
+
+The timetable is there too, not in `World.js`. `World.js` needs a browser,
+so nothing in it can be run by the tests - only read. Anything with logic in
+it belongs where a test can drive it. `tests/monorail.mjs` runs the trains
+for four hundred simulated seconds and checks they call everywhere, never
+stop in mid air, never exceed the line speed and never pile into each other.
 
 ---
 

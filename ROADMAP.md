@@ -196,6 +196,123 @@ Current follow is a single exponential lerp toward a point rigidly locked behind
 
 ---
 
+# Infrastructure and controls — added 29 July 2026
+
+Mike's second list. Kept here in full; `HANDOFF.md` has the ordering and
+the notes on what each one can reuse.
+
+### Docks, boats and ships — done, 29 July
+
+- [x] **A port on every island**, sited by scoring the compass: open water in
+      front, clear of the bridges, clear of the monorail
+- [x] **Drivable quays** — a road spur off the ring, out along a solid pier
+- [x] **Cargo terminals** on the two biggest islands: gantry cranes, shed,
+      stacked containers, two berths. Fishing jetties elsewhere
+- [x] **A sea route network**, derived: berths, port approaches, an open-water
+      lane ring and off-world waypoints. Nothing stored
+- [x] **Three cargo ships and five boats**, berthing, waiting and sailing on
+- [x] **Ships come and go off-world** — out past the fog at 780 units, and the
+      hull returns as an arrival from a different direction
+- [x] Quays and ships shown on the minimap; quays drawn in the map editor
+- [ ] Still to do: **edit** the ports in the editor (the site is derived, so
+      there's nothing stored to drag yet)
+
+### Monorail — done, 29 July
+
+- [x] **Elevated guideway**, one closed loop 16 units up: blog → contact →
+      hub → about → projects → skills → back round
+- [x] **A station on each island** — two platforms, canopy, the island's
+      name lit at night, stair tower down to the street
+- [x] **Piers** every 27 units, sliding along the beam to miss the roads and
+      dropped where there's no room. Solid: you can crash into them
+- [x] **Three trains**, three cars each, easing into every platform,
+      dwelling 4.5s, pulling away
+- [x] Route derived from where the islands are, so moving one reroutes the
+      line. `monorail: false` on an island skips it
+- [x] Shown on the minimap as a dashed line with a dot per station
+- [ ] Still to do: draw the line in the **map editor** too
+
+### Editor support
+
+- [ ] Place and edit **docks** in the map editor
+- [ ] Route the **monorail** in the map editor
+- [ ] Same drag-and-snap treatment roads got — and the editor must
+      **import** the real geometry functions, never reimplement them
+
+### Editing what the generator made
+
+- [x] **Generated town streets are selectable.** Click one with Select and
+      it's handed over — written into the island's `roads` with a
+      `streetKey`, ready to drag.
+- [x] Take-over is exact: measured at 0.003 units, which is the two decimal
+      places the points are stored to
+- [x] Demolish or Delete records the key in `island.noStreets`, so a removed
+      street stays removed; the island panel brings them back
+- [x] Handles are draggable with Select, not only with the Road tool
+- [x] Alt-click a road to add a handle — a street arrives with two ends and
+      nothing in between, so without this you could move one but not bend one
+- [x] Generated streets joined the editor's segment list, so roads snap to
+      them and the connection overlay includes them
+
+### Manual time and weather — done, 29 July
+
+- [x] Clicking the **time/weather box** (top left) opens controls
+- [x] **Time slider** at minute resolution, plus Dawn / Noon / Dusk / Night
+- [x] **All five weathers** as buttons, the current one lit
+- [x] **Back to the automatic cycle** in one click, and a "HELD" marker on the
+      readout while anything is set by hand
+- [x] Changes ease in over the same eight seconds the automatic cycle uses —
+      no snapping, and no second code path to keep in step
+
+---
+
+# Traffic and city polish — done, 29 July 2026
+
+- [x] **AI traffic**: sedans, convertibles, police cars, ambulances, fire
+      engines and city buses, 31 vehicles in all
+- [x] A **directed lane network** derived from the road graph, cut at every
+      junction, right-hand traffic
+- [x] **They obey the lights** — one shared cycle function, so the lamps and
+      the drivers can't disagree
+- [x] **They don't crash** — car-following, give-way at junctions, and a
+      two-dimensional veto on any move that would overlap
+- [x] **Bus stops** with shelters, and buses that call at them
+- [x] **Flashing beacons** on the emergency vehicles, brake lights on all
+- [x] **Kinematic colliders**, so your car bumps them instead of passing
+      through — and parked cars are solid now too
+- [x] Fixed: **two suns** (the sky shader and a mesh both drew a disc)
+- [x] Fixed: **monorail piers on roads and bridges** — decks are now tested,
+      and a column steps onto a cross-arm where the beam crosses a bridge
+- [x] Fixed: **buildings at random angles** — every building on every island
+      now fronts a street at a constant setback
+
+---
+
+# Emergency services and night lighting — done, 30 July 2026
+
+- [x] **Fire stations, police stations and hospitals** — seven of them, each
+      facing a street with a marked apron and a bay per vehicle
+- [x] **Working garages** — a fire station's front wall has an opening per
+      bay, and each door lifts for its own engine. The opening is the bay
+      spacing, so an engine goes through with two units of air each side
+- [x] **Four times the service fleet** — 12 police cars, 8 ambulances, 8 fire
+      engines, 52 vehicles in all
+- [x] **They come and go from their own car parks** — each vehicle works the
+      streets for a shift, navigates back to its own station and parks
+- [x] **Police cars in the proper livery** — black body, white doors, built as
+      their own vehicle rather than a recoloured sedan
+- [x] **Window lights at night** — two buildings in three, which had never
+      once worked before: the code lived in a branch no building reaches
+- [x] Fixed: **the patience valve was teleporting cars queueing at a red**,
+      including service vehicles seconds from their own door
+- [x] Fixed: **window glass floating above the rooftops** — it is now cut from
+      the models' own window faces, found by sampling their texture, so it sits
+      on the glass whatever the model is scaled to
+- [x] Fixed: **shipping containers hanging in mid-air** beside the coast road —
+      stacks are stacks, and every one is tested by its own four corners
+
+---
+
 # Backlog — not prioritised
 
 ### Feel and polish

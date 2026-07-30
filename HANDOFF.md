@@ -1,8 +1,8 @@
 # Project handoff
 
 Written so a fresh conversation can pick this up without re-deriving
-anything. Last updated: 29 July 2026 (after the map redesign, the town generator,
-and a long run of geometry fixes driven by screenshots).
+anything. Last updated: 30 July 2026 (after the traffic, the monorail, the ports, and
+the emergency services).
 
 ---
 
@@ -96,7 +96,7 @@ src/systems/               Camera, Inputs, Physics, Assets, Environment.
 map-editor.html            The whole editor: one file, Vite entry, imports
                            the real modules from src/world/.
 
-tests/                     17 suites, ~330 checks. `npm test`.
+tests/                     28 suites, ~810 checks. `npm test`.
 MAP.md                     How to edit the world. Written for Mike.
 DEPLOY.md                  How to publish. Written for Mike.
 ROADMAP.md                 Longer-term wishlist.
@@ -207,6 +207,10 @@ The tally so far:
 | Junction patches leaving bare corners | `max(width)/2` | `hypot(wA/2, wB/2)` |
 | Parallel-run measured along the wrong road | length along the ring | length along the street |
 | Snap distance ≠ network tolerance | a screen-space radius | the same constant the graph uses |
+| No station placed anywhere at all | the circle round the building | the building's own rectangle |
+| Glass floating over the rooftops | the model's bounding box | the model's own window faces |
+| Cargo containers at the kerb | the box's centre vs a flat 5 | its four corners vs the road edge |
+| A garage door an engine could catch on | a width picked to look right | the bay spacing the engine parks on |
 
 **And the corollary, which is worse:** when a test measures a proxy too, it
 agrees with the code and both are wrong together. That is how a completely
@@ -237,7 +241,7 @@ than a measurement or a reference, that is the moment to stop and ask.
 ## Testing
 
 ```bash
-npm test          # all 21 suites, ~408 checks
+npm test          # all 28 suites, ~810 checks
 ```
 
 There's no framework. Each file in `tests/` is a plain script that prints
@@ -255,6 +259,13 @@ buttons were rendered into an unreachable branch.
 - a test overwrote the real `mapData.js` and poisoned every later suite
 
 If a test result looks surprising, check the harness before the product.
+
+**The long ones take minutes, and that is the point.** `traffic.mjs` runs
+five minutes of simulation and `stations.mjs` ten; the jams and the
+never-goes-home bugs take a couple of minutes to appear. `traffic.mjs`
+accepts `TRAFFIC_SECONDS` for a quick smoke test, but only a green from the
+full length means anything - several of its thresholds are calibrated to
+the five-minute run and will fail a short one for the wrong reason.
 
 `tests/linkcheck.mjs` is separate: it needs a built `dist/` served over
 HTTP, and checks every asset the published site requests actually returns
@@ -301,20 +312,516 @@ HTTP, and checks every asset the published site requests actually returns
 
 **Open — agreed order, 29 July:**
 
-1. **Make the towns feel lived in.** Shopfronts, benches, bins, planters,
-   street trees, parked cars, undergrowth. Biggest visible gain per unit
-   of work, and it builds straight on the plot layout that already
-   exists. `getTownPlots()` gives position, facing and footprint for
-   every building; the gaps between plots and the pavement strips are
-   where clutter goes.
-2. **Back-lot walkways.** Pavements exist along streets. This is the
-   narrow paths reaching buildings with no road frontage.
-3. **Terrain height — hills, ridges, ponds.** THE BIG ONE. Everything
-   built so far assumes the ground is flat at y=0: road surfaces,
-   junction patches, pavements, crossings, plot placement, and the
+1. **Make the towns feel lived in.** ✅ done — shopfronts, benches, bins,
+   planters, street trees, parked cars, street lighting.
+2. **Back-lot walkways.** ✅ done, but dormant: generated plots always front
+   a street, so paths only appear for buildings placed by hand mid-block.
+3. **Terrain height — hills, ridges, ponds.** THE BIG ONE. Everything built
+   so far assumes the ground is flat at y=0: road surfaces, junction
+   patches, pavements, crossings, plot placement, prop placement, and the
    physics trimesh. Adding height means revisiting all of it, and things
    will look wrong for a while in the middle. Mike has been told this.
 4. **Cities-Skylines-style editor UX.** Ongoing.
+
+**New, added 29 July (Mike's second list):**
+
+5. **Docks and quaysides.** ✅ done, 29 July, with (6).
+   A port on every island, and **you can drive out onto the quay** - a road
+   leaves the ring, crosses the beach and runs the length of the pier, which
+   is a solid collider. Two cargo terminals (cranes, shed, containers, two
+   berths) on the islands at or above `PORT_BIG_REACH`; fishing jetties
+   elsewhere. `port: false` opts an island out.
+
+   - **Siting is a compass sweep, scored.** Open water in front, clear of the
+     bridge landings, clear of where the monorail crosses the coast.
+   - **Measure the water by walking it.** The first version scored open water
+     by comparing the bearing against each island's bounding circle and
+     deciding it would "sail past" - true of almost everything, so every
+     bearing scored the same and the term did nothing. Hub got a quay facing
+     the 36-unit gap between two islands. Now it steps out to sea and asks
+     `islandAt()`, which is what a ship would ask.
+   - The port road is emitted from `getIslandRoads()` marked `spur: true`,
+     which had to be added to the three `street || ring || auto` filters or
+     the ring's pavement would have been laid straight across it.
+   - **A quay is a legitimate dead end.** `town.mjs` asserted no dead ends
+     anywhere; it now asserts every dead end is a pier head, which is a
+     stronger check, not a weaker one.
+
+6. **Boats and ships, moving.** ✅ done, 29 July.
+   Three cargo ships, five boats. Sail between berths, wait, sail again -
+   and roughly two voyages in five head off past the horizon.
+
+   - **The sea graph is safe by construction.** Waypoints on a ring at the
+     map extent plus a margin are all outside every island, so a leg between
+     two adjacent ring waypoints cannot cross land and needs no test. All the
+     risk is in the short legs from each port out to the ring, and those are
+     walked in steps. Ports are also joined directly where the water allows,
+     so a hop between neighbours stays local.
+   - **Off-world is a real departure.** A ship sails to a waypoint 780 units
+     out, well past the fog, and the hull is re-used for an arrival from
+     somewhere else. Arrivals and departures balance without being counted,
+     because off-world always routes back to a berth.
+   - **Reserve the berth at departure**, not on arrival. The bug this caused
+     wasn't during a voyage at all - `makeShips` picked start berths freely
+     and put a container ship and a fishing boat in the same water on frame
+     one. Worth remembering: start-up state needs the same invariants as the
+     running simulation.
+   - **Turn headings, don't set them.** Rate-limited, which a lane waypoint
+     needs (a straight set pivots a 46-unit hull on the spot) and so does
+     leaving a berth, which is a 180. Berth headings point *inland* - the
+     direction a ship is already travelling as it arrives - so tying up is
+     smooth and only casting off has to swing.
+   - No colliders on ships; a moving collider means a kinematic body updated
+     every frame, for the ability to shunt a freighter with a hatchback.
+
+   `measurePath()` / `pointAlong()` are now shared with the monorail. One
+   implementation of "something moving along a fixed line at a known rate".
+
+7. **Elevated monorail linking every island, station on each.**
+   ✅ done, 29 July, together with (8). One closed loop calling at all six:
+   blog - contact - hub - about - projects - skills. Beam 16 units up, piers
+   every 27, platforms with canopies and lit name signs, stair towers down to
+   street level. The whole route is derived from where the islands are, so
+   moving one in the editor reroutes the line. `monorail: false` on an island
+   skips it.
+
+   What took the work was the route, and the lesson generalises:
+
+   - **A curve cannot pass through a point and turn sharply around it.**
+     A Catmull-Rom spline through the six island centres measured a 5.7-unit
+     radius at the corners - a hairpin no train could sit on. Slackening the
+     tension made the corners sharper; tightening it swung the line 40 units
+     past the island and back. Chaikin rounds a corner over the length of
+     the segments beside it, so it did nothing on a finely spaced path (8
+     passes: 1.6 to 3.4) and cut 60-unit chunks off the coarse one. The
+     answer was how railways are actually set out: straight spans with arcs
+     of a **stated** radius at each stop.
+   - **Then aim the arcs; don't accept where they land.** An arc passes its
+     corner by `R x (1/sin(half the angle) - 1)` on the inside, 44 units on
+     the sharpest corner here, which put the `about` platform 3 units from
+     the water with its stairs in the sea. The polygon's corners are now
+     pushed outward by exactly that, iteratively, so the arcs come back onto
+     the island centres - every platform within 1.5 units of the middle. The
+     corners themselves end up offshore and are never built.
+   - **The island in the middle has no bearing.** Ordering stops by angle
+     around the centroid works for the five outer islands and is meaningless
+     for the hub; it gets threaded into whichever leg it lengthens least.
+   - **Piers slide, then give up.** A pier landing on a road moves along the
+     beam until it finds room, and is dropped if there isn't any - which
+     happens where the line runs *along* a street. A 54-unit span beats a
+     column in a traffic lane.
+
+   **Then Mike asked for it a third lower, 16 to 11**, and for nothing to
+   clip. Those two pull against each other: at 11 the beam is *below* a
+   five-floor building. The line can't dodge them - the route is derived
+   before the towns exist - so the answer is `monorailCeiling()`, which
+   states how tall anything may be at a point: infinity except in a 6-unit
+   strip either side of the beam, where it's 8.1. Buildings lose storeys
+   (three floors under the line, five elsewhere), models shrink whole, palm
+   trunks are capped because the crown adds a unit on top. 12 of 91 plots on
+   the current map. A hand-placed building gets shortened too, but
+   `validateLayout()` warns by island and position rather than doing it
+   silently.
+
+   **The floor on how low it can go is the camera**, which rides 5-7 units
+   up. Underside 9.5 clears it. Lower and the beam would cut across the car
+   every time you drove beneath it - which is a thing to check before
+   changing MONORAIL_HEIGHT again.
+
+8. **Monorail trains running the line.**
+   ✅ done, 29 July. Three trains of three cars, easing into each platform,
+   dwelling 4.5 seconds, pulling away. The first genuinely moving traffic in
+   the world.
+
+   **The timetable lives in `islandLayout.js`, not `World.js`** -
+   `stepMonorailTrains()`. That was the point of putting it there: `World.js`
+   needs a browser, so the tests can only ever *read* it, and anything with
+   logic in it has to live where a test can run it. It paid immediately - the
+   first version had every train reading the platform it was standing on as
+   zero distance ahead, so it stopped there again, and again, forever. The
+   trains never left their first station and the line was static scenery.
+
+   `tests/monorail.mjs` caught it on the first run, but only because of how
+   the check was written: "did it stop at least six times" passed happily -
+   it had stopped 89 times without moving. What caught it was asking
+   **which** stations each train had called at.
+
+9. **Editor tools for docks and the monorail.** The monorail route is
+   derived, so there's nothing to drag yet; what the editor needs is to
+   *draw* the line (the in-game minimap already does) and a per-island
+   `monorail: false` toggle. Docks still need the full treatment. Remember
+   rule 1: the editor must import the real geometry functions, never
+   reimplement them.
+10. **Generated town streets can't be selected, edited or deleted.**
+    ✅ done, 29 July. Click a street with Select and it's handed over:
+    written into the island's `roads` with a `streetKey`, geometry
+    untouched, and from then on it's an ordinary road. Demolish or Delete
+    records the key in `island.noStreets` so it stays gone; the island panel
+    can bring the removed ones back. Handles are now draggable in Select as
+    well as Road, and Alt-clicking a road adds a handle, because a street
+    arrives with two ends and nothing between them.
+
+    Three things came out of doing it that are worth carrying forward:
+
+    - **Filter derived things LAST.** `getTownGrid` weighs each candidate
+      street against the ones already accepted (`crowdsAnother`), so hiding
+      a taken-over street *before* those tests would make its neighbours
+      appear and disappear. The full grid is generated, then claimed keys
+      are removed.
+    - **The take-over has to be invisible, and that includes downstream.**
+      World.js decides what gets pavements, crossings, signals and building
+      frontages by asking `road.street || road.ring || road.auto`, so a
+      taken-over street has to keep saying `street: true`. Otherwise
+      everything along it vanishes the moment you touch it, and the editor
+      looks completely normal. `streetedit.mjs` section 7 measures
+      junctions, signals and plots before and after.
+    - **Generated streets were missing from `worldSegments()`.** Found by
+      accident: a road drawn across a town snapped to nothing and joined
+      nothing, because the editor's segment list only had rings, stored
+      roads and bridges. Now included, which also means the connection
+      overlay tells the truth about towns — worth remembering for AI
+      traffic. The old `cityui.mjs` check *asserted the bug* ("the road
+      just drawn shows a loose end") and had to be replaced.
+
+11. **Click the HUD to set time and weather.** ✅ done, 29 July.
+    The box top-left is a button. It opens a panel with a minute-resolution
+    time slider, four presets (Dawn / Noon / Dusk / Night), the five weathers,
+    and a button back to the automatic cycle. The readout shows a quiet
+    "HELD" while anything is set by hand, so a stopped clock reads as
+    deliberate rather than broken.
+
+    - **No second code path.** `setClock()` moves the same `time` the cycle
+      moves; `setWeather()` sets the same `target` the chain would set and it
+      eases in over the same eight seconds. So a hand-set sunset runs through
+      exactly the same sun, sky, fog and light code as one the cycle arrived
+      at, and there is nothing to keep in step.
+    - `timeLocked` and `weatherLocked` suspend only the *advancing*, not the
+      rendering.
+    - **`#conditions` had `pointer-events: none`**, which is what made the
+      whole readout ignore the mouse. Worth remembering for any other HUD
+      element that needs to become clickable.
+    - Found on the way: **`getClock()` truncated its minutes.** Ask for 19:45
+      and it showed 19:44 - the time goes through a fraction of a day and
+      returns as 19.7499999. It rounds and carries now.
+    - `modelManifest.js` guards `import.meta.env`, which is Vite's and MISSING
+      under Node rather than undefined. Without that, anything that
+      transitively reaches it - Game, and so Environment - couldn't be
+      imported by a test at all. That's what made `conditions.mjs` possible.
+
+**Added and done, 29 July (Mike's third list):**
+
+11. **AI traffic.** ✅ done. 31 vehicles - sedans, convertibles, police,
+    ambulances, fire engines, four buses that call at stops. Red and blue
+    beacons on the emergency vehicles, brake lights on everything. They obey
+    the lights, queue, give way, and you can hit them.
+
+    The lane network is derived from the road graph: every road cut at every
+    junction, two lanes per piece offset a quarter width right of centre,
+    each lane knowing its turns and its stop line.
+
+    **The whole difficulty was deadlock, and the lesson is one sentence:
+    only three things may bring a vehicle to a complete stop** - a red light,
+    the vehicle directly in front on the same lane, and the two-dimensional
+    collision veto. Every give-way rule that could stop a vehicle dead
+    produced a jam:
+
+    - Nearest-to-the-junction owns it → a car stopped at a red was always
+      nearest and held the junction shut against the green arm. Cars faced a
+      green light for minutes.
+    - Yield to anything in a lane entrance → two cars on adjacent 12-unit
+      ring pieces each waited for the other. 286 seconds of 300 stationary.
+    - Break every conflict by vehicle number → a low-numbered car drove into
+      the back of a stationary fire engine.
+
+    Now: whoever is behind gives way; mutual conflicts go to the lower
+    number; only something moving may claim a junction; after 15 seconds
+    standing a vehicle stops giving way at all. The veto makes that safe.
+
+    **The veto is the part to keep.** Everything else reasons in one
+    dimension - distance along a lane - and that is blind the moment a
+    vehicle changes lane, because it arrives somewhere its old lane knew
+    nothing about. Check the move in two dimensions, and try EVERY onward
+    lane: checking only the preferred one froze 11 of 31 vehicles.
+
+12. **The double sun.** ✅ The sky shader drew a hard disc at pow(d, 340) and
+    there was already a sphere mesh at 430 units doing the same job. Two
+    different apparent sizes, hence two rings. The shader now does the glow
+    only.
+
+13. **Piers on roads and bridges.** ✅ Piers only tested the roads of the
+    island they stood on, so a pier over water got no test at all - and a
+    bridge is a road over water. Columns came down through decks. Bridge
+    decks and bridge roads are now tested for every pier, and where the beam
+    runs directly over a crossing the column steps aside onto a cross-arm.
+    Deck clearance is absolute; road clearance is a preference.
+
+14. **Buildings at random angles.** ✅ Town islands used plots and lined up;
+    `buildDistrict` and `scatterTheme` called `addBuilding` with no rotation,
+    so every building on a `mixed` island had a random bearing and a random
+    distance from the road. `getRoadsidePlots()` now gives non-town islands
+    the same treatment, and the scatter places no buildings at all - only
+    trees, bushes, rocks and huts.
+
+15. **The harbour shed on the road.** ✅ It was placed by dead reckoning - a
+    fixed 12 units back and 12 to the side of the pier root, with no test of
+    any kind - so on EXPERIENCE a 22 x 13 x 8 concrete shed sat across the
+    coast road and out onto the beach. `getPortYard()` now measures: on land,
+    inland by the footprint's own half-diagonal, clear of every road, clear of
+    the monorail. Big shed if it fits, small one if not, nothing if neither.
+    The gantry legs were the same bug smaller - at 0.62 of the pier width they
+    stood outside a 13-wide deck, in the water.
+
+16. **The player's car was half the size of the traffic.** ✅ It was built
+    around a 2-unit length (a sedan is 4.4, a bus 11), so it read as a toy.
+    Everything now scales off `CAR_SCALE` in `Vehicle.js` - body, wheels,
+    lamps, collider AND wheelbase, because a longer car genuinely turns wider
+    and scaling the body alone would have it pivoting about a point inside
+    itself. `maxSteerAngle` opened from 0.55 to 0.7 to keep the arc usable,
+    and the chase camera pulled back from 9.5 to 12.5.
+
+    **Two numbers that have to agree and can't find each other:** `CAR_SCALE`
+    here and `fitLength` for the `car` entry in `modelManifest.js`. The
+    manifest is loaded before any vehicle exists. Both are commented.
+
+    **And a third:** the camera's `fastHeight` (7.8) has to stay below the
+    monorail beam's underside (9.5), or the beam clips through the view every
+    time you drive under it. `monorail.mjs` asserts the gap.
+
+17. **The car looked too big because it was too WIDE, not too long.**
+    Mike said it three times and each time I scaled it uniformly, which was
+    the wrong axis. `fitLength` in the manifest scales off the longest
+    horizontal dimension and lets the source model's proportions follow - and
+    car.glb is 1.3 wide by 2.0 long, a ratio of 0.65 where a real car is
+    nearer 0.42. Fitting the length to 3.96 gave a car **2.57 wide**: wider
+    than the fire engine, and half a unit wider than its own collider. So it
+    measured shorter than every AI vehicle while looking bigger than all of
+    them.
+
+    `fitBox: { length, width }` now scales the two horizontal axes
+    independently, with height following their geometric mean. The model comes
+    out at exactly CAR_LENGTH x CAR_WIDTH, which is also the collider - the
+    first time the visible car and the solid one have agreed.
+
+    **The lesson:** when someone reports a size problem, get the actual
+    dimensions of the actual asset before touching a scale factor. I could
+    have read the .glb's bounding box out of its own accessors in five
+    minutes - `tests/traffic.mjs` section 7 now does exactly that, every run,
+    and it fails if the manifest goes back to fitting one axis.
+
+    Settled at **4.4 x 1.9 - exactly TRAFFIC_LENGTHS.sedan and
+    TRAFFIC_WIDTHS.sedan**. The car you drive is one of the cars on the road,
+    so the only defensible size for it is the size of one of them. Asserted.
+
+    **And then the fittings hung over the sides.** The lamps were positioned
+    at `0.4 * CAR_SCALE` - a LENGTH scale - so narrowing the body left them
+    0.155 units proud of it, plainly visible from behind. Every wheel in the
+    world, player and AI, sat at `width / 2 - 0.05` and then added half a tyre
+    on top, standing 0.1 proud. Both are now fractions of the body width,
+    which cannot come apart from it, and section 8 checks the arithmetic for
+    the player and all six AI kinds.
+
+    Two lessons in one bug: **derive a fitting's position from the dimension
+    it has to stay inside**, and when a shape changes, list what was
+    positioned relative to the old one.
+
+18. **A guard that covered half its own case.** `worldsanity.mjs` section 6
+    checks every SHOUTY constant `World.js` uses is imported. It was written
+    for exactly that slip and it works. Then `getPortYard` was called without
+    being imported, the world wouldn't load, and section 6 said nothing -
+    because the name is camelCase. Section 7 now does the same for plain
+    function calls, and was verified by removing the import again.
+
+    When you write a guard for a specific slip, ask what the CLASS of slip is.
+    "A name used but never imported" was the class; "a CONSTANT used but never
+    imported" was half of it.
+
+19. **Six fixes, 29 July, and the traffic ones were nearly all the same bug.**
+
+    - **Building lights.** Every building registered a night-emissive window
+      material, so the whole city lit at dusk like a switch. Two in three now
+      do; the rest stay dark. `WINDOWS_LIT_CHANCE`.
+    - **Jagged turns.** The heading was already rate-limited; the POSITION
+      jumped. A car turning moves from one road's right-hand lane to another's,
+      and those are up to 3.6 units apart at the corner. Tapering the lanes
+      together in the layout fixed the geometry and **halved the traffic** -
+      converging lanes put oncoming cars nose to nose at every junction, median
+      distance 1518 down to 174. So it's eased in the renderer instead, over
+      0.11s, which is where a cosmetic problem belongs. The collider follows
+      the drawn position, not the simulated one.
+    - **Stopping in the middle of the intersection.** The stop line was 0.75 of
+      the LANE's width back from the node. That's enough on a 7-unit road and
+      half a unit short on a 5.5-unit street meeting one - so cars waited
+      inside the box, across the green arm. It now comes from the junction's
+      own radius, which is the only figure that knows how far the patch
+      reaches. Plus a **don't-block-the-box** rule: a vehicle still behind its
+      line waits hard if the far side is occupied; past the line it's committed
+      and creeps clear.
+    - **Cars crashing and stopping traffic.** Four separate causes, in order of
+      how much they mattered:
+      1. Two lanes genuinely overlapping - a street may run alongside the ring
+         for 26 units. The dedupe measured a FRACTION of a lane (60%) and found
+         nothing; two pairs overlapped for 16 and 18 units, absolute. Cars on
+         them interpenetrated permanently, and backing off along a PARALLEL
+         road never increases the gap, so nothing could free them. 235 seconds
+         of 300 for seven vehicles.
+      2. `resolveOverlaps` restored `lane` and `at` but not `sidestep`, so a
+         swerving car was put back inside whatever it had swerved into.
+      3. Swerving either way let a car camp in the oncoming lane. Swerves are
+         kerbward only now, and recover even while blocked.
+      4. A vehicle just past a node sits at `at ≈ 0` and had nothing to reverse
+         into. The unjam tries both directions.
+      And a last resort: `RESPAWN_AFTER`. Anything blocked for 25 seconds
+      leaves and reappears somewhere clear. The test reports how often it
+      fires - currently zero - so it can't hide a jam.
+    - **Ships clipping the quay.** The path was clear; the HULL wasn't. A
+      46-unit ship turning into its berth swings its bow eight units sideways,
+      through the deck. Every berth now has a holding point 90 units out, so
+      the final run is parallel to the quay and no turn happens near it. Berth
+      offset 12 to 13.5, because 0.75 units of clearance is inside the slack
+      the heading smoothing leaves.
+    - **Bus shelters in the road.** Two things. The roof box was 3.6 ACROSS the
+      road and 1.9 along - the mesh is rotated by the heading, so its local X
+      is across. And the setback was a flat 4.6 from the LANE centre, which is
+      a different distance from the kerb on every road width. Now measured from
+      the road edge.
+
+20. **And then the bus was still in the junction.** Moving the stop line back
+    to the junction radius was necessary and not sufficient: `v.at` is where a
+    vehicle's MIDDLE is, so stopping the middle on the line left half a length
+    beyond it. Every kind was poking in - sedan by 0.6, ambulance 1.4, bus
+    **3.9**. Stopping is now expressed in terms of the nose, `noseGap()`.
+
+    Two lanes (12-unit ring pieces) are shorter than a bus plus its stopping
+    distance, so a bus there carries on through rather than freezing. That is
+    the only thing it can do, and the test reports the count rather than
+    asserting zero.
+
+    **The pattern across all of it:** every one of these was a number that had
+    to relate to another number and didn't. Lamp positions to body width. Stop
+    lines to junction radius, and then to vehicle length. Shelters to road
+    width. Ship berths to hull width. When two quantities have to agree, derive
+    one from the other.
+
+    And a second pattern, worth as much: **a fix at the right place can still
+    be measured at the wrong point.** The stop line was in the right place both
+    times; what changed was which part of the vehicle was being put on it.
+
+21. **Window lights that had never once come on.** ✅ 30 July.
+    `WINDOWS_LIT_CHANCE` was real, the registration was real, and no building
+    in the world had ever lit up - because `addBuilding` returns early when a
+    `.glb` is found, and the night-light code lived in the procedural fallback
+    below it. Every building uses a model, so that branch never runs.
+
+    The models can't help either: each is a single material called
+    "colormap" with no glass to pick out, so recolouring by material name has
+    nothing to work with. `addLitWindows()` now hangs a grid of small emissive
+    panes on all four faces of the model group **before** it is rotated, one
+    shared material per building, a quarter of the panes left dark.
+
+    **The lesson is about where a constant lives.** A tunable sitting in a
+    branch that never executes looks exactly like a working feature: the name
+    is right, the value is right, and it is used. Ask which code path actually
+    runs before trusting that a knob is connected to anything.
+
+22. **Emergency services: stations, car parks, and four times the fleet.**
+    ✅ 30 July. Seven stations - three fire, two police, two hospital - each
+    facing a street with a marked apron and numbered bays. Fire stations have
+    a garage: the front wall is piers and lintels around an opening per bay,
+    and each door lifts when its own engine is coming or going.
+    `TRAFFIC_FLEET` is now 12 police, 8 ambulances, 8 fire engines.
+
+    The police car was rebuilt rather than recoloured. A sedan picks its paint
+    from a random palette entry, so cloning one and painting the doors white
+    left red police cars.
+
+    - **A rectangle is not the circle around it.** Siting first tested the
+      centre against half the building's diagonal - 16 units clear for a fire
+      station - and a town with streets every 34 units has that nowhere, so it
+      placed **none at all**. `rectangleIsClear()` tests the rectangle.
+    - **The door width comes from the bay spacing**, which is where the
+      vehicles actually are: 6.5 against a 2.4-wide engine, 2.05 units of air
+      each side, and the run-in is dead straight and square to the opening so
+      nothing swings through a door frame.
+    - **`bays` the number overwrote `bays` the array.** The kind spec was
+      spread *after* the site. Renamed `bayCount`.
+    - **A local variable shadowed the bay map.** `free` was the spare-bay
+      list; `spawn` had its own `free` list of lanes. Not one vehicle of
+      fifty-two got a home.
+
+    **But the behaviour is where the real bugs were, and none of them could be
+    seen standing still:**
+
+    - **Vehicles only went home if their wandering happened to take them past
+      their own door** - twice in ten minutes out of twenty-two. Fixed with a
+      reverse breadth-first search from each station's lane, `toHome`, so a
+      vehicle whose shift is over takes the turn that shortens the route.
+    - **The patience valve was teleporting them away two seconds from the
+      door.** Anything that hadn't moved for 25 seconds was moved somewhere
+      clear - including a car queueing lawfully at a red. That is not a jam
+      being cleared, it is a car vanishing from a queue. `lawfulWait()` now
+      follows the chain of who is waiting for whom (with a ring check, since a
+      ring of mutual waiting is exactly the deadlock the valve exists for) and
+      exempts anything that traces back to a red light, a bus at a stop, or a
+      vehicle turning in. `STUCK_LIMIT` is the backstop that still moves
+      anyone standing still too long whatever their reason.
+    - **A relocated vehicle was being dropped into the back of a queue**, where
+      it stopped again immediately and tripped the valve again, so it stood
+      still for as long as if it had never been moved. Relocation now demands
+      clear road *ahead*, not just a gap to stand in.
+    - **The car parks read as empty** however well the coming and going
+      worked, because an 18-second dwell against a 90-second shift left about
+      one vehicle parked in the whole world at any moment. 70 against 75 now:
+      typically five in their bays.
+
+    **The lesson, and it is the same shape as the trains that never left their
+    first station:** a simulation rule can be exactly right and still produce
+    nothing to look at. Every one of these passed every static check. What
+    found them was running ten minutes and counting events - how many turned
+    in, how long it took, how many were parked at a given moment. If a feature
+    is "things come and go", the test has to count comings and goings.
+
+23. **The window glass was in the sky, and the containers were in the air.**
+    ✅ 30 July, both from screenshots.
+
+    **The glass.** Lighting the windows by hanging a grid of panes on the
+    model's bounding box was wrong twice over. The box is not where the windows
+    are - and the panes were sized in WORLD units and added to a group the
+    loader had already scaled up by ten or more, so they came out enormous and
+    floated over the rooftops.
+
+    The windows are in the model. Each building's `.glb` has 4 to 8 window
+    quads whose UVs point at one dark grey swatch of the shared atlas, around
+    (60, 60, 66) against a darkest wall of (90, 96, 120). So `windows.js` reads
+    the texture, keeps the triangles that land on the dark swatch, groups them
+    into panes and returns them; `World.js` builds a sheet of glass from those
+    triangles, in the model's own coordinates, parented to the mesh they came
+    from. Right size and right place by construction, whatever the model is
+    scaled to.
+
+    Two things to know if this ever needs touching:
+
+    - **glTF puts UV (0,0) at the TOP left**, and this atlas has its top half
+      empty. Sampling with V flipped returns black for every triangle, so
+      every wall reads as glass - and a flipped sampler in the other direction
+      would report no windows at all, which looks exactly like a model that
+      hasn't any. `tests/windows.mjs` checks both.
+    - **The outward offset is in MODEL units.** These buildings are one unit
+      across before the world scales them; a world-unit offset would be a
+      hundred times too big. Same class of mistake as the panes themselves.
+
+    **The containers.** Each was given a random level of 0, 1 or 2 with nothing
+    underneath, so two thirds of the cargo on the map stood in mid-air. And
+    they were tested by their centre against a flat five units, which for a
+    six-unit box is a corner two units from the kerb - cargo at the roadside,
+    which is what Mike reported. Stacks are now stacks, every position is
+    tested by its own four corners, and the shed is tested as a rectangle
+    rather than the circle around it (it had a corner half a unit from the
+    coast road on ABOUT).
+
+    **The pattern, again:** both were something positioned from a proxy - a
+    bounding box for a window, a centre point for a six-unit box. And both
+    were invisible to every existing test, because nothing asked where the
+    thing ended up.
 
 **Also open, from earlier:**
 

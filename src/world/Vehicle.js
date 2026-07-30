@@ -2,7 +2,27 @@ import * as THREE from 'three'
 import { Game } from '../core/Game.js'
 import { FALL_LIMIT, SPAWN_POINT } from './islandLayout.js'
 
-const WHEEL_RADIUS = 0.25
+/**
+ * How big the car is, and everything that follows from it.
+ *
+ * The car used to be two units long, which was fine when nothing else in the
+ * world was a car. Next to the AI traffic - a sedan is 4.4 long, a bus 11 -
+ * it read as a toy: the same length as a bus's front door.
+ *
+ * So the whole thing is scaled by CAR_SCALE. That includes the wheelbase, and
+ * therefore the turning circle: a longer car really does turn wider, and
+ * scaling the body without the wheelbase would have left it pivoting round a
+ * point inside itself. maxSteerAngle was opened up to keep the arc usable.
+ */
+// Exactly a sedan - TRAFFIC_LENGTHS.sedan and TRAFFIC_WIDTHS.sedan in
+// islandLayout.js. The car you drive is one of the cars on the road, so the
+// only defensible size for it is the size of one of them.
+export const CAR_SCALE = 2.2
+export const CAR_LENGTH = 2 * CAR_SCALE       // 4.4, a sedan
+export const CAR_WIDTH = 1.9
+export const CAR_HEIGHT = 0.4 * CAR_SCALE
+
+const WHEEL_RADIUS = 0.25 * CAR_SCALE
 
 // Spawn position comes from the map file, so moving the starting island
 // in islandLayout.js moves the car with it.
@@ -59,11 +79,14 @@ export class Vehicle {
       // At full lock and low speed the car turns in ~2.5 units; at top
       // speed the arc opens out to ~14 units. Raising the reduction makes
       // fast cornering lazier, lowering it makes the car twitchy.
-      maxSteerAngle: 0.55,           // radians at full lock (~31 degrees)
+      // Opened from 0.55 when the car grew: turn radius is wheelbase over
+      // tan(lock), so scaling the wheelbase by 2.2 without touching the lock
+      // would have made every corner 2.2 times wider.
+      maxSteerAngle: 0.7,            // radians at full lock (~40 degrees)
       steerRate: 3.2,                // how fast the wheels turn to full lock
       steerReturnRate: 5.0,          // how fast they recentre when released
       highSpeedSteerReduction: 0.82, // fraction of lock removed at top speed
-      wheelbase: 1.4,                // front axle to rear axle - sets arc size
+      wheelbase: 1.4 * CAR_SCALE,     // front axle to rear axle - sets arc size
 
       // --- Grip ---
       lateralGrip: 0.92,   // 1 = on rails, 0 = ice. Controls sideways slide.
@@ -89,7 +112,7 @@ export class Vehicle {
     // Create physics body at the same spawn point as the mesh
     this.body = this.game.physics.createVehicleChassis(
       { x: SPAWN.x, y: SPAWN.y, z: SPAWN.z },
-      { width: 1.3, height: 0.4, length: 2 }
+      { width: CAR_WIDTH, height: CAR_HEIGHT, length: CAR_LENGTH }
     )
 
     // Wheel visuals (simple cylinders)
@@ -119,7 +142,7 @@ export class Vehicle {
 
     // Main body - bright convertible, suits the setting
     const body = new THREE.Mesh(
-      new THREE.BoxGeometry(1.3, 0.4, 2),
+      new THREE.BoxGeometry(CAR_WIDTH, 0.4 * CAR_SCALE, CAR_LENGTH),
       new THREE.MeshStandardMaterial({
         color: 0xf25f4c,
         metalness: 0.35,
@@ -133,7 +156,7 @@ export class Vehicle {
 
     // Cabin / windscreen
     const cabin = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 0.35, 0.9),
+      new THREE.BoxGeometry(CAR_WIDTH * 0.78, 0.35 * CAR_SCALE, 0.9 * CAR_SCALE),
       new THREE.MeshStandardMaterial({
         color: 0x203642,
         metalness: 0.6,
@@ -141,7 +164,7 @@ export class Vehicle {
         flatShading: true
       })
     )
-    cabin.position.set(0, 0.35, -0.2)
+    cabin.position.set(0, 0.35 * CAR_SCALE, -0.2 * CAR_SCALE)
     cabin.castShadow = true
     group.add(cabin)
 
@@ -150,8 +173,10 @@ export class Vehicle {
       color: 0xe8e4dc, metalness: 0.85, roughness: 0.25, flatShading: true
     })
     for (const side of [-1, 1]) {
-      const strip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.07, 1.7), trimMat)
-      strip.position.set(0.67 * side, -0.05, 0)
+      // Just inside the body, not just outside it
+      const strip = new THREE.Mesh(
+        new THREE.BoxGeometry(0.05, 0.07 * CAR_SCALE, 1.7 * CAR_SCALE), trimMat)
+      strip.position.set((CAR_WIDTH / 2 - 0.04) * side, -0.05 * CAR_SCALE, 0)
       group.add(strip)
     }
 
@@ -172,8 +197,16 @@ export class Vehicle {
     this.headlightMaterial = lampMat
 
     for (const side of [-1, 1]) {
-      const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.1, 0.06), lampMat)
-      lamp.position.set(0.4 * side, 0.02, 1.01)
+      // Positioned as a fraction of the BODY WIDTH, not of CAR_SCALE.
+      //
+      // CAR_SCALE is a length scale. When the car was narrowed to fix its
+      // proportions the body came in and the lamps didn't, so they hung over
+      // the sides by 0.155 units - clearly visible from behind. Fractions of
+      // the width can't come apart from it: 0.3w out plus half of 0.22w is
+      // 0.41w, comfortably inside the 0.5w edge.
+      const lamp = new THREE.Mesh(
+        new THREE.BoxGeometry(CAR_WIDTH * 0.22, 0.1 * CAR_SCALE, 0.06), lampMat)
+      lamp.position.set(CAR_WIDTH * 0.3 * side, 0.02, CAR_LENGTH / 2 + 0.02)
       group.add(lamp)
     }
 
@@ -186,14 +219,15 @@ export class Vehicle {
     this.taillightMaterial = tailMat
 
     for (const side of [-1, 1]) {
-      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.09, 0.06), tailMat)
-      tail.position.set(0.4 * side, 0.05, -1.01)
+      const tail = new THREE.Mesh(
+        new THREE.BoxGeometry(CAR_WIDTH * 0.2, 0.09 * CAR_SCALE, 0.06), tailMat)
+      tail.position.set(CAR_WIDTH * 0.3 * side, 0.05, -CAR_LENGTH / 2 - 0.02)
       group.add(tail)
     }
 
     // One spotlight is plenty - two doubles the cost for no visible gain
     const beam = new THREE.SpotLight(0xfff0d0, 0, 38, Math.PI / 6.5, 0.45, 1.3)
-    beam.position.set(0, 0.35, 0.9)
+    beam.position.set(0, 0.35 * CAR_SCALE, CAR_LENGTH / 2)
     beam.target.position.set(0, -0.5, 10)
     group.add(beam)
     group.add(beam.target)
@@ -260,7 +294,7 @@ export class Vehicle {
 
     const wheels = []
     const wheelGeometry = new THREE.CylinderGeometry(
-      WHEEL_RADIUS, WHEEL_RADIUS, 0.2, 12
+      WHEEL_RADIUS, WHEEL_RADIUS, tyre, 12
     )
     const wheelMaterial = new THREE.MeshStandardMaterial({
       color: 0x0d0d16,
@@ -270,12 +304,21 @@ export class Vehicle {
     })
 
     // Front wheels first (indices 0,1) so they can be steered below.
-    // z = +/-0.7 gives the 1.4 unit wheelbase used by the steering maths.
+    // z = +/- half the wheelbase, which is the figure the steering maths uses -
+    // taken from the same constant rather than written out again, so the
+    // visible wheels can't disagree with the arc the car actually turns.
+    const axle = (1.4 * CAR_SCALE) / 2
+    // Outer face flush with the body. It used to sit 0.05 OUTSIDE the body
+    // and then add half a tyre on top of that, so each wheel stood a quarter
+    // of a unit proud - which reads as a monster truck rather than a car.
+    const tyre = 0.2 * CAR_SCALE
+    const track = CAR_WIDTH / 2 - tyre / 2
+    const drop = -0.2 * CAR_SCALE
     const positions = [
-      { x: -0.6, y: -0.2, z: 0.7 },  // Front left
-      { x: 0.6, y: -0.2, z: 0.7 },   // Front right
-      { x: -0.6, y: -0.2, z: -0.7 }, // Back left
-      { x: 0.6, y: -0.2, z: -0.7 }   // Back right
+      { x: -track, y: drop, z: axle },   // Front left
+      { x: track, y: drop, z: axle },    // Front right
+      { x: -track, y: drop, z: -axle },  // Back left
+      { x: track, y: drop, z: -axle }    // Back right
     ]
 
     for (const pos of positions) {

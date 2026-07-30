@@ -73,16 +73,38 @@ const far = run(`(function(){
 })()`)
 chk('a point in open ground is left alone', far === false)
 
+// The road drawn in section 2 crossed a town island, so both its ends
+// should have been pulled onto the street grid. This used not to happen:
+// generated streets weren't in the segment list, so you could draw a road
+// straight across a town and it joined nothing.
+const onGrid = run(`(function(){
+  const isl = getIsland('projects')
+  const rd = isl.roads[isl.roads.length - 1]
+  let joined = 0
+  for (const p of rd.points) {
+    for (const st of getTownGrid(isl)) {
+      const c = smoothRoad(st.points, st.width)
+        .map(q => ({ x: isl.x + q.x, z: isl.z + q.z }))
+      const n = nearestOnSeg(c, isl.x + p.x, isl.z + p.z)
+      if (n && n.d < 0.5) { joined++; break }
+    }
+  }
+  return { joined, of: rd.points.length }
+})()`)
+chk(`the road drawn across a town joins the street grid (${onGrid.joined}/${onGrid.of} ends)`,
+    onGrid.joined === onGrid.of, JSON.stringify(onGrid))
+
 console.log('\n4. Connections are shown')
 const net = run(`(function(){
   const n = buildNetwork(worldSegments())
   return { segments:n.segments.length, nodes:n.nodes.length,
+           streets:worldSegments().filter(s=>s.kind==='street').length,
            joined:n.nodes.filter(x=>x.segments.length>=2).length,
            loose:n.nodes.filter(x=>x.segments.length<2).length }
 })()`)
 console.log(`   ${net.segments} segments, ${net.nodes} nodes: ${net.joined} joined, ${net.loose} loose`)
 chk('the editor can build the network', net.segments > 0 && net.nodes > 0)
-chk('the road just drawn shows a loose end', net.loose >= 1, `${net.loose}`)
+chk(`generated streets are in the network (${net.streets})`, net.streets > 0, `${net.streets}`)
 chk('a Links toggle exists', typeof els['links-toggle'].onclick === 'function')
 run('draw()')
 chk('drawing with links on does not throw', true)

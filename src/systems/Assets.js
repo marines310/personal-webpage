@@ -119,9 +119,40 @@ export class Assets {
       }
     })
 
-    // Auto-fit to a target size along Z if requested. Downloaded models
-    // arrive at wildly different scales, so this saves a lot of guessing.
-    if (entry.fitLength) {
+    // Fit to a target FOOTPRINT - both dimensions - rather than one.
+    //
+    // `fitLength` alone scales uniformly off the longest horizontal
+    // dimension, so whatever proportions the source model has, it keeps. The
+    // car model is 1.3 wide by 2.0 long: a ratio of 0.65, where a real car is
+    // about 0.42. Fitting its length to 3.96 therefore made it 2.57 wide -
+    // wider than a fire engine, and half a unit wider than its own collider.
+    // That's why the car you drive looked bigger than the traffic even though
+    // it was measurably shorter.
+    //
+    // Scaling the two horizontal axes independently narrows a model that is
+    // too fat without shortening it. Height follows the average of the two,
+    // so it doesn't end up squashed or stretched.
+    if (entry.fitBox) {
+      const box = new THREE.Box3().setFromObject(scene)
+      const size = new THREE.Vector3()
+      box.getSize(size)
+
+      const alongZ = size.z >= size.x
+      const length = alongZ ? size.z : size.x
+      const width = alongZ ? size.x : size.z
+
+      if (length > 0 && width > 0) {
+        const kLength = entry.fitBox.length / length
+        const kWidth = entry.fitBox.width / width
+        const kHeight = Math.sqrt(kLength * kWidth)
+
+        scene.scale.set(
+          alongZ ? kWidth : kLength,
+          kHeight,
+          alongZ ? kLength : kWidth
+        )
+      }
+    } else if (entry.fitLength) {
       const box = new THREE.Box3().setFromObject(scene)
       const size = new THREE.Vector3()
       box.getSize(size)

@@ -27,7 +27,13 @@ const SUITES = [
   'stress.mjs',        // 3000 deliberately awful hand-drawn roads
   'worldsanity.mjs',   // World.js read statically: it can't be run here
   'lights.mjs',        // the traffic light cycle: never two greens at once
+  'conditions.mjs',    // setting the time and weather by hand
   'zebra.mjs',         // crossing bars run along the road, side by side
+  'traffic.mjs',       // lanes, right of way, and thirty vehicles on them
+  'monorail.mjs',      // the loop, its piers and stations, and the trains
+  'ports.mjs',         // quays, shipping lanes, and the fleet at sea
+  'stations.mjs',      // fire, police and hospital: bays, doors, coming and going
+  'windows.mjs',       // the windows in the building models, read from the models
 
   // The editor, driven through real events
   'alltools.mjs',      // every tool does what it claims
@@ -39,7 +45,8 @@ const SUITES = [
   'ringedit.mjs',      // taking over / removing a ring
   'bridges.mjs',       // bridge properties and deletion
   'bridgemerge.mjs',   // roads build bridges when they cross water
-  'cityui.mjs'         // demolish, drag-to-draw, snapping, links
+  'cityui.mjs',        // demolish, drag-to-draw, snapping, links
+  'streetedit.mjs'     // taking over, reshaping and removing town streets
 ]
 
 let failed = []

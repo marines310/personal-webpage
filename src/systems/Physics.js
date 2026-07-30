@@ -165,6 +165,40 @@ export class Physics {
   }
 
   /**
+   * A box that goes where it's told and is not pushed around by anything.
+   *
+   * Used for the AI traffic. A kinematic body collides with the player's car
+   * properly - you bump into it, it stops you - but it never gets knocked off
+   * its lane, because forces don't apply to it. The alternative, a dynamic
+   * body driven along a path, spends its life on its roof.
+   */
+  createKinematicBox(x, y, z, width, height, depth, rotationY = 0) {
+    const half = rotationY / 2
+    const bodyDesc = this.rapier.RigidBodyDesc.kinematicPositionBased()
+      .setTranslation(x, y, z)
+      .setRotation({ x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) })
+
+    const body = this.world.createRigidBody(bodyDesc)
+
+    const colliderDesc = this.rapier.ColliderDesc
+      .cuboid(width / 2, height / 2, depth / 2)
+      .setFriction(0.6)
+
+    const collider = this.world.createCollider(colliderDesc, body)
+    return { body, collider }
+  }
+
+  /** Move a kinematic body. Called every frame for every AI vehicle. */
+  moveKinematic(handle, x, y, z, rotationY = 0) {
+    if (!handle || !handle.body) return
+    const half = rotationY / 2
+    handle.body.setNextKinematicTranslation({ x, y, z })
+    handle.body.setNextKinematicRotation({
+      x: 0, y: Math.sin(half), z: 0, w: Math.cos(half)
+    })
+  }
+
+  /**
    * Create vehicle chassis body.
    *
    * Rotation is locked to the Y (yaw) axis only. The Vehicle class steers

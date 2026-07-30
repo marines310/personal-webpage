@@ -18,11 +18,97 @@ export class UI {
     this.weatherEl = document.getElementById('cond-weather')
     this.skyIconEl = document.getElementById('cond-sky-icon')
 
+    this.conditionsEl = document.getElementById('conditions')
+    this.condPanel = document.getElementById('cond-panel')
+    this.condToggle = document.getElementById('cond-toggle')
+    this.hourSlider = document.getElementById('cond-hour')
+    this.hourValue = document.getElementById('cond-hour-value')
+
     // Cached once - the map doesn't change at runtime
     this.mapExtent = getMapExtent()
 
     // Initialize minimap
     this.setupMinimap()
+    this.setupConditions()
+  }
+
+  /**
+   * The time and weather box, which opens onto controls for both.
+   *
+   * Everything here goes through Environment's own setters, which move the
+   * same `time` and `target` the automatic cycle moves. There is deliberately
+   * no second path: a hand-set sunset runs through the same sun, sky, fog and
+   * light code as one the cycle arrived at.
+   */
+  setupConditions() {
+    if (!this.condToggle || !this.condPanel) return
+
+    const env = () => this.game.environment
+
+    this.condToggle.addEventListener('click', () => {
+      const open = this.condPanel.classList.toggle('hidden') === false
+      this.condToggle.setAttribute('aria-expanded', open ? 'true' : 'false')
+      if (open) this.syncConditionPanel()
+    })
+
+    // The slider is in MINUTES, not hours. At hour granularity you can't find
+    // the few minutes either side of sunrise where the light is worth looking
+    // at, which is most of the reason to have this at all.
+    this.hourSlider.addEventListener('input', () => {
+      const minutes = Number(this.hourSlider.value)
+      env().setClock(minutes / 60)
+      this.hourValue.textContent = formatMinutes(minutes)
+      this.markWeatherButtons()
+    })
+
+    for (const button of this.condPanel.querySelectorAll('#cond-presets button')) {
+      button.addEventListener('click', () => {
+        const hour = Number(button.dataset.hour)
+        env().setClock(hour)
+        this.hourSlider.value = String(Math.round(hour * 60))
+        this.hourValue.textContent = formatMinutes(hour * 60)
+      })
+    }
+
+    for (const button of this.condPanel.querySelectorAll('#cond-weathers button')) {
+      button.addEventListener('click', () => {
+        env().setWeather(button.dataset.weather)
+        this.markWeatherButtons()
+      })
+    }
+
+    document.getElementById('cond-auto').addEventListener('click', () => {
+      env().resumeAuto()
+      this.markWeatherButtons()
+    })
+
+    // Driving keys must not reach the sliders and buttons - tapping space to
+    // brake would otherwise re-press whichever one you clicked last.
+    for (const event of ['keydown', 'keyup']) {
+      this.conditionsEl.addEventListener(event, (e) => e.stopPropagation())
+    }
+  }
+
+  /** Put the panel's controls where the world actually is. */
+  syncConditionPanel() {
+    const env = this.game.environment
+    if (!env) return
+
+    const minutes = Math.round(env.getHours() * 60)
+    this.hourSlider.value = String(minutes)
+    this.hourValue.textContent = formatMinutes(minutes)
+    this.markWeatherButtons()
+  }
+
+  /** Light up whichever weather is current, if it was chosen by hand. */
+  markWeatherButtons() {
+    const env = this.game.environment
+    if (!env) return
+
+    for (const button of this.condPanel.querySelectorAll('#cond-weathers button')) {
+      const mine = env.weatherLocked && button.dataset.weather === env.weather
+      button.classList.toggle('on', mine)
+    }
   }
 
   setupMinimap() {
@@ -62,6 +148,21 @@ export class UI {
     const icon = icons[weather] || (env.isNight() ? '☽' : '☀')
     if (this.skyIconEl.textContent !== icon) {
       this.skyIconEl.textContent = icon
+    }
+
+    // A quiet "held" under the readout while anything is set by hand, so a
+    // stopped clock reads as deliberate rather than as a bug.
+    if (this.conditionsEl) {
+      this.conditionsEl.classList.toggle('manual', env.isManual())
+    }
+
+    // While the panel is open and the clock is still running, the slider
+    // follows it. Not while you're dragging - that would fight you.
+    if (this.condPanel && !this.condPanel.classList.contains('hidden') &&
+        !env.timeLocked && document.activeElement !== this.hourSlider) {
+      const minutes = Math.round(env.getHours() * 60)
+      this.hourSlider.value = String(minutes)
+      this.hourValue.textContent = formatMinutes(minutes)
     }
   }
 
@@ -123,6 +224,65 @@ export class UI {
         }
         ctx.closePath()
         ctx.fill()
+      }
+
+      // The monorail, over the top of the land - which is where it is. A
+      // dashed line, because at this size a solid one is indistinguishable
+      // from a bridge, and the trains are the one thing moving out there
+      // that the map couldn't otherwise explain.
+      if (world.monorail) {
+        const points = world.monorail.points
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)'
+        ctx.lineWidth = 1
+        ctx.setLineDash([3, 3])
+        ctx.beginPath()
+        for (let i = 0; i < points.length; i++) {
+          const px = centerX + points[i].x * scale
+          const py = centerY + points[i].z * scale
+          if (i === 0) ctx.moveTo(px, py)
+          else ctx.lineTo(px, py)
+        }
+        ctx.stroke()
+        ctx.setLineDash([])
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.85)'
+        for (const station of world.monorail.stations) {
+          ctx.beginPath()
+          ctx.arc(centerX + station.x * scale, centerY + station.z * scale,
+                  1.6, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      }
+
+      // Quays, drawn as a stub out from the coast. Small, but it's the only
+      // way to know a port is over that side of the island before you drive
+      // round looking for it.
+      if (world.ports) {
+        ctx.strokeStyle = 'rgba(240, 235, 220, 0.75)'
+        ctx.lineWidth = 2
+        for (const port of world.ports) {
+          ctx.beginPath()
+          ctx.moveTo(centerX + port.root.x * scale, centerY + port.root.z * scale)
+          ctx.lineTo(centerX + port.head.x * scale, centerY + port.head.z * scale)
+          ctx.stroke()
+        }
+      }
+
+      // And the ships, so the sea reads as busy from the map too
+      if (world.ships) {
+        for (const ship of world.ships) {
+          if (!ship.mesh) continue
+          const x = centerX + ship.mesh.position.x * scale
+          const y = centerY + ship.mesh.position.z * scale
+          // Anything off the far side of the world is out of the fog and
+          // shouldn't be on the map either
+          if (x < -4 || y < -4 || x > width + 4 || y > height + 4) continue
+          ctx.fillStyle = ship.kind === 'cargo'
+            ? 'rgba(255, 210, 140, 0.95)' : 'rgba(210, 240, 255, 0.9)'
+          ctx.beginPath()
+          ctx.arc(x, y, ship.kind === 'cargo' ? 2 : 1.4, 0, Math.PI * 2)
+          ctx.fill()
+        }
       }
     }
 
@@ -192,4 +352,12 @@ export class UI {
 
     this.zonePanel.classList.add('hidden')
   }
+}
+
+/** Minutes since midnight as HH:MM. */
+function formatMinutes(total) {
+  const minutes = ((Math.round(total) % 1440) + 1440) % 1440
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 }

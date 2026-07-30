@@ -97,8 +97,11 @@ const solid = L.getBridgeRoadPaths().every(p => {
 console.log(JSON.stringify({
   approaches: ap.length,
   edited: ap[0] ? !!ap[0].edited : false,
-  // the ring road is legitimately a non-auto road, so exclude it
-  plainRoads: roads.filter(r=>!r.auto && !r.ring).length,
+  // The ring road and the port road are both legitimately non-auto roads,
+  // so they're excluded. What this is looking for is a bridge approach
+  // being emitted TWICE - once as part of the continuous bridge road and
+  // again as an ordinary road, which lays two surfaces on top of each other.
+  plainRoads: roads.filter(r=>!r.auto && !r.ring && !r.spur).length,
   points: ap[0] ? ap[0].points : [],
   solid
 }))

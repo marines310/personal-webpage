@@ -81,5 +81,74 @@ const notExported = imported.filter(i => !layoutExports.has(i))
 chk(`${imported.length} imports from islandLayout, all exported`,
     notExported.length === 0, 'missing: ' + notExported.join(', '))
 
+console.log('\n6. Every SHOUTY constant it uses comes from somewhere')
+// The trap: move a constant out of World.js into the layout, forget to add
+// it to the import list, and nothing complains until the world is built -
+// at which point it throws on the first frame and the screen stays black.
+// Section 5 only checks that what IS imported exists, not that what's used
+// is imported.
+// Comments and strings have to go first. Prose is full of capitals, and
+// scanning the raw file reported "IMPORTANT" and "DRIVE TO EXPLORE" as
+// undefined constants - noise that would have got this check deleted.
+const code = src
+  .replace(/\/\*[\s\S]*?\*\//g, ' ')
+  .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+  .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+  .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+  .replace(/`(?:[^`\\]|\\.)*`/g, '``')
+
+const usedConsts = new Set(
+  [...code.matchAll(/(?<![.\w$])([A-Z][A-Z0-9_]{2,})\b/g)].map(m => m[1])
+)
+const fromEverywhere = new Set([
+  // Everything brought in from anywhere, not just the layout
+  ...[...src.matchAll(/import\s*(?:\*\s*as\s*([\w$]+)|\{([^}]*)\}|([\w$]+))\s*from/g)]
+    .flatMap(m => m[1] ? [m[1]]
+      : m[2] ? m[2].split(',').map(t => t.trim().split(/\s+as\s+/).pop())
+      : [m[3]]),
+  // and everything declared here
+  ...[...code.matchAll(/\bconst\s+([A-Z][A-Z0-9_]*)\s*=/g)].map(m => m[1]),
+  // Not ours to declare
+  'PI', 'MAX_SAFE_INTEGER', 'MIN_SAFE_INTEGER', 'EPSILON', 'DEG2RAD', 'RAD2DEG',
+  'NEGATIVE_INFINITY', 'POSITIVE_INFINITY', 'LN2', 'LN10'
+])
+const orphans = [...usedConsts].filter(c => !fromEverywhere.has(c))
+chk(`${usedConsts.size} constants used, all imported or declared`, orphans.length === 0,
+    'nowhere defined: ' + orphans.join(', '))
+
+console.log('\n7. Every plain function it calls comes from somewhere')
+// This is section 6's twin, and it exists because section 6 didn't catch the
+// obvious case: `getPortYard(port)` was called without being imported, and the
+// world failed to load with "getPortYard is not defined". Section 6 only looked
+// at SHOUTY names, so a missing function sailed straight past it.
+//
+// Bare calls only - `foo(...)`, not `this.foo(...)` (section 1) or
+// `x.foo(...)` (a method on something else, which can't be checked from here).
+const bareCalls = new Set(
+  [...code.matchAll(/(?<![.\w$])([a-z][\w$]*)\s*\(/g)].map(m => m[1])
+)
+
+const localFunctions = new Set([
+  // The class's own methods. A declaration `buildPort(port) {` looks exactly
+  // like a bare call to the regex above, so without these every method in the
+  // file is reported as undefined - 80 lines of noise that would have got this
+  // check deleted rather than read.
+  ...defined,
+  ...[...code.matchAll(/\bfunction\s+([\w$]+)/g)].map(m => m[1]),
+  ...[...code.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>/g)]
+    .map(m => m[1]),
+  // Anything JavaScript or the language itself provides
+  'if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'new',
+  'function', 'else', 'do', 'try', 'super', 'this', 'await', 'yield',
+  'push', 'map', 'filter', 'clone', 'require', 'set', 'get', 'add',
+  'isFinite', 'parseFloat', 'parseInt', 'isNaN', 'atan2', 'clamp'
+])
+
+const missingFns = [...bareCalls].filter(fn =>
+  !fromEverywhere.has(fn) && !localFunctions.has(fn))
+
+chk(`${bareCalls.size} bare calls, all imported or declared`, missingFns.length === 0,
+    'nowhere defined: ' + missingFns.join(', '))
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

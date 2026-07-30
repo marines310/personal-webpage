@@ -1,14 +1,15 @@
-// The light cycle is pure arithmetic, so it can be checked directly.
-const CYCLE = 18, AMBER = 2.5
-const stateAt = (t, group, offset = 0) => {
-  const tt = (t + offset) % CYCLE
-  const half = CYCLE / 2
-  const first = tt < half
-  const into = first ? tt : tt - half
-  const amber = into > half - AMBER
-  const mine = (group === 0) === first
-  return !mine ? 'red' : amber ? 'amber' : 'green'
-}
+// The light cycle, checked by calling the function the game uses.
+//
+// This file used to contain its own copy of the arithmetic. That was fine
+// while the lights were decorative, and became a trap the moment the traffic
+// started obeying them: the copy agreed with itself, and nothing compared it
+// with the version the cars and the lamps were reading. Both now come from
+// signalState().
+import { signalState, TRAFFIC_CYCLE, TRAFFIC_AMBER }
+  from '../src/world/islandLayout.js'
+
+const CYCLE = TRAFFIC_CYCLE, AMBER = TRAFFIC_AMBER
+const stateAt = (t, group, offset = 0) => signalState({ offset }, group, t)
 
 let pass = 0, fail = 0
 const chk = (n, c, d = '') => { c ? (pass++, console.log('  PASS  ' + n)) : (fail++, console.log('  FAIL  ' + n + '  ' + d)) }

@@ -103,8 +103,22 @@ const net = L.getRoadNetwork()
 const streetSegs = net.segments.filter(s => s.kind === 'road')
 chk(`${streetSegs.length} street segments in the network`, streetSegs.length > 0)
 const loose = net.nodes.filter(n => n.segments.length < 2)
-chk(`no dead ends anywhere (${loose.length})`, loose.length === 0,
-    loose.length + ' loose ends')
+
+// A quay is allowed to be a dead end - it stops at the sea, that's the
+// point. Nothing else is. Checked by position rather than by loosening the
+// count, so a genuine dead end elsewhere still fails.
+const piers = L.getPorts().map(p => p.head)
+const strandedNotAQuay = loose.filter(n =>
+  !piers.some(h => Math.hypot(n.x - h.x, n.z - h.z) < 8))
+
+console.log(`   ${loose.length} loose ends, ${loose.length - strandedNotAQuay.length}` +
+            ` of them pier heads`)
+chk(`every dead end is a quay (${strandedNotAQuay.length} that aren't)`,
+    strandedNotAQuay.length === 0,
+    strandedNotAQuay.map(n => `(${n.x.toFixed(0)},${n.z.toFixed(0)})`).join(' '))
+chk(`and every port road reaches its quay (${piers.length})`,
+    piers.every(h => net.nodes.some(n => Math.hypot(n.x - h.x, n.z - h.z) < 8)),
+    'a pier head with no road on it')
 
 console.log('\n7. Nothing blocks the way onto the island')
 for (const isl of towns) {
@@ -234,15 +248,20 @@ for (const isl of towns) {
 // Every island where a bridge meets the ring has a T-junction, so it gets
 // signals too - the hub had none until bridge approaches were counted as
 // approaches. What must NOT be signalled is a plain bend, which shows up
-// as an island having no more signals than it has bridges.
+// as an island having more signals than it has real junctions.
+//
+// The port road is one of those junctions: it leaves the ring and runs out
+// to the quay, so it earns its own set of lights.
 for (const isl of L.ISLANDS) {
   const signals = L.getTrafficSignals(isl)
   const bridges = L.getBridgeLandings(isl).length
+  const spurs = L.getPort(isl) ? 1 : 0
   const streets = L.getTownGrid(isl).length
 
   if (!streets) {
-    chk(`${isl.id.padEnd(9)} ${signals.length} signals for ${bridges} bridge(s), no bends signalled`,
-        signals.length <= bridges, `${signals.length} > ${bridges}`)
+    chk(`${isl.id.padEnd(9)} ${signals.length} signals for ${bridges} bridge(s)` +
+        ` and ${spurs} port road, no bends signalled`,
+        signals.length <= bridges + spurs, `${signals.length} > ${bridges + spurs}`)
   }
 
   chk(`${isl.id.padEnd(9)} every signal has 3+ approaches`,

@@ -35,10 +35,14 @@ export class Camera {
     this.params = {
       // Where the camera sits relative to the car, in car-local space.
       // The car's nose is +Z, so a NEGATIVE z puts the camera behind it.
-      restHeight: 5.0,      // height when stopped
-      restDistance: 9.5,    // distance behind when stopped
-      fastHeight: 7.0,      // height at top speed
-      fastDistance: 13.5,   // distance behind at top speed
+      // Pulled back when the car grew from 2 units long to 4.4: at the old
+      // 9.5 the bonnet filled the bottom third of the screen.
+      restHeight: 6.2,      // height when stopped
+      restDistance: 12.5,   // distance behind when stopped
+      // 7.8, not higher: the monorail beam's underside is at 9.5, and the
+      // camera has to pass beneath it without clipping through.
+      fastHeight: 7.8,      // height at top speed
+      fastDistance: 17,     // distance behind at top speed
       speedForFullPullback: 18, // car speed at which the far values apply
 
       // How quickly the camera swings around to sit behind the car.
@@ -54,7 +58,7 @@ export class Camera {
       lookAtSmoothing: 11,
 
       lookAhead: 6,         // how far in front of the car to aim
-      lookHeight: 1.4
+      lookHeight: 1.9
     }
 
     // --- State ---

@@ -156,6 +156,20 @@ The first time only, it can take a few extra minutes to become reachable. If you
 
 This is the loop from here on. Terminal for previewing, GitHub Desktop for publishing.
 
+**0. Point Terminal at the project.** Every command below assumes it. A new Terminal
+window starts in your home folder, so do this each time you open one:
+
+```bash
+cd ~/"Documents/GitHub/Personal Webpage/mike-portfolio-v1"
+```
+
+The quotes are doing real work — without them the space in "Personal Webpage" splits the
+path in two and you get `No such file or directory`. If you'd rather not type it, type
+`cd` and a space, then drag the `mike-portfolio-v1` folder from Finder onto the Terminal
+window and press Enter.
+
+`ls` should then list `index.html`, `package.json`, `src`, `public`, `tests`.
+
 **1. Make your change and check it locally.**
 
 In Terminal:
@@ -169,6 +183,44 @@ it reloads as you edit. `Ctrl + C` stops it.
 
 > Tip: `Cmd + T` opens a second Terminal tab. Keep the dev server in one tab so you're
 > not stopping and starting it constantly.
+
+**1b. Two checks worth running before you publish.**
+
+Neither of these changes anything — they just tell you whether the site still works.
+Stop the dev server first (`Ctrl + C`), or run them in a second tab.
+
+```bash
+npm test
+```
+
+Runs every check in `tests/` — a couple of minutes, because some of them simulate
+several minutes of traffic. The last line is what matters:
+
+```
+28 suites, 0 failed
+```
+
+If a suite fails it prints which one and which check, e.g.
+`FAIL  no container floats in mid-air`. That's a real problem: don't publish, and paste
+the failing lines into a new chat.
+
+```bash
+npm run build
+```
+
+Builds the site exactly as GitHub will. Takes about ten seconds and ends with a list of
+files and their sizes:
+
+```
+✓ built in 8.42s
+```
+
+If it ends in `error` instead, the site would fail to publish too — again, don't push,
+paste the error.
+
+> **Why bother when GitHub builds it anyway?** Because GitHub builds it *after* you've
+> published. If the build is broken, the live site breaks with it and stays broken until
+> you fix it. Ten seconds here saves that.
 
 **2. Publish, in GitHub Desktop.**
 

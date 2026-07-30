@@ -228,7 +228,7 @@ import { MODEL_MANIFEST } from './src/world/modelManifest.js'
 // version of these and it quietly drifted out of step with the game, so
 // the preview showed roads where they weren't.
 import { sampleSpline, bowedPath } from './src/world/curves.js'
-import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, getStoredRing, buildNetwork, getTownGrid, getTownPlots, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
+import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, getStoredRing, buildNetwork, getTownGrid, getTownPlots, takenOverStreets, isTown as isTownIsland, getPort, getPortRoad, DEFAULT_STREET_WIDTH, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
 import { ISLANDS as MAP_ISLANDS, BRIDGES as MAP_BRIDGES } from './src/world/mapData.js'
 
 /** key -> { footprint:{x,y,z}, thumb: dataURL } */
@@ -528,8 +528,23 @@ function approachRoads(island) {
  * Handed to buildNetwork(), the same function the game uses, so the
  * connections drawn here are the connections the world will have.
  */
+let segmentCache = null;
+
+/** Throw away the cached segment list. Called whenever the map changes. */
+function invalidateSegments() { segmentCache = null; }
+
 function worldSegments() {
-  const out = [];
+  // Rebuilding this derives every ring and every town grid: about 12ms for
+  // the whole map. It gets asked for more than once between changes - the
+  // connection overlay wants it, and so does every snap while you drag a
+  // road handle - so the answer is kept until something moves.
+  //
+  // Cleared by refresh(), which runs after every edit. Deliberately blunt:
+  // a stale segment list would snap roads to where things used to be, and
+  // that is a far worse bug than a slow drag.
+  if (segmentCache) return segmentCache;
+
+  const out = segmentCache = [];
 
   for (const isl of map.islands) {
     const ring = getIslandRing(isl);
@@ -537,6 +552,18 @@ function worldSegments() {
       out.push({
         points: ring.map(p => ({ x: isl.x + p.x, z: isl.z + p.z })),
         closed: true, kind: 'ring', island: isl
+      });
+    }
+
+    // Generated town streets. They belong here for the same reason the
+    // ring does: they are roads the world will have, so the connections
+    // drawn in the editor should include them, and a new road should be
+    // able to snap onto one.
+    for (const st of getTownGrid(isl)) {
+      const curve = smoothRoad(st.points, st.width);
+      out.push({
+        points: curve.map(p => ({ x: isl.x + p.x, z: isl.z + p.z })),
+        closed: false, kind: 'street', island: isl
       });
     }
 
@@ -632,6 +659,60 @@ function nearestOnSeg(points, x, z) {
 /** An island's hand-edited approach toward another island, if any. */
 function storedApproach(island, otherId) {
   return (island.roads || []).find(r => r.approachTo === otherId) || null;
+}
+
+/**
+ * Hand a generated town street over to the user.
+ *
+ * A street off the grid isn't stored anywhere - it's recomputed from the
+ * island's shape every time - so there is no object to select, drag or
+ * delete, which is exactly what you run into when you try to click one.
+ * Writing it into the island's `roads` makes it real. From then on it's an
+ * ordinary road, and every tool already knows what to do with those.
+ *
+ * The two ends are kept as they are and the width comes along, so the
+ * street does not move at the moment it becomes yours. Verified, not
+ * assumed: tests/streetedit.mjs measures the before and after.
+ *
+ * Returns the new road's index.
+ */
+function takeOverStreet(island, street) {
+  island.roads = island.roads || [];
+  island.roads.push({
+    streetKey: street.key,
+    width: street.width || DEFAULT_STREET_WIDTH,
+    points: street.points.map(p => ({ x: num(p.x, 2), z: num(p.z, 2) }))
+  });
+  return island.roads.length - 1;
+}
+
+/** Stop generating a street. Both halves, or it comes straight back. */
+function removeStreet(island, key) {
+  island.noStreets = island.noStreets || [];
+  if (!island.noStreets.includes(key)) island.noStreets.push(key);
+  // If it had been taken over, the stored copy has to go too - otherwise
+  // the road stays and only the generator falls silent.
+  island.roads = (island.roads || []).filter(r => r.streetKey !== key);
+}
+
+/**
+ * A generated town street under the pointer, if there is one.
+ *
+ * Hit-tested against the curve that's actually drawn, at half the road's
+ * width rather than the tighter tolerance used for roads: a street is
+ * something you aim at, not a line you have to trace.
+ */
+function pickStreet(w) {
+  for (let i = map.islands.length - 1; i >= 0; i--) {
+    const isl = map.islands[i];
+    for (const st of getTownGrid(isl)) {
+      const curve = smoothRoad(st.points, st.width);
+      const near = nearestOnSeg(
+        curve.map(p => ({ x: isl.x + p.x, z: isl.z + p.z })), w.x, w.z);
+      if (near && near.d < st.width / 2) return { island: isl, street: st };
+    }
+  }
+  return null;
 }
 
 /**
@@ -1087,6 +1168,44 @@ function drawIsland(island) {
     traceSt(); ctx.stroke();
   }
 
+  // The port: quay and the road out along it. Read-only for now - the site
+  // is derived from the coastline, so there is nothing stored to drag. It's
+  // drawn because otherwise you'd move an island, wonder where the harbour
+  // went, and have to load the game to find out.
+  const port = getPort(island);
+  if (port) {
+    const a = w2s(port.root.x, port.root.z);
+    const b = w2s(port.head.x, port.head.z);
+    ctx.strokeStyle = '#b9b2a2';
+    ctx.lineWidth = Math.max(2, port.width * view.zoom);
+    ctx.lineCap = 'butt';
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+
+    const road = getPortRoad(island);
+    if (road) {
+      const curve = smoothRoad(
+        sampleSpline(road.points, { samplesPerSpan: ROAD_SMOOTHNESS }), road.width);
+      ctx.strokeStyle = P.asphalt;
+      ctx.lineWidth = Math.max(1.5, road.width * view.zoom);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      curve.forEach((q, k) => {
+        const s = w2s(island.x + q.x, island.z + q.z);
+        if (k === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+      });
+      ctx.stroke();
+    }
+
+    // Berths, so it's obvious which side the ships tie up
+    ctx.fillStyle = 'rgba(255,255,255,.55)';
+    for (const berth of port.berths) {
+      const s = w2s(berth.x, berth.z);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, Math.max(2, 2.5 * view.zoom), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   // Bridge approach roads, shaped exactly the way the game shapes them
   for (const ap of approachRoads(island)) {
     const idx = ap.edited ? approachIndex(island, ap.to) : -1;
@@ -1196,8 +1315,11 @@ function drawIsland(island) {
     }
     ctx.lineCap = 'butt';
 
-    // Control points, so you can grab and bend the road
-    if (mode === 'road') {
+    // Control points, so you can grab and bend the road. Shown for every
+    // road while the Road tool is out, and for the selected one whatever
+    // tool you're holding - selecting a road is how you say you want to
+    // work on it, so its handles should be there.
+    if (mode === 'road' || selR) {
       for (const q of controls) {
         const s = w2s(island.x + q.x, island.z + q.z);
         ctx.fillStyle = selR ? '#3fc4cc' : '#cfd8e3';
@@ -1620,13 +1742,18 @@ function pickBridge(w) {
 }
 
 function pickRoad(w) {
-  const tol = 2.2;
   for (let i = map.islands.length - 1; i >= 0; i--) {
     const isl = map.islands[i];
     const roads = isl.roads || [];
     for (let r = 0; r < roads.length; r++) {
       const controls = roadPoints(roads[r]);
       if (controls.length < 2) continue;
+
+      // Anywhere on the road surface counts, so what you click is what you
+      // hit. A fixed 2.2 used to be narrower than the road itself, which
+      // showed up the moment streets became selectable: a 5.5-wide street
+      // ignored clicks on its outer metre and selected the island instead.
+      const tol = Math.max(2.2, (roads[r].width || 7) / 2);
       // Approach roads must be hit-tested against the curve actually
       // drawn, which pins its first point to the bridge landing.
       const curve = roadCurveOf(isl, roads[r]);
@@ -1644,6 +1771,29 @@ function pickRoad(w) {
           return { island: isl, index: r };
         }
       }
+    }
+  }
+  return null;
+}
+
+/**
+ * Nearest control point of ONE road, if one is close by.
+ *
+ * Used by Select, where only the selected road shows its handles. Offering
+ * every road's handles there would let you grab a dot you can't see.
+ */
+function pickRoadPointOf(island, roadIndex, w) {
+  const road = (island.roads || [])[roadIndex];
+  if (!road) return null;
+
+  const pts = roadPoints(road);
+  const tol = 9 / view.zoom;
+  // Point 0 of an approach is welded to the bridge landing, same as below
+  const first = road.approachTo ? 1 : 0;
+
+  for (let p = first; p < pts.length; p++) {
+    if (Math.hypot(w.x - (island.x + pts[p].x), w.z - (island.z + pts[p].z)) < tol) {
+      return { island, roadIndex, pointIndex: p };
     }
   }
   return null;
@@ -1668,6 +1818,43 @@ function pickRoadPoint(w) {
     }
   }
   return null;
+}
+
+/**
+ * Add a control point to a road at an island-local position.
+ *
+ * Goes into the span of the CONTROL polyline it lands nearest, not the
+ * drawn curve. Those are different lines - the curve is the smoothed
+ * version - and inserting by the curve would sometimes drop the handle
+ * between the wrong pair and put a kink in the road.
+ *
+ * Returns the index of the new point, or null if there was nowhere to put it.
+ */
+function insertRoadPoint(island, road, local) {
+  if (!road) return null;
+
+  // A road written as from/to has to become a point list first
+  if (!Array.isArray(road.points)) {
+    if (!road.from || !road.to) return null;
+    road.points = [{ ...road.from }, { ...road.to }];
+    delete road.from; delete road.to;
+  }
+
+  const pts = road.points;
+  if (pts.length < 2) return null;
+
+  const spans = pts.length - 1 + (road.closed ? 1 : 0);
+  let bestAt = -1, bestD = Infinity, bestPoint = null;
+
+  for (let i = 0; i < spans; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const near = nearestOnSeg([a, b], local.x, local.z);
+    if (near && near.d < bestD) { bestD = near.d; bestAt = i + 1; bestPoint = near; }
+  }
+
+  if (bestAt < 0) return null;
+  pts.splice(bestAt, 0, { x: num(bestPoint.x, 2), z: num(bestPoint.z, 2) });
+  return bestAt;
 }
 
 /** A road's control points, whichever way it was written. */
@@ -1791,11 +1978,33 @@ canvas.addEventListener('mousedown', (e) => {
       road.points.splice(rp.pointIndex, 1);
       if (road.points.length < 2) {
         rp.island.roads.splice(rp.roadIndex, 1);
+        if (road.streetKey) removeStreet(rp.island, road.streetKey);
         sel = { kind: 'island', island: rp.island };
       } else {
         sel = { kind: 'road', island: rp.island, index: rp.roadIndex };
       }
       refresh(); return;
+    }
+
+    // Alt-click the road itself, away from any handle, adds a handle there.
+    //
+    // The counterpart to alt-clicking a handle to remove one, and the same
+    // gesture the shape tool uses on an outline edge. It matters most for a
+    // town street you've just taken over: those arrive with two ends and
+    // nothing in between, so without this you could move a street but never
+    // bend one.
+    if (!rp && e.altKey) {
+      const hit = pickRoad(w);
+      if (hit) {
+        const added = insertRoadPoint(
+          hit.island, hit.island.roads[hit.index],
+          { x: w.x - hit.island.x, z: w.z - hit.island.z });
+        if (added !== null) {
+          sel = { kind: 'road', island: hit.island, index: hit.index };
+          refresh();
+        }
+        return;
+      }
     }
 
     if (rp && !roadDraft) {
@@ -1897,7 +2106,17 @@ canvas.addEventListener('mousedown', (e) => {
       // back to the generator, which would look like nothing happened.
       // Switching it off is what you actually meant.
       if (road && road.isRing) rd.island.noRing = true;
+      if (road && road.streetKey) removeStreet(rd.island, road.streetKey);
       sel = null; refresh(); return;
+    }
+
+    // A generated street. Nothing to splice - it's recomputed each time -
+    // so it goes on the island's list of streets not to generate.
+    const st = pickStreet(w);
+    if (st) {
+      removeStreet(st.island, st.street.key);
+      sel = { kind: 'island', island: st.island };
+      refresh(); return;
     }
 
     const di = pickDistrict(w);
@@ -1927,11 +2146,32 @@ canvas.addEventListener('mousedown', (e) => {
     return;
   }
 
+  // The selected road shows its handles here, so they have to be draggable
+  // here too. Without this, selecting a road and then reshaping it meant
+  // switching to the Road tool in between - and the handles sat there
+  // looking grabbable the whole time.
+  if (sel?.kind === 'road') {
+    const own = pickRoadPointOf(sel.island, sel.index, w);
+    if (own) { drag = { type: 'roadPoint', ...own }; return; }
+  }
+
   // Roads sit on top of the island, so check them first - but only
   // near their centre line, so the island stays easy to grab
   const road = pickRoad(w);
   if (road) {
     sel = { kind: 'road', island: road.island, index: road.index };
+    refresh();
+    return;
+  }
+
+  // A generated town street. Clicking one hands it over and selects it in
+  // the same motion, so it behaves like selecting anything else - the
+  // alternative was a button per street in the panel, and a town has
+  // dozens. The shape doesn't move, so a stray click costs nothing.
+  const street = pickStreet(w);
+  if (street) {
+    const index = takeOverStreet(street.island, street.street);
+    sel = { kind: 'road', island: street.island, index };
     refresh();
     return;
   }
@@ -2104,7 +2344,13 @@ function deleteSelection() {
   } else if (sel.kind === 'district') {
     sel.island.districts.splice(sel.index, 1);
   } else if (sel.kind === 'road') {
+    const rd = sel.island.roads[sel.index];
     sel.island.roads.splice(sel.index, 1);
+    // Pressing Delete on a town street means get rid of the street, not
+    // hand it back to the generator - which is what dropping the stored
+    // copy on its own would do. The panel has a separate button for
+    // reverting, so this reads the way the key is labelled.
+    if (rd && rd.streetKey) removeStreet(sel.island, rd.streetKey);
   } else if (sel.kind === 'bridge') {
     map.bridges.splice(sel.index, 1);
   }
@@ -2186,16 +2432,19 @@ function fitView() {
 // ===========================================================================
 // Side panel
 // ===========================================================================
-function refresh() { draw(); renderProps(); renderValidation(); renderExport(); renderHint(); }
+function refresh() {
+  invalidateSegments();
+  draw(); renderProps(); renderValidation(); renderExport(); renderHint();
+}
 
 function renderHint() {
   const tips = {
-    select: '<b>Drag</b> islands to move · <b>drag the dot</b> on the rim to resize · <b>click a road or a bridge</b> to select it · <b>Delete</b> removes whatever is selected · <b>Shift-drag</b> to pan · <b>scroll</b> to zoom',
+    select: '<b>Drag</b> islands to move · <b>drag the dot</b> on the rim to resize · <b>click a road, street or bridge</b> to select it, then <b>drag its handles</b> · <b>Delete</b> removes what’s selected · <b>Shift-drag</b> to pan · <b>scroll</b> to zoom',
     district: '<b>Click inside an island</b> to drop a district there. Switch to Select to move or resize it.',
-    road: '<b>Click point by point</b> for a winding road, or <b>press and drag</b> for a straight one. <b>Click a second island</b> to bridge across to it. <b>Enter</b> finishes, <b>Esc</b> cancels, <b>Alt-click</b> a point removes it.',
+    road: '<b>Click point by point</b> for a winding road, or <b>press and drag</b> for a straight one. <b>Click a second island</b> to bridge across to it. <b>Enter</b> finishes, <b>Esc</b> cancels, <b>Alt-click</b> a handle removes it, <b>Alt-click the road</b> adds one.',
     _road_old: '<b>Click along an island</b> to lay out a road, as many points as you like. <b>Enter</b> finishes it. <b>Drag</b> a point to reshape · <b>Alt-click</b> a point to remove it · <b>Delete</b> removes the whole road.',
     shape: '<b>Click an island</b> to make it editable · <b>drag</b> the white dots to reshape the coast · <b>Alt-click an edge</b> adds a point · <b>Delete</b> removes one',
-    demolish: '<b>Click anything to remove it</b> \u2014 a road, a bridge, a building, a district, or an island. Whatever is under the pointer goes. Islands ask first.',
+    demolish: '<b>Click anything to remove it</b> \u2014 a road, a town street, a bridge, a building, a district, or an island. Whatever is under the pointer goes. Islands ask first.',
     building: '<b>Click empty ground</b> to place a building · <b>drag</b> to move · <b>drag the orange dot</b> to rotate · <b>Delete</b> removes it. Turn on <b>Snap</b> for tidy rows and right angles.'
   };
   document.getElementById('hint').innerHTML =
@@ -2444,10 +2693,17 @@ function renderProps() {
       span.textContent = rd.isRing ? `ring road, ${n} points`
         : rd.approachTo
         ? `bridge road to ${rd.approachTo}, ${n} points`
+        : rd.streetKey ? `town street, ${n} points`
         : (n > 2 ? `curved road, ${n} points` : `straight road`);
       const del = document.createElement('button');
       del.textContent = '✕'; del.className = 'danger';
-      del.onclick = () => { isl.roads.splice(i, 1); sel = { kind: 'island', island: isl }; refresh(); };
+      del.onclick = () => {
+        isl.roads.splice(i, 1);
+        // A taken-over street would simply reappear, so it has to be
+        // switched off as well - same reasoning as the ring road.
+        if (rd.streetKey) removeStreet(isl, rd.streetKey);
+        sel = { kind: 'island', island: isl }; refresh();
+      };
       chip.append(span, del);
       box.append(chip);
     });
@@ -2509,6 +2765,31 @@ function renderProps() {
       refresh();
     };
     box.append(ringOff);
+
+    // Town streets. There can be dozens, so there's no button per street -
+    // you click the street itself. This is here to say how many there are,
+    // and to undo a removal, which is the one thing you can't do by
+    // clicking, since a removed street isn't drawn any more.
+    if (isTownIsland(isl)) {
+      const auto = getTownGrid(isl).length;
+      const mine = (isl.roads || []).filter(r => r.streetKey).length;
+      const gone = (isl.noStreets || []).length;
+
+      box.insertAdjacentHTML('beforeend',
+        `<p style="color:var(--muted);font-size:12px;margin:12px 0 4px">
+           Streets <span style="color:#8b98a5">&ndash; ${auto} automatic${
+             mine ? `, ${mine} yours` : ''}${gone ? `, ${gone} removed` : ''}</span><br>
+           <span style="color:#8b98a5">Click a street to take it over and
+           reshape it.</span></p>`);
+
+      if (gone) {
+        const restore = document.createElement('button');
+        restore.textContent = `Bring back ${gone} removed street${gone > 1 ? 's' : ''}`;
+        restore.style.cssText = 'width:100%;margin-top:6px';
+        restore.onclick = () => { delete isl.noStreets; refresh(); };
+        box.append(restore);
+      }
+    }
 
     // One button per bridge road still being generated automatically.
     // Taking one over bakes its current shape into draggable points, so
@@ -2708,6 +2989,46 @@ function renderProps() {
       revert.style.cssText = 'width:100%;margin-top:10px';
       revert.onclick = deleteSelection;
       box.append(revert);
+
+    } else if (rd.streetKey) {
+      box.insertAdjacentHTML('beforeend',
+        `<p style="color:var(--muted);font-size:12px;margin:0 0 8px">
+           Town street on <b>${sel.island.id}</b>
+           <span style="color:#8b98a5">&ndash; yours now</span><br>
+           <span style="color:#8b98a5">Drag the handles to move it.
+           Alt-click the road with the Road tool to add one.</span>
+         </p>`);
+
+      const wi = Object.assign(document.createElement('input'),
+        { type: 'number', value: rd.width ?? DEFAULT_STREET_WIDTH, step: 0.5 });
+      wi.onchange = () => {
+        rd.width = parseFloat(wi.value) || DEFAULT_STREET_WIDTH; refresh();
+      };
+      box.append(field('width', wi));
+
+      const back = document.createElement('button');
+      back.textContent = 'Back to the automatic street';
+      back.style.cssText = 'width:100%;margin-top:10px';
+      back.onclick = () => {
+        // Just drop the stored copy - the generator picks it up again,
+        // which is what "automatic" means here.
+        sel.island.roads.splice(sel.index, 1);
+        sel = { kind: 'island', island: sel.island };
+        refresh();
+      };
+      box.append(back);
+
+      const del = document.createElement('button');
+      del.textContent = 'Remove this street'; del.className = 'danger';
+      del.style.cssText = 'width:100%;margin-top:6px';
+      del.onclick = () => {
+        const isl = sel.island;
+        removeStreet(isl, rd.streetKey);
+        sel = { kind: 'island', island: isl };
+        refresh();
+      };
+      box.append(del);
+
     } else {
       box.insertAdjacentHTML('beforeend',
         `<p style="color:var(--muted);font-size:12px;margin:0 0 8px">Road on <b>${sel.island.id}</b></p>`);
@@ -2770,6 +3091,12 @@ function generate() {
     if (i.palms !== undefined && i.palms !== 8) parts.push(`palms: ${i.palms}`);
     if (i.noAutoRoad) parts.push('noAutoRoad: true');
     if (i.noRing) parts.push('noRing: true');
+    // Streets off the town grid you've removed. Kept as keys rather than
+    // geometry: the grid is regenerated from the island's shape, so what
+    // has to survive is which of them you didn't want.
+    if ((i.noStreets || []).length) {
+      parts.push(`noStreets: [${i.noStreets.map(k => `'${k}'`).join(', ')}]`);
+    }
     if (!i.outline && i.shape && i.shape !== 'circle') {
       parts.push(`shape: '${i.shape}'`);
       if (i.shapeSeed && i.shapeSeed !== 1) parts.push(`shapeSeed: ${i.shapeSeed}`);
@@ -2833,9 +3160,12 @@ function generate() {
         if (r.width && r.width !== 7) extra.push(`, width: ${r.width}`);
         if (r.closed) extra.push(', closed: true');
 
-        // Marks this as a bridge approach the user has taken over by hand
+        // Marks this as something generated that the user has taken over:
+        // a bridge approach, the ring road, or one street off the grid.
+        // The street's key is what tells the generator to stop drawing it.
         const lead = r.approachTo ? `approachTo: '${r.approachTo}', `
-                  : r.isRing ? 'isRing: true, ' : '';
+                  : r.isRing ? 'isRing: true, '
+                  : r.streetKey ? `streetKey: '${r.streetKey}', ` : '';
 
         return `      { ${lead}points: [${list}]${extra.join('')} }`;
       }).join(',\n');
@@ -2907,6 +3237,8 @@ document.getElementById('load').onclick = () => {
         palms: i.palms !== undefined ? i.palms : 8,
         noAutoRoad: !!i.noAutoRoad,
         noRing: !!i.noRing,
+        ...(Array.isArray(i.noStreets) && i.noStreets.length
+          ? { noStreets: [...i.noStreets] } : {}),
         shape: i.shape || 'circle',
         shapeSeed: i.shapeSeed || 1,
         ...(Array.isArray(i.outline) && i.outline.length >= 3
@@ -2922,6 +3254,7 @@ document.getElementById('load').onclick = () => {
           Array.isArray(r.points)
             ? { ...(r.approachTo ? { approachTo: r.approachTo } : {}),
                 ...(r.isRing ? { isRing: true } : {}),
+                ...(r.streetKey ? { streetKey: r.streetKey } : {}),
                 points: r.points.map(p => ({ x: p.x, z: p.z })),
                 width: r.width || 7, ...(r.closed ? { closed: true } : {}) }
             : { points: [{ ...r.from }, { ...r.to }], width: r.width || 7 }

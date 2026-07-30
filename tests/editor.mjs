@@ -89,6 +89,13 @@ export function loadEditor() {
     buildNetwork: LAYOUT.buildNetwork,
     getTownGrid: LAYOUT.getTownGrid,
     getTownPlots: LAYOUT.getTownPlots,
+    takenOverStreets: LAYOUT.takenOverStreets,
+    getPort: LAYOUT.getPort,
+    getPortRoad: LAYOUT.getPortRoad,
+    // Imported under an alias in the editor, so it has to be provided
+    // under that name - the shim strips import lines, it doesn't read them
+    isTownIsland: LAYOUT.isTown,
+    DEFAULT_STREET_WIDTH: LAYOUT.DEFAULT_STREET_WIDTH,
     DEFAULT_ROAD_CURVE: LAYOUT.DEFAULT_ROAD_CURVE,
     ROAD_SMOOTHNESS: LAYOUT.ROAD_SMOOTHNESS,
     MAP_ISLANDS: MAPDATA.ISLANDS,

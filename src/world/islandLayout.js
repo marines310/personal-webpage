@@ -30,7 +30,8 @@ import {
   chaikinSmooth,
   chaikinClosed,
   resamplePath,
-  turningRadii
+  turningRadii,
+  pathLength
 } from './curves.js'
 
 // ---------------------------------------------------------------------------
@@ -112,6 +113,15 @@ export const DEFAULT_PLOT_WIDTH = 9
 export const DEFAULT_PLOT_DEPTH = 8
 export const PLOT_GAP = 2.5
 
+/**
+ * How thinly buildings are spread along the roads of an island that isn't a
+ * town: keep one plot in every N. A town keeps all of them.
+ *
+ * 0 means no buildings from the roadside at all - a jungle island's huts
+ * come from the scatter, and a hut in a clearing is meant to look like one.
+ */
+export const ROADSIDE_DENSITY = { mixed: 2, jungle: 0, plain: 0 }
+
 /** Footpaths to buildings no road passes. Narrower than a pavement. */
 export const WALKWAY_WIDTH = 1.8
 
@@ -182,6 +192,544 @@ export const POLE_CLEARANCE = 1.2
  * it. Nothing is placed within this of a landing.
  */
 export const LANDING_CLEARANCE = 26
+
+// ---------------------------------------------------------------------------
+// MONORAIL
+// ---------------------------------------------------------------------------
+
+/**
+ * How high the top of the guideway runs, in world units.
+ *
+ * Started at 16, which was chosen to fly over a five-floor building with
+ * room to spare. That turned out to look like a viaduct on stilts - too far
+ * above the town to belong to it - so it came down by a third.
+ *
+ * At 11 the beam is BELOW the tallest thing the towns generate, which is
+ * the whole reason monorailCeiling() exists: the line no longer clears the
+ * buildings, so the buildings have to clear the line.
+ *
+ * The chase camera sits 5 to 7 units up, so it still passes underneath with
+ * a couple of units to spare. Going much lower would start hiding the car.
+ */
+export const MONORAIL_HEIGHT = 11
+
+/** Width of the beam. Narrow - a monorail rides a single beam, not rails. */
+export const MONORAIL_BEAM_WIDTH = 2.6
+
+/** How deep the beam is, top face to underside. */
+export const MONORAIL_BEAM_DEPTH = 1.5
+
+/**
+ * Air kept between the beam's underside and whatever is beneath it.
+ *
+ * Not a safety margin - a visible gap. Half a unit reads as a roof touching
+ * the beam even when the arithmetic says it clears.
+ */
+export const MONORAIL_CLEARANCE = 1.4
+
+/**
+ * How far either side of the beam's centre line the corridor reaches.
+ *
+ * Wide enough for the trains (1.8 either side), the station platforms
+ * (3.5), and enough beyond that a building doesn't appear to graze a
+ * passing train.
+ */
+export const MONORAIL_CORRIDOR = 6
+
+/**
+ * How far apart the piers stand.
+ *
+ * Real monorail spans run 25-30m. Any closer and the world fills up with
+ * columns; any further and the beam looks unsupported.
+ */
+export const MONORAIL_PIER_SPACING = 27
+
+/**
+ * The order the line visits the islands.
+ *
+ * A closed loop, so the last one runs back to the first. The default is
+ * worked out from where the islands actually are - see monorailOrder() -
+ * which means moving an island in the editor reroutes the line instead of
+ * leaving it crossing itself. Set `monorail: false` on an island to have
+ * the line skip it.
+ */
+export const MONORAIL_SPEED = 26
+
+/** Seconds a train waits at each station. */
+export const MONORAIL_DWELL = 4.5
+
+/** How many trains run the loop. Spaced evenly around it. */
+export const MONORAIL_TRAINS = 3
+
+/** Cars per train, and how long each car is. */
+export const MONORAIL_CARS = 3
+export const MONORAIL_CAR_LENGTH = 11
+
+/**
+ * Over what distance a train slows for a station, and picks up again after
+ * one. Braking is the longer of the two: a train that dawdles away from a
+ * platform looks careful, one that arrives at full speed and stops dead
+ * looks broken.
+ */
+export const MONORAIL_BRAKING = 55
+export const MONORAIL_PULLAWAY = 34
+
+/**
+ * How much room a train keeps behind the one in front.
+ *
+ * Three trains on this loop are hundreds of units apart and would never
+ * meet, so this looks like belt and braces - but the speed of a train is a
+ * function of where it is, and a train dwelling at a platform is stopped
+ * while the one behind is still closing. Turn MONORAIL_TRAINS up and
+ * without this they eventually pile into the same station.
+ */
+export const MONORAIL_HEADWAY = 40
+
+/** Clear ground a pier or a station stair tower needs from any road. */
+export const MONORAIL_ROAD_CLEARANCE = 4.2
+
+/**
+ * Below this, a pier is dropped rather than built.
+ *
+ * Half a pier's width plus a little. A column this close to a carriageway
+ * is standing in it, and the span either side can carry the extra reach.
+ */
+export const MONORAIL_PIER_MIN_CLEARANCE = 1.9
+
+/** How far to the side of the beam the platforms and stair tower sit. */
+export const MONORAIL_PLATFORM_OFFSET = 3.5
+export const MONORAIL_TOWER_OFFSET = 7.4
+
+/** Length of a platform, and of the canopy over it. */
+export const MONORAIL_PLATFORM_LENGTH = 26
+
+/**
+ * Where the fountain stands in a plaza, and how much room it takes.
+ *
+ * World.js builds it; the monorail needs to know so a stair tower doesn't
+ * come down in the water. Stated once, here, because the alternative is the
+ * monorail carrying its own guess about where fountains go - and a guess
+ * like that goes stale silently the day the plaza changes.
+ */
+export const PLAZA_FOUNTAIN_OFFSET = 6
+export const PLAZA_FOUNTAIN_RADIUS = 4.2
+
+/**
+ * The radius of the curve at each station, in world units.
+ *
+ * The line is straight spans joined by arcs of this radius - which is how
+ * elevated railways are actually built, and the only construction that
+ * gives a usable curve here.
+ *
+ * Two things that don't work, both tried and measured:
+ *
+ *  - A spline through the station points. To pass exactly through a point
+ *    AND turn 120 degrees, the curve has to do it in almost no distance:
+ *    measured radius 5.7 units, a hairpin no train could sit on. Slackening
+ *    the tension makes the corners sharper still, and tightening it makes
+ *    the curve swing 40 units past the island before coming back.
+ *  - Chaikin smoothing. It rounds a corner over about the length of the
+ *    segments either side of it, so on a finely spaced path it does nothing
+ *    (8 passes took the tightest radius from 1.6 to 3.4), and on the coarse
+ *    six-point loop it cuts the corners off entirely, 60 units at a time.
+ *
+ * The turn has to happen somewhere, and an arc puts it where you can
+ * choose how tight it is. The cost is that a station sits off the middle of
+ * its island - by R x (1/sin(half the angle) - 1), which is 44 units on the
+ * sharpest corner here. Every station is still well inland; the test
+ * measures it rather than trusting the arithmetic.
+ */
+export const MONORAIL_CURVE_RADIUS = 40
+
+/**
+ * A curve may not eat more than this fraction of the span either side of
+ * it. Two sharp corners close together would otherwise ask for more
+ * straight than there is, and the arcs would run through each other.
+ */
+export const MONORAIL_MAX_CURVE_SHARE = 0.42
+
+/** Turns shallower than this are left as they are. Degrees. */
+export const MONORAIL_MIN_TURN = 4
+
+/** How finely the finished loop is resampled. Drives the beam geometry. */
+export const MONORAIL_POINT_SPACING = 3.4
+
+/**
+ * A stop this close to the middle of the archipelago can't be placed by
+ * bearing, because it hasn't got one worth speaking of. Expressed as a
+ * fraction of how far out the islands sit on average.
+ */
+export const MONORAIL_INNER_FRACTION = 0.45
+
+// ---------------------------------------------------------------------------
+// TRAFFIC
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a full two-way traffic light cycle takes, and how much amber
+ * comes at the end of each green.
+ *
+ * These used to live in World.js. They moved here when the cars started
+ * obeying the lights: the cycle has to be one piece of arithmetic that both
+ * the lamps and the drivers read, or they drift apart and you get cars
+ * crossing on red while the lamp says otherwise.
+ */
+export const TRAFFIC_CYCLE = 18
+export const TRAFFIC_AMBER = 2.5
+
+/**
+ * Shorter than this and a piece of road between two junctions isn't worth a
+ * lane: a car would spend the whole of it deciding what to do next.
+ */
+export const LANE_MIN_LENGTH = 11
+
+/**
+ * Over what distance a lane's sideways offset fades to nothing at a junction.
+ *
+ * This is what makes consecutive lanes meet at a point instead of a couple of
+ * units apart, and it is the whole of the fix for jagged turns: the heading
+ * was already rate-limited, but the POSITION jumped sideways at every lane
+ * change and no amount of heading smoothing hides that.
+ */
+/**
+ * How close two lane ends must be to count as connected.
+ *
+ * Sharing a junction index is not sufficient. A closed ring gets attached to a
+ * node when another road's end lands near it, and "near" is a five-unit
+ * tolerance - so a ring lane claimed a successor whose start was 56 units
+ * away, and a car taking that turn crossed the island in one frame.
+ *
+ * Generous enough for a genuine turn, where the two lanes are on opposite
+ * sides of two different roads and about 3.6 units apart at the corner.
+ */
+export const LANE_JOIN_TOLERANCE = 7
+
+/**
+ * When two lanes count as the same piece of tarmac and one has to go.
+ *
+ * A street is allowed to run alongside the ring for up to 26 units, so their
+ * lanes can genuinely occupy the same ground. Cars on them then interpenetrate
+ * with no way out - reversing along a parallel road never widens the gap.
+ */
+export const LANE_SHARED_GAP = 3.2
+export const LANE_SHARED_LENGTH = 12
+
+/** Cruising speeds, world units a second. The player's car tops out at 18. */
+export const TRAFFIC_SPEEDS = {
+  sedan: 12,
+  convertible: 13.5,
+  police: 15,
+  ambulance: 14,
+  fire: 11,
+  bus: 9
+}
+
+/** Bumper to bumper. How much room a vehicle keeps to the one in front. */
+export const TRAFFIC_HEADWAY = 7
+
+/** How hard a vehicle can accelerate and brake. */
+export const TRAFFIC_ACCEL = 7
+export const TRAFFIC_BRAKE = 16
+
+/** How far back a vehicle starts slowing for a red light. */
+export const TRAFFIC_STOP_SIGHT = 26
+
+/**
+ * How close to the middle of a junction another vehicle has to be before one
+ * arriving will hold back.
+ *
+ * This is what keeps unsignalled junctions from being a demolition derby.
+ * Signals handle the big crossroads; most junctions on this map have only
+ * three arms and no lights, and something has to give way there.
+ */
+export const JUNCTION_GUARD = 13
+
+/**
+ * How long a vehicle will wait before it stops giving way.
+ *
+ * A valve, not a behaviour. Every deadlock found so far had a specific cause
+ * and each was fixed at the cause; this is here so that the next one nobody
+ * has thought of resolves itself in fifteen seconds instead of leaving a car
+ * standing in the road for the rest of the session. The collision veto still
+ * applies, so an impatient vehicle can nose forward but cannot hit anything.
+ */
+export const TRAFFIC_PATIENCE = 15
+
+/**
+ * The slowest a vehicle will go while merely giving way.
+ *
+ * Every rule about who goes first is advisory: it lowers a vehicle's speed
+ * but never to nothing. Only a red light, the vehicle directly in front on
+ * the same lane, and the two-dimensional collision veto can actually stop
+ * one. That distinction is what removed the last deadlock - two cars on
+ * adjacent twelve-unit ring pieces, each waiting for the other to leave the
+ * entrance of its onward lane, both stationary for 286 seconds out of 300.
+ *
+ * The cost is that traffic noses into a busy junction rather than waiting
+ * politely behind the line, which is also what drivers do.
+ */
+export const TRAFFIC_CREEP = 2
+
+/**
+ * How long a vehicle stays blocked before it tries to go round, and how fast
+ * it drifts back to the middle of its lane afterwards.
+ *
+ * Short, because two jammed cars stop everything behind them. Long enough that
+ * ordinary queueing at a red doesn't have the whole line weaving.
+ */
+export const SWERVE_AFTER = 1.5
+export const SIDESTEP_RECOVER = 1.2
+
+/**
+ * How far a vehicle may be shuffled back along its own lane to break a lock.
+ *
+ * The last resort, and the reason a jam can never be permanent: reversing
+ * along the road you are already on always eventually clears whatever you are
+ * inside. Rarely more than a unit is needed.
+ */
+export const UNJAM_REVERSE = 6
+
+/**
+ * How long a vehicle may be completely blocked before it is taken off the road
+ * and put back somewhere clear.
+ *
+ * The last line of defence, and deliberately crude. Every specific cause of a
+ * jam found so far has been fixed at the cause, and each time another turned
+ * up: a long vehicle on a short lane where two lanes converge simply cannot
+ * always be got out by rules about who gives way. Rather than leave one
+ * standing in the road for the rest of the session, it leaves - as though it
+ * had driven off - and a vehicle of the same kind arrives elsewhere.
+ *
+ * With thirty-one vehicles on eight hundred units of map, one reappearing out
+ * of sight is invisible. If this fires often, something upstream is wrong:
+ * tests/traffic.mjs reports how many times it happened.
+ */
+export const RESPAWN_AFTER = 25
+
+/**
+ * The backstop: standing still this long gets a vehicle moved whatever its
+ * reason.
+ *
+ * Exempting lawful waits from the valve above was right - it stopped cars
+ * queued at a red being teleported - but on its own it let one vehicle stand
+ * for 162 seconds, because every car in a chain can plausibly claim to be
+ * waiting for the one in front. Comfortably longer than a queue at a red: the
+ * signal cycle is 18 seconds, so a queue that takes two greens to clear has
+ * waited about 30 - but not so long that a car frozen at the kerb reads as a
+ * bug, which a full minute does.
+ */
+export const STUCK_LIMIT = 35
+
+/** How much clear road a relocated vehicle needs in front of it. */
+export const RELOCATE_CLEAR_AHEAD = 22
+
+/**
+ * How long a service vehicle stays in its bay, and how long it works the
+ * streets before going home again.
+ *
+ * Deliberately uneven, so the bays aren't all full or all empty at once.
+ */
+// Long enough that the bays actually look used. At an 18-second dwell against
+// a 90-second shift only one vehicle in the whole world was ever parked at a
+// given moment, so the car parks read as empty however well the coming and
+// going worked.
+export const STATION_DWELL = 70
+export const STATION_PATROL = 75
+
+/** How fast a vehicle creeps on and off the apron. Slow: it's manoeuvring. */
+export const PARKING_SPEED = 3.5
+
+/**
+ * How long the run from the apron into a bay is, in the units the parking
+ * progress is measured in. The real distance comes from the bay geometry;
+ * this only sets how long the manoeuvre takes.
+ */
+export const PARKING_LEG = 11
+
+/**
+ * How far behind the junction patch a car waits at a red.
+ *
+ * Enough that its nose is clear of the crossing traffic rather than level
+ * with it.
+ */
+export const STOP_LINE_MARGIN = 1.6
+
+/** Bus stops: how far apart, and how clear of a junction they stay. */
+export const BUS_STOP_SPACING = 90
+export const BUS_STOP_CLEARANCE = 22
+export const BUS_DWELL = 6
+
+/**
+ * How many of each kind are on the roads.
+ *
+ * A measured number, not a guess. Over five simulated minutes this fleet has
+ * every vehicle covering at least 800 units and the median around 1,500. Push
+ * it to 42 and the median halves and one vehicle covers 26 units: the road
+ * network has a handful of 12-unit ring pieces, and once several vehicles are
+ * queued across those the give-way rules have nothing left to give.
+ *
+ * So if you want busier streets, widen or lengthen the short pieces first -
+ * or accept the jams. `tests/traffic.mjs` will tell you which you got.
+ */
+export const TRAFFIC_FLEET = {
+  sedan: 14,
+  convertible: 6,
+  police: 12,
+  ambulance: 8,
+  fire: 8,
+  bus: 4
+}
+
+/** How long each kind of vehicle is, for headway and for the meshes. */
+export const TRAFFIC_LENGTHS = {
+  sedan: 4.4,
+  convertible: 4.2,
+  police: 4.6,
+  ambulance: 6,
+  fire: 7,
+  bus: 11
+}
+
+/**
+ * And how wide, which matters more than it looks.
+ *
+ * Lanes sit a quarter of the road's width either side of the centre line, so
+ * two vehicles passing in opposite directions are `width / 2` apart - 2.75
+ * units on a 5.5-wide street. Anything wider than that would clip its
+ * oncoming neighbour, and it would look like a collision because it is one.
+ */
+export const TRAFFIC_WIDTHS = {
+  sedan: 1.9,
+  convertible: 1.9,
+  police: 2,
+  ambulance: 2.2,
+  fire: 2.4,
+  bus: 2.5
+}
+
+/** Emergency lights: full flashes a second. */
+export const SIREN_RATE = 2.4
+
+// ---------------------------------------------------------------------------
+// PORTS AND SHIPPING
+// ---------------------------------------------------------------------------
+
+/**
+ * Islands with a shore radius at least this big get a cargo port rather
+ * than a jetty. Two on the current map - EXPERIENCE and ABOUT - which is
+ * the point: a working sea needs somewhere for the big ships to go and
+ * somewhere they plainly don't fit.
+ */
+export const PORT_BIG_REACH = 100
+
+/**
+ * How far out to sea a port site is checked for open water.
+ *
+ * Far enough that a good frontage scores better than a merely adequate one,
+ * near enough that walking it for 96 bearings on 6 islands isn't slow.
+ */
+export const PORT_MAX_FETCH = 340
+
+/** Pier length and width, big port and small. */
+export const PIER_LENGTH_BIG = 44
+export const PIER_LENGTH_SMALL = 26
+export const PIER_WIDTH_BIG = 13
+export const PIER_WIDTH_SMALL = 8.5
+
+/** How far inland the pier's root starts, so it beds into the beach. */
+export const PIER_ROOT_INSET = 5
+
+/**
+ * A shipping container, and how the yard stacks them.
+ *
+ * Exported because World.js draws the boxes: if the two disagreed, the yard
+ * that was tested for clearance would not be the yard that got built.
+ * `CONTAINER_LIFT` is the height of one, so a stack sits level on the one
+ * below rather than floating over it.
+ */
+export const CONTAINER_LONG = 6
+export const CONTAINER_WIDE = 2.6
+export const CONTAINER_LIFT = 2.65
+export const CONTAINER_GAP = 1.1
+
+/** How far a container's own CORNER stays from the edge of a road. */
+export const CONTAINER_ROAD_CLEARANCE = 4
+
+/** How many stacks a yard holds, nearest the shed first. */
+export const CONTAINER_STACKS = 12
+
+/** How far the cargo shed's own CORNER stays from the edge of a road. */
+export const SHED_ROAD_CLEARANCE = 3
+
+/** Deck height above the water, and how thick the deck is. */
+export const PIER_DECK_Y = 0.3
+export const PIER_DECK_DEPTH = 1.2
+
+/** Width of the road out along the pier. */
+export const PORT_ROAD_WIDTH = 6.5
+
+/**
+ * How far off the pier head a ship waits before turning in.
+ *
+ * Ships approach along the pier's own direction rather than cutting in from
+ * wherever they happen to be, which is what makes an arrival look like
+ * navigation instead of a mesh sliding into position.
+ */
+export const PORT_APPROACH = 70
+
+/** How far out from the pier's centre line a berthed ship sits. */
+// A cargo hull is 9.5 wide against a 13-unit pier, so at 12 the gap between
+// them was 0.75 - inside the slack the heading smoothing leaves. 13.5 gives
+// 2.25, which is a fender's worth.
+export const BERTH_OFFSET_BIG = 13.5
+export const BERTH_OFFSET_SMALL = 8
+
+/**
+ * How far out to sea a ship lines up before running in to its berth.
+ *
+ * Long enough that the turn onto the final approach happens clear of the pier
+ * head - a cargo ship is 46 units long and swings its bow eight units sideways
+ * on a modest turn, which is more than the gap between the berth and the deck.
+ */
+export const BERTH_RUN_IN = 90
+
+/**
+ * The open-water ring the shipping lanes run on.
+ *
+ * Every island is inside it, so a leg between two points on the ring can
+ * never cross land - which is what makes the routing trivially safe
+ * without a single obstacle test between waypoints.
+ */
+export const SEA_LANE_MARGIN = 60
+export const SEA_LANE_NODES = 16
+
+/**
+ * How far out a ship has to get before it counts as gone.
+ *
+ * Well beyond the fog, which swallows anything past about 600 units. A ship
+ * leaving reaches this and is quietly re-used for an arrival somewhere else;
+ * nobody sees it happen because there is nothing to see at that range.
+ */
+export const OFF_WORLD_RADIUS = 780
+export const OFF_WORLD_NODES = 6
+
+/** Ship speeds, in world units a second. Cargo is slower than it looks. */
+export const SHIP_SPEED_CARGO = 11
+export const SHIP_SPEED_BOAT = 17
+
+/** How long a ship stays alongside. */
+export const SHIP_DWELL_CARGO = 26
+export const SHIP_DWELL_BOAT = 14
+
+/** How far out a ship starts easing off for its berth. */
+export const SHIP_BRAKING = 60
+
+/** How many of each are at sea. */
+export const CARGO_SHIPS = 3
+export const SMALL_BOATS = 5
+
+/** Roughly how often a voyage heads off the edge of the world instead. */
+export const OFF_WORLD_CHANCE = 0.38
 
 // ---------------------------------------------------------------------------
 // THE MAP DATA lives in mapData.js - that's the file you edit (or that the
@@ -395,6 +943,20 @@ export function getIslandRoads(island) {
     })
   }
 
+  // The road out to the quay. An ordinary road as far as everything else
+  // is concerned, but flagged so the pavements and the signals treat it as
+  // a through route rather than as something to lay a kerb across.
+  const portRoad = getPortRoad(island)
+  if (portRoad && !island.noAutoRoad) {
+    roads.push({
+      points: smoothRoad(sampleSpline(portRoad.points, {
+        samplesPerSpan: ROAD_SMOOTHNESS
+      }), portRoad.width),
+      width: portRoad.width,
+      spur: true
+    })
+  }
+
   for (const landing of getBridgeLandings(island)) {
     const edited = !!getApproach(island, landing.def)
 
@@ -433,12 +995,20 @@ export function getIslandRoads(island) {
     const controls = resolveRoadControls(road)
     if (!controls || controls.length < 2) continue
 
+    // A town street you've taken over is still a street. It has to keep
+    // saying so, or the moment you touched one it would lose its pavements,
+    // its building frontages and its traffic signals - the take-over is
+    // supposed to change nothing but who's in charge of the shape.
+    const width = road.width
+      || (road.streetKey ? DEFAULT_STREET_WIDTH : DEFAULT_ROAD_WIDTH)
+
     roads.push({
       points: smoothRoad(sampleSpline(controls, {
         samplesPerSpan: ROAD_SMOOTHNESS,
         closed: !!road.closed
-      }), road.width || DEFAULT_ROAD_WIDTH),
-      width: road.width || DEFAULT_ROAD_WIDTH
+      }), width),
+      width,
+      ...(road.streetKey ? { street: true, streetKey: road.streetKey } : {})
     })
   }
 
@@ -659,6 +1229,12 @@ export function isTown(island) {
  *
  * Islands can set `grid: false` to opt out, `blockSize` to change how big
  * the blocks are, and `gridAngle` (degrees) to turn the whole grid.
+ *
+ * Every street carries a `key`. Nothing here uses it, but the editor does:
+ * a generated street isn't stored anywhere, so there is no object to click,
+ * and the key is what lets one be named - taken over into the island's
+ * `roads` so it can be dragged, or listed in `noStreets` so it stays gone.
+ * See takenOverStreets() below for why the keys have to be stable.
  */
 export function getTownGrid(island) {
   if (!isTown(island) || island.noAutoRoad) return []
@@ -694,11 +1270,17 @@ export function getTownGrid(island) {
 
       // Walk the full length of this line and keep the stretches that
       // fall inside the ring. A concave island can give more than one.
+      let runIndex = -1
       for (const run of runsInsideRing(ring, ox, oz, dirX, dirZ, span)) {
+        runIndex++
         const candidate = {
           points: [run.from, run.to],
           width: DEFAULT_STREET_WIDTH,
-          street: true
+          street: true,
+          // Which sweep line this came off, and which stretch of it. Counted
+          // before any of the tests below, so rejecting a street doesn't
+          // renumber the ones after it.
+          key: `s${axis}.${i}.${runIndex}`
         }
 
         // Reject anything running alongside a road already there. The
@@ -717,7 +1299,32 @@ export function getTownGrid(island) {
     }
   }
 
-  return streets
+  // Drop the ones you've taken over or removed - LAST, after every street
+  // has been through the tests above.
+  //
+  // Filtering earlier would be quietly wrong: crowdsAnother() weighs each
+  // candidate against the streets already accepted, so removing one changes
+  // what happens to its neighbours. Take over a street and the street next
+  // to it, previously rejected for shadowing it, would appear out of
+  // nowhere. Generate the full grid, then hide what's been claimed.
+  const claimed = takenOverStreets(island)
+  return claimed.size ? streets.filter(s => !claimed.has(s.key)) : streets
+}
+
+/**
+ * Street keys the generator should keep quiet about, because you've dealt
+ * with them by hand: either taken over into `roads`, or removed outright.
+ */
+export function takenOverStreets(island) {
+  const keys = new Set()
+  if (!island) return keys
+
+  for (const road of island.roads || []) {
+    if (road.streetKey) keys.add(road.streetKey)
+  }
+  for (const key of island.noStreets || []) keys.add(key)
+
+  return keys
 }
 
 /**
@@ -735,8 +1342,35 @@ export function getTownGrid(island) {
  */
 export function getTownPlots(island) {
   if (!isTown(island)) return []
+  return roadsidePlots(island, getIslandRoads(island).filter(r => r.street || r.ring))
+}
 
-  const streets = getIslandRoads(island).filter(r => r.street || r.ring)
+/**
+ * The same rows of frontages, for an island that isn't a town.
+ *
+ * Islands with `theme: 'mixed'` used to get their buildings from the random
+ * scatter, which meant a random angle and a random distance from the road -
+ * a field of houses pointing in every direction while the town islands next
+ * door were laid out in neat rows. Nothing about lining a building up to a
+ * kerb is specific to a town, so the same machinery does both now.
+ *
+ * Sparser than a town, and taken from the ring and the port road, because a
+ * non-town island has no street grid to work from.
+ */
+export function getRoadsidePlots(island) {
+  if (!island || isTown(island)) return []
+
+  const every = ROADSIDE_DENSITY[island.theme] || 0
+  if (!every) return []
+
+  const roads = getIslandRoads(island).filter(r => r.ring || r.street || r.spur)
+  if (!roads.length) return []
+
+  return roadsidePlots(island, roads).filter((_, i) => i % every === 0)
+}
+
+/** Plots along a given set of roads. The shared half of both of the above. */
+function roadsidePlots(island, streets) {
   if (!streets.length) return []
 
   const outline = getOutline(island)
@@ -1052,6 +1686,3177 @@ function runsInsideRing(ring, ox, oz, dirX, dirZ, span) {
   return runs
 }
 
+// ---------------------------------------------------------------------------
+// Traffic
+// ---------------------------------------------------------------------------
+
+/**
+ * What colour a signal is showing to one group of arms, right now.
+ *
+ * The single source of truth for the light cycle. The renderer lights the
+ * lamps from this and the cars decide whether to stop from this, so they
+ * cannot disagree - which they did, back when each worked it out for itself
+ * from its own copy of the arithmetic.
+ */
+export function signalState(signal, group, elapsed) {
+  const t = (elapsed + (signal.offset || 0)) % TRAFFIC_CYCLE
+  const half = TRAFFIC_CYCLE / 2
+  const firstGroupsTurn = t < half
+  const intoPhase = firstGroupsTurn ? t : t - half
+
+  if ((group === 0) !== firstGroupsTurn) return 'red'
+  return intoPhase > half - TRAFFIC_AMBER ? 'amber' : 'green'
+}
+
+/**
+ * The road network as directed lanes: what a car can actually drive along.
+ *
+ * Built from getRoadNetwork(), so it inherits the same connections the
+ * editor draws and the same rule that none of it is stored.
+ *
+ * Three things make this more than an offset copy of the roads:
+ *
+ *  - **Each road is cut at every junction on it.** Without that a car on a
+ *    through road passes a crossroads with no decision to make, so it can
+ *    never turn off and never has a stop line to stop at.
+ *  - **Each piece becomes two lanes**, one per direction, offset a quarter
+ *    of the road's width to the right of travel. Right-hand traffic.
+ *  - **Each lane knows what it can turn into**, and whether the junction at
+ *    its far end has lights, and which phase it has to wait for.
+ */
+export function getLaneNetwork() {
+  const net = getRoadNetwork()
+  const lanes = []
+
+  // Which nodes fall on each segment, and how far along
+  const cuts = net.segments.map(() => [])
+
+  net.nodes.forEach((node, nodeIndex) => {
+    for (const segIndex of node.segments) {
+      const seg = net.segments[segIndex]
+      const along = distanceAlongPath(seg.points, node.x, node.z)
+      if (along !== null) cuts[segIndex].push({ nodeIndex, along })
+    }
+  })
+
+  let pieces = 0
+
+  net.segments.forEach((seg, segIndex) => {
+    const measured = measurePath(seg.points)
+    const marks = cuts[segIndex].sort((a, b) => a.along - b.along)
+
+    // Where the pieces begin and end. An open road runs from its own start
+    // to its own end; a ring has no ends, so its first junction serves as
+    // both - and if it has none at all it stays one continuous loop.
+    const breaks = []
+    if (!seg.closed) breaks.push({ nodeIndex: null, along: 0 })
+    for (const m of marks) breaks.push(m)
+    if (!seg.closed) breaks.push({ nodeIndex: null, along: measured.length })
+
+    if (seg.closed) {
+      if (!marks.length) breaks.push({ nodeIndex: null, along: 0 },
+                                     { nodeIndex: null, along: measured.length })
+      else breaks.push({ nodeIndex: marks[0].nodeIndex, along: measured.length })
+    }
+
+    for (let i = 0; i < breaks.length - 1; i++) {
+      const from = breaks[i]
+      const to = breaks[i + 1]
+      const length = to.along - from.along
+      if (length < LANE_MIN_LENGTH) continue
+
+      const centre = slicePath(measured, from.along, to.along)
+      if (centre.length < 2) continue
+
+      const offset = seg.width / 4
+
+      // Both directions of one stretch of road share a piece id.
+      //
+      // They used to be matched by the x of their first point, which is a
+      // DIFFERENT point for each direction - so "the opposite lane" resolved
+      // to whatever else happened to share that coordinate, and the U-turn
+      // link at a dead end pointed 67 units away.
+      const piece = pieces++
+
+      lanes.push(makeLane(centre, offset, seg, from.nodeIndex, to.nodeIndex, piece))
+      lanes.push(makeLane(centre.slice().reverse(), offset, seg,
+                          to.nodeIndex, from.nodeIndex, piece))
+    }
+  })
+
+  // Two roads can legitimately run close together - a street is allowed 26
+  // units alongside the ring - and where they do, their lanes occupy the
+  // same tarmac. Cars on them then veto each other's every move and the
+  // whole island jams: three vehicles spent 266 of 300 seconds stationary on
+  // one ring piece with a street lying on top of it.
+  //
+  // The roads stay as they are, because they look fine. What goes is the
+  // duplicate LANE, so traffic only ever has one way through that space.
+  const doubled = new Set()
+
+  for (let i = 0; i < lanes.length; i++) {
+    if (doubled.has(i)) continue
+    for (let j = i + 1; j < lanes.length; j++) {
+      if (doubled.has(j)) continue
+      if (lanes[i].segment === lanes[j].segment) continue
+      if (!lanesShareTarmac(lanes[i], lanes[j])) continue
+
+      // Keep the ring, it's the arterial; otherwise keep the longer one
+      const dropJ = lanes[i].kind === 'ring' || lanes[i].length >= lanes[j].length
+      doubled.add(dropJ ? j : i)
+      if (!dropJ) break
+    }
+  }
+
+  const kept = lanes.filter((_, i) => !doubled.has(i))
+  lanes.length = 0
+  lanes.push(...kept)
+
+  // What each lane can become at its far end
+  for (const lane of lanes) {
+    lane.next = []
+    if (lane.toNode === null) continue
+
+    for (let i = 0; i < lanes.length; i++) {
+      const other = lanes[i]
+      if (other === lane) continue
+      if (other.fromNode !== lane.toNode) continue
+
+      // And the two must actually meet. Sharing a node index is not enough:
+      // buildNetwork can attach a closed ring to a node that its geometry only
+      // passes within a tolerance of, which produced a "connection" whose ends
+      // were 56 units apart. A car taking it teleported across the island.
+      const end = lane.points[lane.points.length - 1]
+      const start = other.points[0]
+      if (Math.hypot(end.x - start.x, end.z - start.z) > LANE_JOIN_TOLERANCE) continue
+      // Not straight back the way you came - the same piece of road, the
+      // other way. Identified by piece id; comparing coordinates got this
+      // wrong, because the two directions start at opposite ends.
+      if (other.piece === lane.piece) continue
+      lane.next.push(i)
+    }
+
+    // The opposite direction of the same piece of road. Kept on every lane,
+    // not just the dead ends: it's the last resort for a vehicle that has
+    // been pinned for a long time, which can then turn round and leave. A
+    // U-turn reads as a decision; a car stuck for ever reads as a bug.
+    lane.back = lanes.findIndex(o => o.piece === lane.piece && o !== lane)
+
+    // A dead end: turning round is the only thing to do at all.
+    if (!lane.next.length && lane.back >= 0) lane.next.push(lane.back)
+  }
+
+  attachSignals(lanes)
+
+  return { lanes, nodes: net.nodes, segments: net.segments }
+}
+
+/**
+ * Do two lanes run over the same ground for most of the shorter one?
+ *
+ * Sampled rather than solved, and deliberately strict about "most": two roads
+ * crossing share a point and that's a junction, not a duplicate. The
+ * threshold is under half a road width, so the two directions of the same
+ * road - which sit width/2 apart by design - could never trip it even if they
+ * were compared.
+ */
+function lanesShareTarmac(a, b) {
+  const shorter = a.length <= b.length ? a : b
+  const other = shorter === a ? b : a
+
+  // Measured as an absolute LENGTH of shared tarmac, not as a fraction.
+  //
+  // The fraction version required 60% of a lane to be doubled up and found
+  // nothing, while two pairs on this map ran alongside each other for 16 and
+  // 18 units - enough for a car on one to be permanently interpenetrated with
+  // a car on the other. And it was unrecoverable: backing off along a lane
+  // that runs PARALLEL to the obstruction never increases the gap, so the
+  // unjam reverse couldn't separate them either. Seven vehicles sat in that
+  // knot for 235 of 300 seconds.
+  let together = 0
+  const step = 2
+
+  for (let d = 0; d <= shorter.length; d += step) {
+    const p = pointAlong(shorter, d)
+    const near = nearestOnPath(other.points, p.x, p.z)
+    if (near && Math.hypot(near.x - p.x, near.z - p.z) < LANE_SHARED_GAP) {
+      together += step
+    }
+  }
+
+  return together >= LANE_SHARED_LENGTH
+}
+
+/** One directed lane, offset to the right of the centre line it follows. */
+function makeLane(centre, offset, seg, fromNode, toNode, piece) {
+  const tangents = pathTangentsLocal(centre)
+  // Lanes keep their full offset the whole way, on their own side of the road.
+  //
+  // Tapering them together at the junctions was tried, so that consecutive
+  // lanes met at a point and a turning car had no sideways jump. It closed the
+  // gap perfectly and halved the traffic: converging lanes put oncoming cars
+  // nose to nose at every junction, the collision veto fired constantly, and
+  // the median distance covered fell from 1518 to 174.
+  //
+  // The sideways step at a turn is real and belongs there - a car changing
+  // from one road's right-hand lane to another's genuinely has to cross. It's
+  // smoothed where it should be, in the renderer, over about a tenth of a
+  // second. See updateTraffic in World.js.
+  const points = centre.map((p, i) => ({
+    x: p.x - tangents[i].z * offset,
+    z: p.z + tangents[i].x * offset
+  }))
+
+  return {
+    ...measurePath(points),
+    segment: seg,
+    kind: seg.kind,
+    island: seg.island,
+    width: seg.width,
+    fromNode,
+    toNode,
+    piece,
+    reversed: false,
+    next: [],
+    signal: null,
+    signalGroup: 0,
+    stops: []
+  }
+}
+
+/** Tangents along a path. Local copy so the layout doesn't need curves.js. */
+function pathTangentsLocal(points) {
+  const out = []
+  for (let i = 0; i < points.length; i++) {
+    const a = points[Math.max(0, i - 1)]
+    const b = points[Math.min(points.length - 1, i + 1)]
+    const dx = b.x - a.x
+    const dz = b.z - a.z
+    const len = Math.hypot(dx, dz)
+    out.push(len < 1e-9
+      ? (out[out.length - 1] || { x: 0, z: 1 })
+      : { x: dx / len, z: dz / len })
+  }
+  return out
+}
+
+/** How far along a polyline the nearest point to (x, z) is, or null. */
+function distanceAlongPath(points, x, z) {
+  let best = null
+  let bestDist = Infinity
+  let travelled = 0
+
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]
+    const b = points[i]
+    const dx = b.x - a.x
+    const dz = b.z - a.z
+    const lenSq = dx * dx + dz * dz
+    const len = Math.sqrt(lenSq)
+
+    if (lenSq > 1e-12) {
+      let t = ((x - a.x) * dx + (z - a.z) * dz) / lenSq
+      t = Math.max(0, Math.min(1, t))
+      const d = Math.hypot(x - (a.x + dx * t), z - (a.z + dz * t))
+      if (d < bestDist) { bestDist = d; best = travelled + len * t }
+    }
+
+    travelled += len
+  }
+
+  return best
+}
+
+/** The stretch of a measured path between two distances along it. */
+function slicePath(measured, from, to) {
+  const out = [pointAlong(measured, from)]
+
+  for (let i = 0; i < measured.points.length; i++) {
+    const d = measured.cumulative[i]
+    if (d > from + 1e-6 && d < to - 1e-6) out.push({ ...measured.points[i] })
+  }
+
+  out.push(pointAlong(measured, to))
+  return out.map(p => ({ x: p.x, z: p.z }))
+}
+
+/**
+ * Give every lane its stop line: which signal governs its far end, and which
+ * phase of that signal it has to wait for.
+ *
+ * The phase is matched by DIRECTION. A signal's arms each point back down
+ * the road they govern, so the arm a lane belongs to is the one pointing
+ * most nearly opposite the lane's own direction of travel.
+ */
+function attachSignals(lanes) {
+  const all = []
+  for (const island of ISLANDS) {
+    for (const signal of getTrafficSignals(island)) {
+      all.push({
+        ...signal,
+        x: island.x + signal.x,
+        z: island.z + signal.z
+      })
+    }
+  }
+
+  for (const lane of lanes) {
+    const end = lane.points[lane.points.length - 1]
+    const before = lane.points[Math.max(0, lane.points.length - 2)]
+    const dirX = end.x - before.x
+    const dirZ = end.z - before.z
+    const len = Math.hypot(dirX, dirZ) || 1
+
+    let best = null
+    let bestDist = Infinity
+
+    // Close, not merely nearby. A lane end sits on a junction node and a
+    // signal sits on the junction it governs, so a real match is a couple of
+    // units. Allowing the full merge distance meant a lane picked up the
+    // lights of the NEXT junction along and its cars waited at a red for a
+    // crossroads they weren't at.
+    for (const signal of all) {
+      const d = Math.hypot(signal.x - end.x, signal.z - end.z)
+      if (d > signal.radius + 8) continue
+      if (d < bestDist) { bestDist = d; best = signal }
+    }
+
+    if (!best) continue
+
+    // The arm pointing back at us
+    let arm = null
+    let bestDot = -2
+    for (const a of best.arms) {
+      const dot = -(a.x * (dirX / len) + a.z * (dirZ / len))
+      if (dot > bestDot) { bestDot = dot; arm = a }
+    }
+    if (!arm || bestDot < 0.3) continue
+
+    lane.signal = best
+    lane.signalGroup = arm.group
+
+    // Where to stop: clear of the junction patch, measured from the patch
+    // itself rather than from this lane's width.
+    //
+    // It used to be `width * 0.75` back from the node, which happens to be
+    // enough on a seven-unit road and is NOT enough on a five-and-a-half unit
+    // street meeting one - the patch reaches 5.05 units out and the car
+    // stopped at 4.53, half a unit inside the intersection, blocking the
+    // traffic crossing it. The junction's own radius is the only figure that
+    // knows how far it reaches.
+    lane.stopLine = Math.max(0, lane.length - (best.radius + STOP_LINE_MARGIN))
+  }
+}
+
+/**
+ * Fire stations, police stations and hospitals, and the bays their vehicles
+ * come and go from.
+ *
+ * Each one sits beside a lane, set back off the kerb, with its bays between
+ * the building and the road so a vehicle can turn in off the carriageway.
+ * Sites are scored the same way everything else here is: on land, clear of
+ * every road, clear of the monorail, clear of each other.
+ *
+ * Every bay carries the lane it opens onto and how far along it - that's what
+ * lets a vehicle pull in without any pathfinding, by leaving its lane at a
+ * known point and driving a straight line to a known place.
+ */
+export function getStations(network = getLaneNetwork()) {
+  const stations = []
+  const route = getMonorailRoute()
+
+  // One of each on the biggest towns, then spread the rest around
+  const wanted = []
+  const towns = ISLANDS.filter(isTown)
+    .sort((a, b) => islandReach(b) - islandReach(a))
+  const others = ISLANDS.filter(i => !isTown(i) && i.theme !== 'plain')
+
+  for (const island of towns) {
+    wanted.push({ island, kind: 'fire' }, { island, kind: 'police' },
+                { island, kind: 'hospital' })
+  }
+  others.forEach((island, i) => {
+    wanted.push({ island, kind: ['police', 'fire', 'hospital'][i % 3] })
+  })
+
+  for (const { island, kind } of wanted) {
+    const spec = STATION_KINDS[kind]
+    const site = findStationSite(network, island, spec, stations, route)
+    if (!site) continue
+
+    // spec first, site second: the site's `bays` array must win
+    stations.push({
+      ...spec, ...site, kind, island, id: `${island.id}-${kind}`,
+      // How many lanes it takes to get back to this station's own lane, from
+      // anywhere. Without it a vehicle only goes home if its wandering happens
+      // to take it past the door - which over ten minutes happened twice out
+      // of twenty-two.
+      toHome: hopsToLane(network, site.lane)
+    })
+  }
+
+  return stations
+}
+
+/** What each kind of station looks like and how many vehicles it holds. */
+// `bayCount`, not `bays`. The site produced by findStationSite carries a
+// `bays` ARRAY, and spreading the spec over it replaced the list of bays with
+// the number 3 - so every station had bays that couldn't be iterated.
+export const STATION_KINDS = {
+  // `doorWidth` is narrower than the bay so there is a pier of brickwork
+  // between one door and the next - at the full bay width the three openings
+  // meet and the front of a fire station is one 19.5-unit hole. It is still
+  // the number the ENGINE has to fit through, so it lives here with the bay
+  // spacing rather than being picked in the renderer.
+  fire: {
+    width: 22, depth: 15, bayCount: 3, bayWidth: 6.5, doorWidth: 5.6,
+    garage: true, vehicle: 'fire'
+  },
+  police: {
+    width: 18, depth: 13, bayCount: 4, bayWidth: 4.2, doorWidth: 2.6,
+    garage: false, vehicle: 'police'
+  },
+  hospital: {
+    width: 24, depth: 16, bayCount: 3, bayWidth: 5, doorWidth: 2.6,
+    garage: false, vehicle: 'ambulance'
+  }
+}
+
+/** How far a station stands back from the kerb, leaving room for its bays. */
+export const STATION_SETBACK = 15
+
+/** Clear ground a station keeps from any road, and from another station. */
+export const STATION_ROAD_CLEARANCE = 3
+export const STATION_SPACING = 55
+
+/**
+ * Somewhere on this island to put one, beside a lane and off the road.
+ *
+ * Walks the lanes rather than the compass: a station has to open onto a road,
+ * so starting from the roads is both faster and guarantees the one property
+ * that matters.
+ */
+function findStationSite(network, island, spec, taken, route) {
+  const roads = getIslandRoads(island)
+  const reach = Math.hypot(spec.width / 2, spec.depth / 2)
+
+  let best = null
+
+  for (let index = 0; index < network.lanes.length; index++) {
+    const lane = network.lanes[index]
+    if (lane.island !== island.id) continue
+    if (lane.kind !== 'ring' && lane.kind !== 'road') continue
+    if (lane.length < 40) continue
+
+    for (let at = 18; at < lane.length - 18; at += 9) {
+      const on = pointAlong(lane, at)
+
+      // Out to the kerb side, which is the vehicles' own side of the road
+      const sx = -Math.cos(on.heading)
+      const sz = Math.sin(on.heading)
+      const out = lane.width / 4 + PAVEMENT_WIDTH + STATION_SETBACK
+
+      const x = on.x - sx * out
+      const z = on.z - sz * out
+
+      // The building's own RECTANGLE, not the circle around it.
+      //
+      // Testing the centre against half the diagonal demands 16 units of
+      // clear ground for a fire station, and a town with streets every 34
+      // units never has that anywhere - which is why the first version of
+      // this placed no stations at all. A 22x15 building set back 15 units
+      // from a lane fits perfectly well; it just doesn't fit inside a circle
+      // of its own diagonal.
+      const heading = Math.atan2(sx, sz)
+      if (!rectangleIsClear(island, roads, x, z, heading,
+                            spec.width, spec.depth, STATION_ROAD_CLEARANCE)) {
+        continue
+      }
+      if (route && monorailCeiling(route, x, z) < 14) continue
+
+      if (taken.some(t => Math.hypot(t.x - x, t.z - z) < STATION_SPACING)) continue
+
+      // Room in front for the bays, which sit between the building and the road
+      const apron = {
+        x: on.x - sx * (lane.width / 4 + PAVEMENT_WIDTH + 4),
+        z: on.z - sz * (lane.width / 4 + PAVEMENT_WIDTH + 4)
+      }
+      if (inlandDistance(island, apron.x - island.x, apron.z - island.z) < 3) continue
+
+      // Prefer a spot well clear of everything, so the yard has room
+      const score = distanceToNearestRoad(roads, x - island.x, z - island.z)
+      if (!best || score > best.score) {
+        best = {
+          x, z, score,
+          // Facing the road, which is the way the doors open
+          heading,
+          lane: index,
+          at,
+          bays: bayPositions(on, sx, sz, lane, spec)
+        }
+      }
+    }
+  }
+
+  return best
+}
+
+/**
+ * How many lane changes it takes to reach `target` from every other lane.
+ *
+ * A breadth-first search backwards along the connections, so it is exact
+ * rather than a guess at which way home is - and a greedy "head towards the
+ * station" rule would corner itself on a one-way ring anyway.
+ *
+ * Infinity for a lane with no route home at all.
+ */
+function hopsToLane(network, target) {
+  const lanes = network.lanes
+  const hops = new Array(lanes.length).fill(Infinity)
+
+  // Which lanes lead INTO each lane
+  const into = lanes.map(() => [])
+  lanes.forEach((lane, i) => {
+    for (const next of lane.next) into[next].push(i)
+  })
+
+  hops[target] = 0
+  const queue = [target]
+
+  while (queue.length) {
+    const at = queue.shift()
+    for (const from of into[at]) {
+      if (hops[from] !== Infinity) continue
+      hops[from] = hops[at] + 1
+      queue.push(from)
+    }
+  }
+
+  return hops
+}
+
+/**
+ * Is an oriented rectangle clear of the coast and of every road?
+ *
+ * Sampled around the outline rather than tested corner-only: a road can pass
+ * through the middle of a long edge without coming near either corner, which
+ * is exactly how a building ends up with a street through its lobby.
+ */
+function rectangleIsClear(island, roads, x, z, heading, width, depth, margin) {
+  const fx = Math.sin(heading)
+  const fz = Math.cos(heading)
+  const sx = -fz
+  const sz = fx
+
+  for (let u = -1; u <= 1; u += 0.25) {
+    for (let v = -1; v <= 1; v += 0.25) {
+      // Only the outline needs testing, not the interior
+      if (Math.abs(u) < 1 && Math.abs(v) < 1) continue
+
+      const px = x + sx * (u * width / 2) + fx * (v * depth / 2)
+      const pz = z + sz * (u * width / 2) + fz * (v * depth / 2)
+
+      if (inlandDistance(island, px - island.x, pz - island.z) < 2) return false
+      if (distanceToNearestRoad(roads, px - island.x, pz - island.z) < margin) {
+        return false
+      }
+    }
+  }
+
+  return true
+}
+
+/**
+ * Where each vehicle parks, and the point on the apron it drives to first.
+ *
+ * Two points, not one: a vehicle turns off the road onto the apron, then goes
+ * straight back into its bay. Coming out it reverses the same way. That is
+ * what keeps a fire engine square to its garage door instead of swinging
+ * through the frame, and it means no pathfinding is involved at all.
+ */
+function bayPositions(on, sx, sz, lane, spec) {
+  const fx = Math.sin(on.heading)
+  const fz = Math.cos(on.heading)
+  const bays = []
+
+  const apronOut = lane.width / 4 + PAVEMENT_WIDTH + 3.5
+  const bayOut = STATION_SETBACK - (spec.garage ? 1 : 3)
+
+  for (let i = 0; i < spec.bayCount; i++) {
+    const across = (i - (spec.bayCount - 1) / 2) * spec.bayWidth
+
+    bays.push({
+      // On the apron, straight out from the bay - the turning-in point
+      approach: {
+        x: on.x - sx * apronOut + fx * across,
+        z: on.z - sz * apronOut + fz * across
+      },
+      // In the bay itself
+      x: on.x - sx * bayOut + fx * across,
+      z: on.z - sz * bayOut + fz * across,
+      // Nose towards the building, so it drives in forwards and backs out
+      heading: Math.atan2(-sx, -sz),
+      index: i
+    })
+  }
+
+  return bays
+}
+
+/**
+ * Where the buses stop.
+ *
+ * On the ring and the streets only - a bus stop on a bridge or halfway out a
+ * pier serves nobody. Spaced out along each lane, and never within a stop's
+ * length of the lane's end, so a stopped bus is never sitting in a junction.
+ */
+export function getBusStops(network = getLaneNetwork()) {
+  const stops = []
+
+  network.lanes.forEach((lane, index) => {
+    if (lane.kind !== 'ring' && lane.kind !== 'road') return
+    if (lane.length < BUS_STOP_SPACING * 0.6) return
+
+    const count = Math.max(1, Math.floor(lane.length / BUS_STOP_SPACING))
+    for (let i = 1; i <= count; i++) {
+      const at = (lane.length * i) / (count + 1)
+      if (at < BUS_STOP_CLEARANCE || lane.length - at < BUS_STOP_CLEARANCE) continue
+
+      const point = pointAlong(lane, at)
+      stops.push({
+        lane: index, at,
+        x: point.x, z: point.z, heading: point.heading,
+        island: lane.island,
+        // How far the kerb is from HERE, not from the road's centre line. A
+        // lane sits a quarter of the road's width off centre, so the kerb is
+        // another quarter plus a bit away - and it's a different distance on a
+        // 5.5-unit street and a 7-unit ring. The shelter is placed from this.
+        kerb: lane.width / 4 + PAVEMENT_WIDTH
+      })
+      lane.stops.push({ at, index: stops.length - 1 })
+    }
+  })
+
+  return stops
+}
+
+/**
+ * Put vehicles on the road.
+ *
+ * Spread across the lanes rather than piled onto the first few, and never
+ * two in the same place - a car that starts inside another one is a collision
+ * you can't drive out of.
+ */
+export function makeTraffic(network, fleet = TRAFFIC_FLEET, stops = null,
+                            stations = null) {
+  const vehicles = []
+  const lanes = network.lanes
+  if (!lanes.length) return vehicles
+
+  // A bay of its own for every service vehicle that can have one. Handed out
+  // round-robin so the stations fill evenly rather than the first one taking
+  // everything.
+  // Named `spareBays`, not `free`. `spawn` below already has a local `free`
+  // for the lanes it hasn't used yet, and the inner one shadowed this - so
+  // every vehicle looked up its bay in a list of lane indices, found nothing,
+  // and not one of fifty-two got a home.
+  const spareBays = {}
+  for (const station of stations || []) {
+    const kind = station.vehicle
+    spareBays[kind] = spareBays[kind] || []
+    for (const bay of station.bays) spareBays[kind].push({ station, bay })
+  }
+
+  let seed = 424242
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647
+    return (seed - 1) / 2147483646
+  }
+
+  // Buses only run where there are stops to call at
+  const busLanes = lanes
+    .map((l, i) => ({ l, i }))
+    .filter(({ l }) => l.stops.length)
+    .map(({ i }) => i)
+
+  const streetLanes = lanes
+    .map((l, i) => ({ l, i }))
+    .filter(({ l }) => l.length > TRAFFIC_HEADWAY * 3)
+    .map(({ i }) => i)
+
+  if (!streetLanes.length) return vehicles
+
+  // One vehicle per lane while there are lanes to spare.
+  //
+  // Picking freely put several on the same short lane, and a knot like that
+  // never came undone: measured over five minutes, the same fleet size flowed
+  // three times better or worse depending purely on where it started. Spread
+  // out, the numbers stopped depending on luck.
+  const used = new Set()
+
+  const spawn = (kind) => {
+    const pool = kind === 'bus' ? (busLanes.length ? busLanes : streetLanes) : streetLanes
+    const free = pool.filter((i) => !used.has(i))
+    const choose = free.length ? free : pool
+
+    // Somewhere with room. Ten tries, then give up on this one rather than
+    // force it in on top of something.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const laneIndex = choose[Math.floor(rand() * choose.length)]
+      const lane = lanes[laneIndex]
+      const at = TRAFFIC_HEADWAY + rand() * (lane.length - TRAFFIC_HEADWAY * 2)
+
+      const crowded = vehicles.some(v =>
+        v.lane === laneIndex && Math.abs(v.at - at) < TRAFFIC_HEADWAY * 3)
+      if (crowded) continue
+
+      used.add(laneIndex)
+
+      const home = (spareBays[kind] && spareBays[kind].length)
+        ? spareBays[kind].shift()
+        : null
+
+      vehicles.push({
+        kind,
+        home,
+        // Staggered, so they don't all head for the station together
+        patrol: STATION_PATROL * (0.4 + rand()),
+        parked: 0,
+        lane: laneIndex,
+        at,
+        speed: 0,
+        cruise: TRAFFIC_SPEEDS[kind] * (0.9 + rand() * 0.2),
+        length: TRAFFIC_LENGTHS[kind],
+        wide: TRAFFIC_WIDTHS[kind],
+        dwell: 0,
+        nextStop: -1,
+        // A settled heading, so the first frame doesn't snap it round
+        heading: pointAlong(lane, at).heading,
+        siren: kind === 'police' || kind === 'ambulance' || kind === 'fire',
+        rand
+      })
+      return
+    }
+  }
+
+  for (const [kind, count] of Object.entries(fleet)) {
+    for (let i = 0; i < count; i++) spawn(kind)
+  }
+
+  return vehicles
+}
+
+/**
+ * Move the traffic on by `delta` seconds.
+ *
+ * A vehicle's speed is whatever the most restrictive of these allows:
+ *
+ *   - its own cruising speed
+ *   - the back of the vehicle in front, on this lane or the next one
+ *   - a red or amber light at the end of this lane
+ *   - anything already in the junction it is about to enter
+ *   - the player's car, if that's what's in front
+ *   - a bus stop it hasn't called at yet
+ *
+ * `player` is optional: pass `{ x, z }` and the traffic will treat it as
+ * something to avoid, which is what stops a bus shunting you down the road
+ * when you pull out in front of it.
+ */
+export function stepTraffic(network, vehicles, delta, elapsed, player = null) {
+  const lanes = network.lanes
+  if (!lanes.length) return vehicles
+
+  // Who is on each lane, in order. Rebuilt每 step because they move; with a
+  // few dozen vehicles that costs nothing and cannot go stale.
+  const byLane = new Map()
+  for (const v of vehicles) {
+    if (!byLane.has(v.lane)) byLane.set(v.lane, [])
+    byLane.get(v.lane).push(v)
+  }
+  for (const list of byLane.values()) list.sort((a, b) => a.at - b.at)
+
+  // Who is being held at a red light. Worked out before anything else,
+  // because it decides who may claim a junction.
+  const heldAtRed = new Set()
+  for (const v of vehicles) {
+    const lane = lanes[v.lane]
+    if (!lane.signal) continue
+
+    const toEnd = lane.length - v.at
+    if (toEnd > TRAFFIC_STOP_SIGHT) continue
+
+    // Amber counts as red unless the vehicle is nearly on the line already,
+    // in which case it carries on rather than stopping in the box.
+    //
+    // A "can it actually stop from this speed" rule was tried here instead
+    // and was worse in both directions: a car standing AT the line has no
+    // braking distance and no distance to the line, so it read itself as
+    // committed and drove through the red, and once the speed of the thing
+    // was taken into account it released cars into occupied junctions.
+    // Vehicles brake hard enough that the simple rule is sufficient.
+    const state = signalState(lane.signal, lane.signalGroup, elapsed)
+    if (state === 'red' || (state === 'amber' && toEnd > 8)) heldAtRed.add(v)
+  }
+
+  // Where each junction is claimed, so an unsignalled one gets some
+  // give-and-take rather than a pile-up.
+  //
+  // A vehicle waiting at a red does NOT get to claim the junction it is
+  // waiting for. That was a proper deadlock: whoever was nearest owned the
+  // node, a car stopped four units short of it on a red arm was always the
+  // nearest, and so it held the junction shut against the arm that had the
+  // green. Cars sat facing a green light for minutes. The rule is now that
+  // you can only claim a junction you are actually free to enter.
+  // A standing vehicle cannot claim one either. Excluding only the ones held
+  // at a red was tried, on the reasoning that a stopped car should still keep
+  // other arms out - and it put the median distance covered back down to 288
+  // from 1283, because a car stopped for ANY reason then held the junction
+  // shut. Only something actually moving into a junction gets to own it; two
+  // stopped vehicles inside one are dealt with afterwards, by the unjam below.
+  const busyNodes = new Map()
+  for (const v of vehicles) {
+    if (heldAtRed.has(v) || v.speed < 0.4) continue
+    const lane = lanes[v.lane]
+    const toGo = lane.length - v.at
+    if (toGo < JUNCTION_GUARD && lane.toNode !== null) {
+      const claim = busyNodes.get(lane.toNode)
+      // Whoever is closest to the junction owns it
+      if (!claim || toGo < claim.toGo) busyNodes.set(lane.toNode, { v, toGo })
+    }
+  }
+
+  // Everyone's position at the START of the step, so each vehicle is judged
+  // against the same picture. Evaluating against positions that have already
+  // been updated gives whoever happens to be first in the list an advantage,
+  // and makes the result depend on array order.
+  const snapshot = vehicles.map(v => ({ v, ...trafficPosition(network, v) }))
+  const indexOf = new Map(vehicles.map((v, i) => [v, i]))
+
+  // Where everyone was, so anything that ends up overlapping can be put back
+  // `sidestep` belongs in here too. Rolling back the position but keeping the
+  // swerve left a vehicle parked inside the one it had just swerved into -
+  // 7,530 overlapping frames from one missing field.
+  const was = vehicles.map(v => ({ lane: v.lane, at: v.at, sidestep: v.sidestep || 0 }))
+
+  for (const v of vehicles) {
+    const lane = lanes[v.lane]
+
+    // A vehicle in or entering its station is off the road network entirely -
+    // it is following a two-point path of its own and nothing else can be in
+    // the way, because a bay belongs to one vehicle.
+    if (v.parking) {
+      stepParking(v, delta)
+      continue
+    }
+
+    if (v.dwell > 0) {
+      v.dwell -= delta
+      v.speed = 0
+      continue
+    }
+
+    // Time to go home? Only from the lane the station opens onto, and only
+    // near the point it opens at - which is what makes the turn-in a straight
+    // line off the carriageway rather than a piece of pathfinding.
+    if (v.home) {
+      v.patrol -= delta
+      if (v.patrol <= 0 && v.lane === v.home.station.lane) {
+        const gap = v.home.station.at - v.at
+
+        // Slow on the run-in. A vehicle at full speed covers half the window
+        // in a frame, and one it overshoots has to go all the way round the
+        // network again - which is where the eight-minute trips home came
+        // from. A shade past the entrance still counts as arrived.
+        if (gap > -2 && gap < 8) {
+          v.parking = { phase: 'in', progress: 0 }
+          v.speed = 0
+          continue
+        }
+        if (gap > 0 && gap < 18) v.approach = Math.min(v.approach ?? 99, 5)
+      }
+    }
+
+    // How long it has been standing still, which the patience valve reads
+    v.stopped = v.speed < 0.3 ? (v.stopped || 0) + delta : 0
+
+    let limit = v.cruise
+    // Why it is going as slowly as it is. Costs a string assignment and has
+    // already paid for itself twice: a system this stateful is very hard to
+    // reason about from the outside, and a stalled car looks identical
+    // whatever is stalling it.
+    v.why = 'cruise'
+    const hold = (speed, reason) => {
+      if (speed < limit) { limit = speed; v.why = reason }
+    }
+
+    // Set above when a service vehicle is nearly at its own station door
+    if (v.approach !== undefined) {
+      hold(v.approach, 'turning in')
+      v.approach = undefined
+    }
+    const toEnd = lane.length - v.at
+    const mineAt = snapshot[indexOf.get(v)]
+
+    // The vehicle in front, on this lane
+    const here = byLane.get(v.lane) || []
+    const mine = here.indexOf(v)
+    v.waitingOn = null
+    if (mine >= 0 && mine < here.length - 1) {
+      const ahead = here[mine + 1]
+      hold(gapSpeed(ahead.at - v.at - (ahead.length + v.length) / 2, v), 'queue')
+      // Who it is waiting for, so the patience valve can tell a queue at a red
+      // light from a genuine knot. See lawfulWait().
+      if (v.why === 'queue') v.waitingOn = ahead
+    }
+
+    // And on the lane it is about to join, so cars don't materialise into
+    // the back of a queue as they turn a corner
+    //
+    // Only vehicles genuinely sitting in the entrance count. Anything
+    // further along an onward lane is not in the way, and treating it as
+    // though it were caused a deadlock that took 288 seconds out of every
+    // 300 on the short ring pieces: two cars on adjacent 12-unit lanes each
+    // sat "at the start of the other's onward lane" and both waited for
+    // ever. The patience valve is here too, for the same reason.
+    // Don't block the box.
+    //
+    // A vehicle still BEHIND its stop line waits properly - a hard stop, no
+    // creep - if the road beyond the junction is occupied. Once past the line
+    // it is committed and keeps creeping until it is clear.
+    //
+    // This is the whole of the gridlock fix. With a creep floor applied
+    // regardless, cars nosed into an intersection they couldn't clear, caught
+    // the red there, and sat across the path of the traffic that then had a
+    // green. Chains of three and four vehicles stayed put for 85 seconds and
+    // longer, which is exactly what Mike described.
+    const committed = lane.stopLine === undefined || noseGap(lane, v) <= 0
+    const toStopLine = noseGap(lane, v)
+
+    if (toEnd < TRAFFIC_STOP_SIGHT) {
+      for (const nextIndex of lane.next) {
+        for (const other of byLane.get(nextIndex) || []) {
+          const entrance = (other.length + v.length) / 2 + 2
+          if (other.at > entrance) continue
+
+          const room = gapSpeed(toEnd + other.at - (other.length + v.length) / 2, v)
+          hold(committed ? Math.max(TRAFFIC_CREEP, room)
+                         : Math.min(room, stopSpeed(toStopLine - 0.4, v)),
+               'queue ahead')
+          if (v.why === 'queue ahead') v.waitingOn = other
+        }
+      }
+    }
+
+    // Lights. Amber counts as red for anything not already committed - a
+    // vehicle inside the stopping distance carries on, which is what a
+    // driver does.
+    if (heldAtRed.has(v)) {
+      // Stop line: clear of the junction patch, which is where a car waits.
+      // stopSpeed, not gapSpeed - a car should come to rest AT the line, not
+      // a headway short of it, or the queue reaches back round the block.
+      // Snapped to a full stop once it's within a few centimetres, rather
+      // than left to approach the line asymptotically. sqrt(2 a d) is still
+      // over a unit a second when d is a hundredth of a unit, so a car
+      // settling onto the line kept nudging across it - which reads as
+      // jumping the light, and measured as 198 violations in five minutes
+      // that were really one car twitching.
+      // Aimed a little short of the line and snapped once it's close, so the
+      // car comes to rest just behind it. Aiming AT the line meant every car
+      // rolled a few centimetres over: sqrt(2 a d) is still 2 units a second
+      // when d is a hundredth of a unit, and the step is taken before the
+      // next speed is worked out.
+      const gap = noseGap(lane, v) - 0.4
+      hold(gap < 0.5 ? 0 : stopSpeed(gap, v), 'red light')
+    }
+
+    // Somebody else already in the junction ahead
+    if (lane.toNode !== null && toEnd < JUNCTION_GUARD) {
+      const claim = busyNodes.get(lane.toNode)
+      // A hard stop, not a creep. This rule has a single unambiguous owner
+      // per junction, so there is no symmetry to break and nothing to
+      // deadlock: whoever holds the junction goes, everyone else waits. A
+      // creep floor here let a second vehicle nose in anyway and jam against
+      // the first, and the collision veto then held both of them there.
+      if (claim && claim.v !== v) {
+        hold(committed ? gapSpeed(toEnd - 4, v)
+                       : Math.min(gapSpeed(toEnd - 4, v),
+                                  stopSpeed(toStopLine - 0.4, v)),
+             'junction busy')
+      }
+    }
+
+    // And then the catch-all: anything at all in front of me, whatever lane
+    // it happens to be on.
+    //
+    // Lane-following alone isn't enough, and the reason is in the road layout
+    // rather than the traffic. A street is allowed to run alongside the ring
+    // for up to 26 units, so two lanes can genuinely overlap in space while
+    // being unrelated in the graph - and cars on them drove through each
+    // other. Crossing traffic at an unsignalled junction is the same problem.
+    //
+    // Whoever is behind gives way. Only when BOTH have the other in front -
+    // which happens for a few units either side of a crossing point, and is
+    // a genuine imminent collision - is the tie broken by vehicle number, so
+    // the lower-numbered one goes. That matters: an earlier version broke
+    // every conflict by number, which meant a car with a low number would
+    // cheerfully drive into the back of a stationary fire engine with a high
+    // one.
+    const myIndex = indexOf.get(v)
+
+    for (let i = 0; i < snapshot.length; i++) {
+      const other = snapshot[i]
+      if (other.v === v || other.v.lane === v.lane) continue
+
+      const gap = forwardGap(mineAt, other, v)
+      if (gap === null) continue
+
+      const mutual = forwardGap(other, mineAt, other.v) !== null
+      if (mutual && myIndex < i) continue
+
+      // A vehicle that has been standing still for a long time stops giving
+      // way. The two-dimensional veto below still prevents it hitting
+      // anything, so the worst this can do is make it nose forward - and it
+      // means no rule added here can ever leave something stuck for good.
+      if (v.stopped > TRAFFIC_PATIENCE) continue
+
+      limit = Math.min(limit, gapSpeed(gap, v))
+    }
+
+    // The player
+    if (player) {
+      const ahead = aheadDistance(lane, v, player)
+      if (ahead !== null) hold(gapSpeed(ahead - v.length / 2 - 2.5, v), 'player')
+    }
+
+    // A bus stop it hasn't called at.
+    //
+    // This uses stopSpeed, not gapSpeed. gapSpeed leaves a headway - it's
+    // for following another vehicle - so a bus braked to a halt seven units
+    // short of every stop and never reached one, which meant it never
+    // triggered the dwell and never opened its doors.
+    if (v.kind === 'bus') {
+      for (const stop of lane.stops) {
+        if (stop.index === v.nextStop) continue
+        const gap = stop.at - v.at
+        if (gap < -1 || gap > TRAFFIC_STOP_SIGHT) continue
+        hold(stopSpeed(gap, v), 'bus stop')
+        if (gap < 1.2) {
+          v.dwell = BUS_DWELL
+          v.nextStop = stop.index
+          v.at = stop.at
+          v.speed = 0
+        }
+      }
+    }
+
+    // Accelerate or brake towards the limit
+    const target = Math.max(0, limit)
+    if (target > v.speed) v.speed = Math.min(target, v.speed + TRAFFIC_ACCEL * delta)
+    else v.speed = Math.max(target, v.speed - TRAFFIC_BRAKE * delta)
+
+    // The last word: would this step put the vehicle inside another one?
+    //
+    // Everything above works in one dimension - distance along a lane - and
+    // that is blind at the moment a vehicle changes lane, because it arrives
+    // somewhere its old lane knew nothing about. A car turning out of a
+    // junction landed on top of a stationary fire engine standing on a spur
+    // that happens to overlap the ring. So the move is checked in two
+    // dimensions before it is allowed.
+    //
+    // Where the step crosses a junction, EVERY onward lane is tried, in
+    // preference order. Checking only the favourite froze eleven vehicles of
+    // thirty-one: one exit was occupied, the vehicle vetoed its own move for
+    // ever, and a queue built up behind it.
+    let onward = null
+
+    if (v.speed > 0) {
+      const step = v.speed * delta
+      const crossing = v.at + step >= lane.length && lane.next.length > 0
+      const options = crossing ? orderedNext(lanes, lane, v) : [null]
+
+      // Straight ahead first, then a step to one side, then further out.
+      //
+      // A vehicle that cannot move forward tries to go ROUND. Without this,
+      // two that jammed nose to nose both vetoed every move for ever and
+      // everything behind them backed up. Pulling out is what a driver does
+      // when the way ahead is blocked, and because every candidate still goes
+      // through the collision veto, going round can never cause a crash.
+      // Middle of the lane first, then out towards the KERB - never towards
+      // the oncoming lane.
+      //
+      // Swerving either way let a car drift into the oncoming side and stop
+      // there, where it blocked the traffic coming the other way AND was
+      // blocked by it. Nine vehicles ended up in one such knot for 232 of the
+      // 300 seconds. Positive sidestep is kerbward, the same direction the
+      // lane is already offset, so a swerve can only ever use the shoulder.
+      const swerves = (v.blockedFor || 0) > SWERVE_AFTER
+        ? [0, v.sidestep || 0, 0.9, 1.6, 2.2]
+        : [v.sidestep || 0, 0]
+
+      let allowed = false
+
+      for (const option of options) {
+        for (const sidestep of swerves) {
+          // Stay on the tarmac. Further off the lane than this and a car
+          // climbs the pavement to get past.
+          if (Math.abs(sidestep) > lane.width * 0.28) continue
+
+          const where = whereAfter(lanes, lane, v, step, option, sidestep)
+          if (blocked(where, v, snapshot)) continue
+
+          onward = option
+          v.sidestep = sidestep
+          allowed = true
+          break
+        }
+        if (allowed) break
+      }
+
+      if (!allowed) { v.speed = 0; v.why = 'blocked' }
+      v.blockedFor = allowed ? 0 : (v.blockedFor || 0) + delta
+    } else {
+      v.blockedFor = (v.blockedFor || 0) + delta
+    }
+
+    // Waiting your turn is not being stuck. A queue at a long red built up
+    // twenty-five seconds of "blocked" and the valve teleported the car at the
+    // back of it - including service vehicles two seconds from their own
+    // station door, which is why one ambulance in three never got home.
+    if (lawfulWait(v)) v.blockedFor = 0
+
+    // Been stuck far too long: leave, and come back somewhere clear.
+    if (v.blockedFor > RESPAWN_AFTER || v.stopped > STUCK_LIMIT) {
+      // Almost home already: turn in from where it is stood rather than be
+      // sent across the map to find its way back, which is what stretched one
+      // trip home to eight minutes. It is a short shuffle forward on the
+      // apron, not a jump - hence the limit on how far short it can be.
+      if (v.home && v.patrol <= 0 && v.lane === v.home.station.lane) {
+        const gap = v.home.station.at - v.at
+        if (gap > -2 && gap < 25) {
+          v.parking = { phase: 'in', progress: 0 }
+          v.blockedFor = 0
+          v.stopped = 0
+          v.speed = 0
+          continue
+        }
+      }
+
+      if (relocate(network, v, snapshot, byLane)) {
+        v.blockedFor = 0
+        v.stopped = 0
+        v.sidestep = 0
+        v.speed = 0
+        v.why = 'relocated'
+        v.relocations = (v.relocations || 0) + 1
+        continue
+      }
+
+      // Nowhere clear to go right now. Back off and ask again in a couple of
+      // seconds: retrying every frame means scanning every lane against every
+      // vehicle thirty times a second, which took the simulation from seconds
+      // to minutes.
+      v.blockedFor = Math.min(v.blockedFor, RESPAWN_AFTER - 5)
+      v.stopped = Math.min(v.stopped, STUCK_LIMIT - 5)
+    }
+
+    // Always drifting back to the middle, blocked or not. Only recovering
+    // while unblocked meant a car that swerved and then stopped kept its
+    // offset for ever, which is how it came to camp on the wrong side.
+    if (v.sidestep) {
+      const back = SIDESTEP_RECOVER * delta
+      v.sidestep = Math.abs(v.sidestep) <= back
+        ? 0
+        : v.sidestep - Math.sign(v.sidestep) * back
+    }
+
+    v.at += v.speed * delta
+
+    // Onto the next lane
+    if (v.at >= lane.length) {
+      const over = v.at - lane.length
+      if (onward === null) {
+        v.at = lane.length
+        v.speed = 0
+      } else {
+        v.lane = onward
+        v.at = Math.min(over, lanes[onward].length)
+        v.nextStop = -1
+      }
+    }
+
+  }
+
+  // Everything above decided where to go from where everyone was at the START
+  // of the step, which is what keeps the traffic flowing - judged against
+  // positions that have already advanced, vehicles are far more timid and the
+  // whole city slows to a crawl. The cost is that two of them can move into
+  // the same empty space, because it was empty when they both looked.
+  //
+  // So it's resolved afterwards instead: any pair that ended up overlapping,
+  // the later-numbered one goes back where it was. Cheap, keeps the optimism,
+  // and makes an overlap impossible rather than unlikely.
+  resolveOverlaps(network, vehicles, was)
+
+  return vehicles
+}
+
+/** Put back anything that ended the step inside something else. */
+function resolveOverlaps(network, vehicles, was) {
+  const rewind = (i) => {
+    vehicles[i].lane = was[i].lane
+    vehicles[i].at = was[i].at
+    vehicles[i].sidestep = was[i].sidestep
+    vehicles[i].speed = 0
+    vehicles[i].why = 'blocked'
+  }
+
+  // Three passes. The first sends the later vehicle of each pair back where it
+  // was; the last resort sends BOTH back and straightens them up.
+  //
+  // One pass isn't enough because everyone decided from the same start-of-step
+  // picture: two vehicles can move into the same gap, and the one sent back may
+  // find its old place now taken by the one that stayed. Where that happens,
+  // neither move was safe and neither is kept.
+  for (let pass = 0; pass < 3; pass++) {
+    const boxes = vehicles.map(v => vehicleBox(trafficPosition(network, v), v))
+    let clashes = 0
+
+    for (let a = 0; a < vehicles.length; a++) {
+      for (let b = a + 1; b < vehicles.length; b++) {
+        if (!boxesOverlap(boxes[a], boxes[b])) continue
+        clashes++
+
+        rewind(b)
+        boxes[b] = vehicleBox(trafficPosition(network, vehicles[b]), vehicles[b])
+        if (!boxesOverlap(boxes[a], boxes[b])) continue
+
+        // Where it was is occupied too, so going back there is no escape.
+        // Straighten up and back off along its own lane until it is clear.
+        //
+        // This is the guarantee that a lock cannot become permanent. Without
+        // it, one pair that interpenetrated at a junction stayed welded
+        // together for the rest of the run - 7,530 frames of the 9,000 - and
+        // nothing behind them moved either.
+        vehicles[b].sidestep = 0
+
+        // Backwards first, then forwards. Backwards alone was not enough: a
+        // vehicle a metre PAST a junction node sits at at≈0 on its new lane
+        // and has nothing to reverse into, so it stayed welded in place for
+        // the rest of the run. Where two lanes converge, one of the two
+        // directions always separates them.
+        let freed = false
+        const lane = network.lanes[was[b].lane]
+
+        for (let shift = 0.4; shift <= UNJAM_REVERSE && !freed; shift += 0.4) {
+          for (const direction of [-1, 1]) {
+            const at = was[b].at + direction * shift
+            if (at < 0 || at > lane.length) continue
+            vehicles[b].at = at
+            boxes[b] = vehicleBox(trafficPosition(network, vehicles[b]), vehicles[b])
+            if (!boxesOverlap(boxes[a], boxes[b])) { freed = true; break }
+          }
+        }
+      }
+    }
+
+    if (!clashes) break
+  }
+}
+
+/**
+ * The onward lanes from a junction, best first.
+ *
+ * A gentle preference for carrying straight on, so traffic doesn't spend its
+ * whole life turning corners, plus a little randomness so it doesn't all
+ * follow the same route round the island.
+ */
+function orderedNext(lanes, lane, v) {
+  const dir = pointAlong(lane, lane.length).heading
+
+  // A service vehicle whose shift is over heads for its station, choosing the
+  // turn that shortens the route home. Everything else wanders.
+  const goingHome = v.home && v.patrol <= 0 ? v.home.station.toHome : null
+
+  const options = lane.next
+    .map((index) => {
+      const turn = Math.abs(angleDelta(pointAlong(lanes[index], 0).heading, dir))
+      const straightish = -turn + v.rand() * 1.6
+      return {
+        index,
+        score: goingHome
+          ? -(goingHome[index] ?? 999) * 10 + v.rand()
+          : straightish
+      }
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((o) => o.index)
+
+  // Long-pinned: turning round becomes an option, last. Every onward lane
+  // being occupied is the one situation the give-way rules can't talk their
+  // way out of, and the alternative is a vehicle parked at a junction for the
+  // rest of the session.
+  if (v.stopped > TRAFFIC_PATIENCE && lane.back >= 0 && !options.includes(lane.back)) {
+    options.push(lane.back)
+  }
+
+  return options
+}
+
+/**
+ * Put a hopelessly stuck vehicle somewhere else on the network.
+ *
+ * Reads as a car having driven off and another arriving. Only ever called
+ * after RESPAWN_AFTER seconds of being completely unable to move.
+ */
+/**
+ * Is this vehicle stopped for a reason that will clear itself?
+ *
+ * A red light will go green; a bus at a stop will pull away; a fire engine
+ * turning into its garage is nearly there. Anything queued behind one of those
+ * is waiting lawfully too, so the chain is followed - up to a dozen cars, and
+ * with a guard against the ring of vehicles that are all waiting on each
+ * other, which is exactly the knot the valve exists to break.
+ */
+function lawfulWait(v) {
+  const seen = new Set()
+  let at = v
+
+  for (let hop = 0; hop < 12 && at; hop++) {
+    if (seen.has(at)) return false          // a ring: a genuine deadlock
+    seen.add(at)
+
+    if (at.why === 'red light' || at.why === 'turning in') return true
+    if (at.parking || at.dwell > 0) return true
+
+    at = at.waitingOn
+  }
+
+  return false
+}
+
+function relocate(network, v, snapshot, byLane) {
+  const lanes = network.lanes
+
+  // Where everyone is NOW, not where they were at the start of the step.
+  //
+  // Everything else in the simulation judges against the start-of-step
+  // picture on purpose - it keeps the traffic flowing - and pays for it with
+  // resolveOverlaps() afterwards. Relocation can't be paid for that way: the
+  // vehicle's own "where it was" is the jam it is being rescued from, so
+  // sending it back there is no escape. Cheap enough, at twenty-odd
+  // relocations in five minutes.
+  const live = snapshot.map(s => ({ v: s.v, ...trafficPosition(network, s.v) }))
+
+  for (let tries = 0; tries < 30; tries++) {
+    const index = Math.floor(v.rand() * lanes.length)
+    const lane = lanes[index]
+    if (lane.length < v.length * 3) continue
+    if (v.kind === 'bus' && !lane.stops.length) continue
+
+    const at = v.length + v.rand() * (lane.length - v.length * 2)
+
+    // Clear road AHEAD, not just a gap big enough to stand in. Dropped into
+    // the back of a queue a vehicle stops again immediately, trips the valve
+    // again thirty-five seconds later, and stands still for as long as if it
+    // had never been moved at all.
+    //
+    // Asked BEFORE the collision test, because this reads the handful of
+    // vehicles on one lane and that one reads all fifty-two.
+    let queueAhead = false
+    for (const other of (byLane && byLane.get(index)) || []) {
+      if (other === v) continue
+      const gap = other.at - at
+      if (gap > -v.length && gap < RELOCATE_CLEAR_AHEAD) { queueAhead = true; break }
+    }
+    if (queueAhead) continue
+
+    const where = pointAlong(lane, at)
+    if (blocked(where, v, live)) continue
+
+    v.lane = index
+    v.at = at
+    v.nextStop = -1
+    return true
+  }
+
+  return false
+}
+
+/** Would a vehicle at `where` be inside any of the others? */
+function blocked(where, v, snapshot) {
+  const box = vehicleBox(where, v)
+  for (let i = 0; i < snapshot.length; i++) {
+    if (snapshot[i].v === v) continue
+    if (boxesOverlap(box, vehicleBox(snapshot[i], snapshot[i].v))) return true
+  }
+  return false
+}
+
+/**
+ * How fast you may go with `gap` units of road in front of you before the
+ * back of something else. Leaves a headway, so vehicles queue rather than
+ * touch.
+ */
+/**
+ * How far a vehicle's NOSE is from its lane's stop line.
+ *
+ * `at` is the middle of the vehicle. Everything about stopping has to work in
+ * terms of the front of it, or a long vehicle stops with half its length in the
+ * junction - 5.5 units for a bus, which is most of the way across. Every kind
+ * was poking in; the bus was simply the one you could see.
+ */
+function noseGap(lane, v) {
+  return (lane.stopLine ?? lane.length) - v.at - v.length / 2
+}
+
+function gapSpeed(gap, v) {
+  return stopSpeed(gap - TRAFFIC_HEADWAY, v)
+}
+
+/**
+ * How fast you may go if you have to be stopped in `gap` units - a stop
+ * line, or a bus stop you actually want to arrive at.
+ */
+function stopSpeed(gap, v) {
+  if (gap <= 0) return 0
+  return Math.min(v.cruise, Math.sqrt(2 * TRAFFIC_BRAKE * gap))
+}
+
+/**
+ * Where a vehicle would be after moving `step` further, following the same
+ * lane choice it will actually make.
+ *
+ * Only used to look one step ahead for a collision, so it takes the first
+ * onward lane rather than the one the vehicle will eventually pick - close
+ * enough at a tenth of a second's travel, and it means this can't disagree
+ * with the real choice in a way that matters.
+ */
+function whereAfter(lanes, lane, v, step, onward, sidestep = 0) {
+  const at = v.at + step
+  const on = (at <= lane.length || onward === null)
+    ? pointAlong(lane, Math.min(at, lane.length))
+    : pointAlong(lanes[onward], Math.min(at - lane.length, lanes[onward].length))
+
+  if (!sidestep) return on
+
+  return {
+    x: on.x - Math.cos(on.heading) * sidestep,
+    z: on.z + Math.sin(on.heading) * sidestep,
+    heading: on.heading
+  }
+}
+
+/**
+ * How far in front of `me` the vehicle `other` is, or null if it isn't in
+ * the way at all.
+ *
+ * Measured in my own frame: forward along my heading, sideways across it.
+ * Anything beside me rather than in front of me is not an obstacle - which
+ * is the whole point, because a car passing the other way is `width / 2`
+ * away by design and must not be treated as something to brake for.
+ */
+function forwardGap(me, other, v) {
+  const dx = other.x - me.x
+  const dz = other.z - me.z
+
+  const fx = Math.sin(me.heading)
+  const fz = Math.cos(me.heading)
+
+  const forward = dx * fx + dz * fz
+  if (forward <= 0 || forward > TRAFFIC_STOP_SIGHT) return null
+
+  const sideways = Math.abs(dx * fz - dz * fx)
+  if (sideways > (v.wide + other.v.wide) / 2 + 0.5) return null
+
+  // To the back of it, not its middle
+  return forward - (v.length + other.v.length) / 2
+}
+
+/** Shortest signed difference between two headings. */
+function angleDelta(a, b) {
+  let d = a - b
+  while (d > Math.PI) d -= Math.PI * 2
+  while (d < -Math.PI) d += Math.PI * 2
+  return d
+}
+
+/**
+ * How far ahead of a vehicle a world point is, along its lane - or null if
+ * it's behind, or off to one side and so not in the way.
+ */
+function aheadDistance(lane, v, point) {
+  const along = distanceAlongPath(lane.points, point.x, point.z)
+  if (along === null) return null
+
+  const on = pointAlong(lane, along)
+  const sideways = Math.hypot(on.x - point.x, on.z - point.z)
+  if (sideways > lane.width * 0.6) return null
+
+  const gap = along - v.at
+  return gap > 0 && gap < TRAFFIC_STOP_SIGHT ? gap : null
+}
+
+/**
+ * Drive a vehicle into its bay, wait, and drive it out again.
+ *
+ * Three legs, each a straight line: off the carriageway onto the apron,
+ * straight back into the bay, then the reverse. Straight lines are the whole
+ * point - a fire engine that swung into its garage would clip the door frame,
+ * and squaring it up on the apron first means it goes through the opening
+ * dead straight. It is also why no pathfinding is involved: the two points
+ * come from the layout.
+ */
+function stepParking(v, delta) {
+  const p = v.parking
+  const rate = PARKING_SPEED * delta
+
+  if (p.phase === 'in') {
+    p.progress = Math.min(1, p.progress + rate / PARKING_LEG)
+    v.speed = PARKING_SPEED
+    if (p.progress >= 1) {
+      p.phase = 'waiting'
+      p.wait = STATION_DWELL * (0.6 + v.rand() * 0.8)
+      v.speed = 0
+    }
+    return
+  }
+
+  if (p.phase === 'waiting') {
+    v.speed = 0
+    p.wait -= delta
+    if (p.wait <= 0) p.phase = 'out'
+    return
+  }
+
+  // Backing out
+  p.progress = Math.max(0, p.progress - rate / PARKING_LEG)
+  v.speed = PARKING_SPEED
+  if (p.progress <= 0) {
+    v.parking = null
+    v.patrol = STATION_PATROL * (0.7 + v.rand() * 0.6)
+    v.speed = 0
+  }
+}
+
+/** Where a vehicle is now, and which way it's pointing. */
+export function trafficPosition(network, v) {
+  // In its station: on its own little path, not on the road at all
+  if (v.parking) {
+    const bay = v.home.bay
+    const t = v.parking.progress
+    return {
+      x: bay.approach.x + (bay.x - bay.approach.x) * t,
+      z: bay.approach.z + (bay.z - bay.approach.z) * t,
+      heading: bay.heading,
+      stopped: v.speed < 0.2,
+      parking: true
+    }
+  }
+
+  const lane = network.lanes[v.lane]
+  const at = pointAlong(lane, v.at)
+
+  // Including however far it has pulled out to get round something. This has
+  // to live here rather than in the renderer: the collision veto asks for a
+  // vehicle's position, and if that answer left the swerve out it would be
+  // checking a place the vehicle isn't.
+  const sidestep = v.sidestep || 0
+  if (sidestep) {
+    at.x -= Math.cos(at.heading) * sidestep
+    at.z += Math.sin(at.heading) * sidestep
+  }
+
+  return { ...at, stopped: v.speed < 0.2 }
+}
+
+/**
+ * A vehicle as an oriented rectangle.
+ *
+ * Exported because the test needs the same shape the simulation uses. Asking
+ * "are their centres closer than a car length" is the wrong question - two
+ * cars passing in opposite lanes are `width / 2` apart by design, and a test
+ * built on centre distance reported every one of them as a crash.
+ */
+export function vehicleBox(pos, v) {
+  return {
+    x: pos.x,
+    z: pos.z,
+    // Along the vehicle, and across it
+    fx: Math.sin(pos.heading), fz: Math.cos(pos.heading),
+    halfLength: v.length / 2,
+    halfWidth: v.wide / 2
+  }
+}
+
+/** Do two oriented rectangles overlap? Separating axis, both ways round. */
+export function boxesOverlap(a, b) {
+  const oneWay = (p, q) => {
+    const axes = [
+      { x: p.fx, z: p.fz, half: p.halfLength },
+      { x: p.fz, z: -p.fx, half: p.halfWidth }
+    ]
+    for (const axis of axes) {
+      const centres = Math.abs((q.x - p.x) * axis.x + (q.z - p.z) * axis.z)
+      const spread =
+        Math.abs(q.fx * axis.x + q.fz * axis.z) * q.halfLength +
+        Math.abs(q.fz * axis.x - q.fx * axis.z) * q.halfWidth
+      if (centres > axis.half + spread) return false
+    }
+    return true
+  }
+  return oneWay(a, b) && oneWay(b, a)
+}
+
+// ---------------------------------------------------------------------------
+// Ports
+// ---------------------------------------------------------------------------
+
+/**
+ * Where an island's port goes, and everything about it.
+ *
+ * The site is chosen by sweeping the compass and scoring each direction,
+ * rather than written down, for the same reason as everything else here: a
+ * position in the data is wrong the moment you drag the island.
+ *
+ * What a port wants, in order of how much it matters:
+ *
+ *  - **Open water in front of it.** A quay facing the island next door has
+ *    ships sailing into a beach. This is the heaviest term by far.
+ *  - **Clear of the bridge landings.** The arrival at an island is the view
+ *    every visitor gets, and a container crane in the middle of it isn't it.
+ *  - **Clear of where the monorail crosses the coast**, so the beam doesn't
+ *    pass over the cranes.
+ *  - **A shore that isn't a cliff-edge sliver**, i.e. somewhere the pier
+ *    root has land under it.
+ *
+ * Returns null for `port: false`, or for an island too small to hold one.
+ */
+export function getPort(island) {
+  if (!island || island.port === false) return null
+
+  const reach = islandReach(island)
+  if (reach < 24) return null
+
+  const big = reach >= PORT_BIG_REACH
+  const pierLength = big ? PIER_LENGTH_BIG : PIER_LENGTH_SMALL
+  const pierWidth = big ? PIER_WIDTH_BIG : PIER_WIDTH_SMALL
+
+  // Where the bridges come ashore, as directions
+  const landings = getBridgeLandings(island)
+
+  // Where the monorail crosses this island's coast, as directions. Cheap
+  // enough: the route is derived once and cached by the caller in practice.
+  const route = getMonorailRoute()
+  const beamDirs = []
+  if (route) {
+    for (const p of route.points) {
+      const lx = p.x - island.x
+      const lz = p.z - island.z
+      // Points near the shore line, either side
+      const inland = inlandDistance(island, lx, lz)
+      if (Math.abs(inland) < 12) {
+        const len = Math.hypot(lx, lz)
+        if (len > 1) beamDirs.push({ x: lx / len, z: lz / len })
+      }
+    }
+  }
+
+  const STEPS = 96
+  let best = null
+
+  for (let i = 0; i < STEPS; i++) {
+    const angle = (i / STEPS) * Math.PI * 2
+    const dirX = Math.sin(angle)
+    const dirZ = Math.cos(angle)
+
+    const shore = shoreDistance(island, dirX, dirZ)
+    if (shore < reach * 0.45) continue          // a notch, not a frontage
+
+    // How far a ship could sail straight out from here before it ran into
+    // something. Walked step by step rather than worked out from island
+    // centres and radii: the first version compared the bearing against
+    // each island's bounding circle and decided it would "sail past", which
+    // was true of almost everything, so every bearing scored the same and
+    // the term did nothing at all. Hub ended up with a quay facing the
+    // 36-unit gap between two islands.
+    let openWater = PORT_MAX_FETCH
+    for (let d = 4; d <= PORT_MAX_FETCH; d += 12) {
+      const px = island.x + dirX * (shore + d)
+      const pz = island.z + dirZ * (shore + d)
+      if (islandAt(px, pz)) { openWater = d; break }
+    }
+    // In practice this reads as a filter rather than a ranking: on a map
+    // this open, every surviving bearing has the full fetch, and the choice
+    // then comes down to the bridge and the beam. That's the right order of
+    // priority anyway - it just means the number below is doing less work
+    // than it looks.
+    if (openWater < pierLength + PORT_APPROACH) continue
+
+    // How far this bearing is from the nearest bridge and from the beam
+    let landingGap = Math.PI
+    for (const l of landings) {
+      landingGap = Math.min(landingGap, angleBetween(dirX, dirZ, l.dirX, l.dirZ))
+    }
+    let beamGap = Math.PI
+    for (const b of beamDirs) {
+      beamGap = Math.min(beamGap, angleBetween(dirX, dirZ, b.x, b.z))
+    }
+
+    // Scored in units, so the terms are comparable rather than a pile of
+    // arbitrary weights: how much sea, plus how far the bridge and the beam
+    // are round the coast at this radius.
+    const score = openWater * 0.5
+      + Math.min(landingGap * shore, 90)
+      + Math.min(beamGap * shore, 60) * 0.8
+
+    if (!best || score > best.score) {
+      best = { angle, dirX, dirZ, shore, score, openWater, landingGap, beamGap }
+    }
+  }
+
+  if (!best) return null
+
+  // Island-local geometry. The pier runs from inside the beach out to sea.
+  const rootDist = best.shore - PIER_ROOT_INSET
+  const headDist = best.shore + pierLength
+  const midDist = (rootDist + headDist) / 2
+
+  const local = (d) => ({ x: best.dirX * d, z: best.dirZ * d })
+  const root = local(rootDist)
+  const head = local(headDist)
+
+  // Berths: alongside the pier, facing along it. A big port works both
+  // sides, a jetty only the one.
+  const offset = big ? BERTH_OFFSET_BIG : BERTH_OFFSET_SMALL
+  const acrossX = -best.dirZ
+  const acrossZ = best.dirX
+  const berthAt = (side, alongFrac) => {
+    const d = rootDist + (headDist - rootDist) * alongFrac
+    return {
+      x: island.x + best.dirX * d + acrossX * offset * side,
+      z: island.z + best.dirZ * d + acrossZ * offset * side,
+      // Bow pointing INLAND, along the pier - which is the direction a ship
+      // is already travelling when it arrives, because it comes in from the
+      // approach point straight out to sea. Pointing it the other way would
+      // have every ship spin 180 degrees the instant it tied up.
+      //
+      // Departure still turns it round, but that happens over a couple of
+      // seconds at the rate World.js limits ships to, and reads as a vessel
+      // swinging off its berth.
+      heading: Math.atan2(-best.dirX, -best.dirZ),
+      side
+    }
+  }
+
+  const berths = big
+    ? [berthAt(1, 0.62), berthAt(-1, 0.62)]
+    : [berthAt(1, 0.66)]
+
+  return {
+    island,
+    id: island.id,
+    big,
+    dirX: best.dirX,
+    dirZ: best.dirZ,
+    rotationY: Math.atan2(best.dirX, best.dirZ),
+    shore: best.shore,
+    openWater: best.openWater,
+    // World-space
+    root: { x: island.x + root.x, z: island.z + root.z },
+    head: { x: island.x + head.x, z: island.z + head.z },
+    mid: { x: island.x + best.dirX * midDist, z: island.z + best.dirZ * midDist },
+    length: headDist - rootDist,
+    width: pierWidth,
+    berths,
+    // Where a ship waits before turning in, straight out from the head
+    approach: {
+      x: island.x + best.dirX * (headDist + PORT_APPROACH),
+      z: island.z + best.dirZ * (headDist + PORT_APPROACH)
+    },
+    // Island-local, for the road that runs out along it
+    localRoot: root,
+    localHead: head
+  }
+}
+
+/** How far a world-space point is from the nearest road on an island. */
+function roadClearance(island, roads, worldX, worldZ) {
+  return distanceToNearestRoad(roads, worldX - island.x, worldZ - island.z)
+}
+
+/** The angle between two unit vectors, in radians. */
+function angleBetween(ax, az, bx, bz) {
+  return Math.acos(Math.max(-1, Math.min(1, ax * bx + az * bz)))
+}
+
+/** Every port in the world. */
+export function getPorts() {
+  return ISLANDS.map(getPort).filter(Boolean)
+}
+
+/**
+ * Where a cargo port's shed and containers stand.
+ *
+ * Every candidate is measured: on land, well inland, clear of every road, and
+ * clear of the monorail. If nothing fits, nothing is built.
+ *
+ * This exists because the first version placed the shed by dead reckoning -
+ * a fixed 12 units back and 12 to the side of the pier root - with no test of
+ * any kind. On EXPERIENCE that put a 22 x 13 x 8 concrete shed squarely
+ * across the coast road and out onto the beach. It is the same mistake as the
+ * signal poles in the carriageway and the piers through the bridge deck: ask
+ * the geometry where the thing ends up, never a formula for it.
+ */
+export function getPortYard(port) {
+  if (!port || !port.big) return { shed: null, containers: [] }
+
+  const island = port.island
+  const roads = getIslandRoads(island)
+  const route = getMonorailRoute()
+
+  const fx = port.dirX
+  const fz = port.dirZ
+  const sx = -fz
+  const sz = fx
+
+  // A big shed if there's room for one, a smaller one if not. A cargo port
+  // with no shed at all still reads as a cargo port - it has the cranes - but
+  // a smaller building is better than none, and better than one on the road.
+  let best = null
+
+  for (const size of [{ width: 22, depth: 13 }, { width: 14, depth: 9 }]) {
+    const reach = Math.hypot(size.width / 2, size.depth / 2)
+
+    // Behind the pier root, both sides, out to a sensible walk from the quay
+    for (let back = 4; back <= 56; back += 4) {
+      for (const side of [1, -1]) {
+        for (let across = port.width / 2 + 5; across <= port.width / 2 + 44; across += 3) {
+          const x = port.root.x - fx * back + sx * across * side
+          const z = port.root.z - fz * back + sz * across * side
+
+          // Room for the whole footprint, not just its middle: a corner on
+          // the beach looks exactly as wrong as the whole building on it.
+          //
+          // The rectangle, not the circle around it. Testing the centre
+          // against half the diagonal is the same mistake that placed no fire
+          // stations at all - and here it cut the other way: a shed corner
+          // came within half a unit of the coast road on ABOUT, because a
+          // circle that clears a road says nothing about where the corners
+          // are once the building is turned to face it.
+          if (!rectangleIsClear(island, roads, x, z, port.rotationY,
+                                size.width, size.depth, SHED_ROAD_CLEARANCE)) {
+            continue
+          }
+          const inland = inlandDistance(island, x - island.x, z - island.z)
+          const clear = distanceToNearestRoad(roads, x - island.x, z - island.z)
+
+          if (route && monorailCeiling(route, x, z) < 10) continue
+
+          // Nearest to the quay wins, so the yard stays part of the port
+          const score = -back - across * 0.5
+          if (!best || score > best.score) {
+            best = { x, z, heading: port.rotationY, score, clear, inland, ...size }
+          }
+        }
+      }
+    }
+
+    if (best) break
+  }
+
+  const containers = []
+  if (best) {
+    // Rows of stacks beside the shed, laid out on the yard's own axes.
+    //
+    // The first version scattered them at random and gave each one a random
+    // LEVEL of 0, 1 or 2 - so two thirds of the containers on the map stood in
+    // mid-air with nothing under them, at head height beside the coast road.
+    // A stack is a stack: every level below the top one is filled.
+    //
+    // They are also tested by their own four corners now. A 6-unit box whose
+    // CENTRE is five units clear of a road has a corner two units clear of it,
+    // which reads as cargo in the carriageway - which is what Mike saw.
+    let seed = hashString(`${island.id}:yard`)
+    const rand = () => {
+      seed = (seed * 16807) % 2147483647
+      return (seed - 1) / 2147483646
+    }
+
+    // Every spot on a grid in the yard's own axes, then the ones nearest the
+    // shed. Laying out a fixed block beside it doesn't work: the shed stands
+    // close to the water, so half of any such block is over the beach - on
+    // EXPERIENCE, thirteen of twenty-four positions.
+    const rowStep = CONTAINER_LONG + CONTAINER_GAP
+    const columnStep = CONTAINER_WIDE + CONTAINER_GAP
+    const spots = []
+
+    for (let row = -6; row <= 6; row++) {
+      const across = row * rowStep
+
+      for (let column = -6; column <= 6; column++) {
+        // Not through the shed itself
+        if (Math.abs(across) < best.width / 2 + CONTAINER_LONG / 2 + 2 &&
+            Math.abs(column * columnStep) < best.depth / 2 + CONTAINER_WIDE / 2 + 2) {
+          continue
+        }
+        const along = column * columnStep
+        const x = best.x + fx * along + sx * across
+        const z = best.z + fz * along + sz * across
+
+        // The box itself: CONTAINER_LONG across the yard, CONTAINER_WIDE
+        // along it, square to the shed.
+        if (!rectangleIsClear(island, roads, x, z, port.rotationY,
+                              CONTAINER_LONG, CONTAINER_WIDE,
+                              CONTAINER_ROAD_CLEARANCE)) {
+          continue
+        }
+        if (route && monorailCeiling(route, x, z) < 9) continue
+
+        spots.push({ x, z, from: Math.abs(across) + Math.abs(along) * 0.4 })
+      }
+    }
+
+    spots.sort((a, b) => a.from - b.from)
+
+    for (const spot of spots.slice(0, CONTAINER_STACKS)) {
+      const height = 1 + Math.floor(rand() * 3)
+      for (let level = 0; level < height; level++) {
+        containers.push({ x: spot.x, z: spot.z, level, heading: port.rotationY })
+      }
+    }
+  }
+
+  return { shed: best, containers }
+}
+
+/**
+ * The road out to the quay: from the ring road, across the beach, and along
+ * the pier to its head.
+ *
+ * Island-local, and emitted by getIslandRoads() as an ordinary road, so it
+ * gets its junction patch where it meets the ring, its lighting and its
+ * place in the network without any special handling.
+ */
+export function getPortRoad(island) {
+  const port = getPort(island)
+  if (!port) return null
+
+  const points = []
+
+  // Start on the ring if there is one, so the junction is real
+  const ring = getIslandRing(island)
+  if (ring) {
+    const on = nearestOnPath(ring, port.localRoot.x, port.localRoot.z)
+    if (on) points.push({ x: on.x, z: on.z })
+  }
+
+  // If there's no ring, start at the island centre - something has to
+  // connect the quay to the rest of the island.
+  if (!points.length) points.push({ x: 0, z: 0 })
+
+  points.push({ x: port.localRoot.x, z: port.localRoot.z })
+  points.push({ x: port.localHead.x, z: port.localHead.z })
+
+  return { points, width: PORT_ROAD_WIDTH, port }
+}
+
+// ---------------------------------------------------------------------------
+// Shipping lanes
+// ---------------------------------------------------------------------------
+
+/**
+ * The sea as a graph: berths, port approaches, a ring of open-water
+ * waypoints, and the points where ships leave the world.
+ *
+ * Derived, never stored - same rule as the road network and for the same
+ * reason. Drag an island and the lanes move with it.
+ *
+ * The shape of it is deliberately simple, and the reason is worth stating:
+ * **every waypoint on the lane ring is outside every island**, because the
+ * ring's radius is the map extent plus a margin. So a leg between two
+ * adjacent ring waypoints can never cross land, and no obstacle test is
+ * needed between them. All the geometry risk is concentrated in the short
+ * legs from each port out to the ring, which ARE checked.
+ *
+ *   berth  -> approach  -> ring -> ... -> ring -> approach -> berth
+ *   berth  -> approach  -> ring -> off-world
+ *
+ * Nodes carry `kind`: 'berth', 'approach', 'lane' or 'offworld'.
+ */
+export function getSeaGraph() {
+  const nodes = []
+  const edges = new Map()   // node index -> [{ to, cost }]
+
+  const add = (node) => { nodes.push(node); edges.set(nodes.length - 1, []); return nodes.length - 1 }
+  const join = (a, b) => {
+    const cost = Math.hypot(nodes[a].x - nodes[b].x, nodes[a].z - nodes[b].z)
+    edges.get(a).push({ to: b, cost })
+    edges.get(b).push({ to: a, cost })
+  }
+
+  const ports = getPorts()
+
+  // Ports: one approach node each, with its berths hanging off it
+  const approachOf = new Map()
+  for (const port of ports) {
+    const approach = add({ kind: 'approach', port, x: port.approach.x, z: port.approach.z })
+    approachOf.set(port.id, approach)
+
+    port.berths.forEach((berth, i) => {
+      const b = add({ kind: 'berth', port, berth: i, x: berth.x, z: berth.z, heading: berth.heading })
+
+      // A holding point straight out to sea from the berth, on the berth's own
+      // side of the pier, so the last leg runs PARALLEL to the quay.
+      //
+      // Going straight from the approach point to the berth kept the ship's
+      // centre line clear of the pier but not its hull: a 46-unit ship turning
+      // in sweeps its bow seven or eight units sideways, straight through the
+      // deck. With a holding point the turn happens well offshore and the ship
+      // comes alongside without changing heading.
+      const hold = add({
+        kind: 'hold', port, berth: i,
+        x: berth.x + port.dirX * BERTH_RUN_IN,
+        z: berth.z + port.dirZ * BERTH_RUN_IN
+      })
+
+      join(approach, hold)
+      join(hold, b)
+    })
+  }
+
+  // The lane ring
+  const radius = getMapExtent() + SEA_LANE_MARGIN
+  const lane = []
+  for (let i = 0; i < SEA_LANE_NODES; i++) {
+    const angle = (i / SEA_LANE_NODES) * Math.PI * 2
+    lane.push(add({
+      kind: 'lane',
+      x: Math.sin(angle) * radius,
+      z: Math.cos(angle) * radius,
+      angle
+    }))
+  }
+  for (let i = 0; i < lane.length; i++) join(lane[i], lane[(i + 1) % lane.length])
+
+  // Off-world nodes, out past where anything can be seen
+  for (let i = 0; i < OFF_WORLD_NODES; i++) {
+    const angle = (i / OFF_WORLD_NODES) * Math.PI * 2
+    const off = add({
+      kind: 'offworld',
+      x: Math.sin(angle) * OFF_WORLD_RADIUS,
+      z: Math.cos(angle) * OFF_WORLD_RADIUS,
+      angle
+    })
+    // Straight in to the nearest lane waypoint. Both are outside every
+    // island, so this leg is clear by construction.
+    let nearest = lane[0]
+    let best = Infinity
+    for (const l of lane) {
+      const d = Math.hypot(nodes[l].x - nodes[off].x, nodes[l].z - nodes[off].z)
+      if (d < best) { best = d; nearest = l }
+    }
+    join(off, nearest)
+  }
+
+  // Each port out to the lane ring. These are the legs that can cross land,
+  // so they're the ones actually tested.
+  for (const port of ports) {
+    const a = approachOf.get(port.id)
+    const candidates = lane
+      .map(l => ({ l, d: Math.hypot(nodes[l].x - nodes[a].x, nodes[l].z - nodes[a].z) }))
+      .sort((p, q) => p.d - q.d)
+
+    let joined = 0
+    for (const { l } of candidates) {
+      if (joined >= 3) break
+      if (!seaLegIsClear(nodes[a], nodes[l])) continue
+      join(a, l)
+      joined++
+    }
+
+    // Nothing reachable at all would leave a port no ship could use, so
+    // fall back to the nearest waypoint regardless and let it look odd
+    // rather than have a dead port.
+    if (!joined) join(a, candidates[0].l)
+  }
+
+  // And port to port directly, where the sea allows it. This is what makes
+  // short local runs look local instead of sending every ship out to the
+  // horizon and back.
+  for (let i = 0; i < ports.length; i++) {
+    for (let j = i + 1; j < ports.length; j++) {
+      const a = approachOf.get(ports[i].id)
+      const b = approachOf.get(ports[j].id)
+      if (seaLegIsClear(nodes[a], nodes[b])) join(a, b)
+    }
+  }
+
+  return { nodes, edges, lane, radius }
+}
+
+/**
+ * Is the straight line between two points entirely water?
+ *
+ * Walked in steps rather than solved: the islands are arbitrary polygons,
+ * and a segment-versus-polygon test would have to be right for concave bays
+ * and atoll lagoons too. Stepping asks the same question the ship will ask.
+ */
+export function seaLegIsClear(a, b, step = 9) {
+  const dx = b.x - a.x
+  const dz = b.z - a.z
+  const len = Math.hypot(dx, dz)
+  if (len < 1e-6) return true
+
+  const steps = Math.max(2, Math.ceil(len / step))
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    if (islandAt(a.x + dx * t, a.z + dz * t)) return false
+  }
+  return true
+}
+
+/**
+ * Cheapest way through the sea graph, as a list of node indices.
+ *
+ * Plain Dijkstra over a few dozen nodes. Returns null if there's no way,
+ * which the caller has to handle - a port cut off by a change to the map
+ * shouldn't crash the world.
+ */
+export function seaPath(graph, from, to) {
+  if (from === to) return [from]
+
+  const dist = new Map([[from, 0]])
+  const prev = new Map()
+  const seen = new Set()
+
+  while (true) {
+    let current = -1
+    let best = Infinity
+    for (const [node, d] of dist) {
+      if (!seen.has(node) && d < best) { best = d; current = node }
+    }
+    if (current < 0) return null
+    if (current === to) break
+    seen.add(current)
+
+    for (const edge of graph.edges.get(current) || []) {
+      const through = best + edge.cost
+      if (through < (dist.has(edge.to) ? dist.get(edge.to) : Infinity)) {
+        dist.set(edge.to, through)
+        prev.set(edge.to, current)
+      }
+    }
+  }
+
+  const route = [to]
+  while (route[0] !== from) route.unshift(prev.get(route[0]))
+  return route
+}
+
+/**
+ * A voyage: the path a ship will follow, measured so it can be walked at a
+ * constant speed.
+ */
+export function seaVoyage(graph, from, to) {
+  const route = seaPath(graph, from, to)
+  if (!route) return null
+
+  return {
+    from,
+    to,
+    nodes: route,
+    ...measurePath(route.map(i => ({ x: graph.nodes[i].x, z: graph.nodes[i].z })))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The ships
+// ---------------------------------------------------------------------------
+
+/**
+ * A fleet, and the rules it sails by.
+ *
+ * A ship is a voyage plus how far along it is. Nothing here knows what one
+ * looks like; World.js hangs a hull off each and reads the position back.
+ *
+ * Cargo ships only use berths at the big ports, so a container ship never
+ * tries to tie up at a fishing jetty. That's the only difference in
+ * behaviour between the two kinds - everything else is speed and size.
+ */
+export function makeShips(graph, cargo = CARGO_SHIPS, boats = SMALL_BOATS) {
+  const ships = []
+  const berths = graph.nodes
+    .map((n, i) => ({ n, i }))
+    .filter(({ n }) => n.kind === 'berth')
+
+  const bigBerths = berths.filter(({ n }) => n.port.big).map(({ i }) => i)
+  const anyBerths = berths.map(({ i }) => i)
+  const offworld = graph.nodes
+    .map((n, i) => ({ n, i }))
+    .filter(({ n }) => n.kind === 'offworld')
+    .map(({ i }) => i)
+
+  if (!anyBerths.length || !offworld.length) return ships
+
+  // Deterministic, so the shipping looks the same on every visit. Seeded off
+  // a fixed number rather than Math.random for the same reason the world is.
+  let seed = 90210
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647
+    return (seed - 1) / 2147483646
+  }
+
+  // Berths already promised to a ship. makeShips used to pick freely, which
+  // put a container ship and a fishing boat in the same twelve metres of
+  // water on the very first frame - and because it happened at start-up
+  // rather than during a voyage, no amount of care in nextVoyage() fixed it.
+  const claimed = new Set()
+
+  const spawn = (kind, atSea) => {
+    const home = kind === 'cargo' ? bigBerths : anyBerths
+    if (!home.length) return
+
+    const free = home.filter((b) => !claimed.has(b))
+
+    // Some of the fleet starts out at sea, so the harbours aren't all full
+    // and motionless the moment the world loads.
+    const start = (atSea || !free.length)
+      ? offworld[Math.floor(rand() * offworld.length)]
+      : free[Math.floor(rand() * free.length)]
+
+    if (graph.nodes[start].kind === 'berth') claimed.add(start)
+
+    const berth = start
+    const ship = {
+      kind,
+      speed: kind === 'cargo' ? SHIP_SPEED_CARGO : SHIP_SPEED_BOAT,
+      dwellFor: kind === 'cargo' ? SHIP_DWELL_CARGO : SHIP_DWELL_BOAT,
+      berthOptions: home,
+      offworld,
+      at: berth,
+      voyage: null,
+      distance: 0,
+      // Staggered, so the whole fleet doesn't sail on the same tick. A ship
+      // that starts at sea gets going straight away.
+      dwell: graph.nodes[start].kind === 'berth'
+        ? rand() * (kind === 'cargo' ? SHIP_DWELL_CARGO : SHIP_DWELL_BOAT) * 2
+        : 0,
+      speedNow: 0,
+      voyages: 0,
+      rand
+    }
+    ships.push(ship)
+  }
+
+  // Every third one starts out at sea and sails in
+  for (let i = 0; i < cargo; i++) spawn('cargo', i % 3 === 2)
+  for (let i = 0; i < boats; i++) spawn('boat', i % 3 === 2)
+
+  return ships
+}
+
+/**
+ * Choose where a ship goes next.
+ *
+ * From a berth it either runs to another berth or heads off the edge of the
+ * world. From off-world it always comes back to a berth - which is what
+ * makes departures and arrivals balance without anything counting them.
+ */
+export function nextVoyage(graph, ship, fleet = []) {
+  const here = graph.nodes[ship.at]
+  const pick = (list) => list[Math.floor(ship.rand() * list.length)]
+
+  // A berth another ship is in, or on its way to. Without this two hulls
+  // end up occupying the same twelve metres of water, which at a two-berth
+  // port with three cargo ships happens within the first minute.
+  const taken = new Set(fleet.filter(o => o !== ship).map(o => o.at))
+  const free = ship.berthOptions.filter(b => !taken.has(b))
+
+  let target
+
+  if (here.kind === 'offworld') {
+    target = free.length ? pick(free) : pick(ship.offworld)
+  } else if (ship.rand() < OFF_WORLD_CHANCE) {
+    target = pick(ship.offworld)
+  } else {
+    // Somewhere that isn't here. With one berth of its kind in the world a
+    // cargo ship would otherwise sail to the berth it's already in.
+    const elsewhere = free.filter((b) => graph.nodes[b].port !== here.port)
+    target = elsewhere.length ? pick(elsewhere) : pick(ship.offworld)
+  }
+
+  const voyage = seaVoyage(graph, ship.at, target)
+  if (!voyage) return null
+
+  ship.voyage = voyage
+  ship.distance = 0
+  ship.at = target
+  ship.voyages++
+  return voyage
+}
+
+/**
+ * Move one ship.
+ *
+ * Ships ease off for a berth in the same way the trains do, and for the same
+ * reason: a hull that arrives at full speed and stops dead looks like a bug
+ * even when the timing is right. They don't slow for an off-world waypoint -
+ * they're leaving, and by then they're far out in the fog.
+ */
+export function stepShip(graph, ship, delta, fleet = []) {
+  if (ship.dwell > 0) {
+    ship.dwell -= delta
+    ship.speedNow = 0
+    return ship
+  }
+
+  if (!ship.voyage) {
+    if (!nextVoyage(graph, ship, fleet)) { ship.dwell = 5; return ship }
+  }
+
+  const remaining = ship.voyage.length - ship.distance
+  const arriving = graph.nodes[ship.voyage.to].kind === 'berth'
+
+  ship.speedNow = arriving
+    ? ship.speed * Math.min(1, Math.max(0.08, remaining / SHIP_BRAKING))
+    : ship.speed
+
+  ship.distance += ship.speedNow * delta
+
+  if (ship.distance >= ship.voyage.length - 0.05) {
+    ship.distance = ship.voyage.length
+
+    if (arriving) {
+      // Alongside. Wait, then sail again.
+      ship.dwell = ship.dwellFor
+      ship.speedNow = 0
+      ship.voyage = null
+    } else {
+      // Gone. The hull is reused for an arrival from somewhere else, which
+      // nobody can see happen: off-world nodes are 780 units out and the fog
+      // is opaque well before that.
+      ship.at = ship.offworld[Math.floor(ship.rand() * ship.offworld.length)]
+      ship.voyage = null
+      ship.distance = 0
+      nextVoyage(graph, ship, fleet)
+    }
+  }
+
+  return ship
+}
+
+/**
+ * Move the whole fleet.
+ *
+ * Together, not one at a time, because choosing a berth means knowing which
+ * berths the others have taken.
+ */
+export function stepShips(graph, ships, delta) {
+  for (const ship of ships) stepShip(graph, ship, delta, ships)
+  return ships
+}
+
+/** Where a ship is now, and which way it's pointing. */
+export function shipPosition(graph, ship) {
+  if (!ship.voyage) {
+    const node = graph.nodes[ship.at]
+    return { x: node.x, z: node.z, heading: node.heading || 0, docked: true }
+  }
+
+  const at = pointAlong(ship.voyage, ship.distance)
+  return { ...at, docked: ship.dwell > 0 }
+}
+
+// ---------------------------------------------------------------------------
+// The monorail
+// ---------------------------------------------------------------------------
+
+/**
+ * Which islands the line calls at, in the order it visits them.
+ *
+ * Worked out from where the islands actually are, not written down, for the
+ * usual reason: an order in the data goes stale the moment you drag an
+ * island in the editor, and a stale order shows up as a line that crosses
+ * itself. Set `monorail: false` on an island to be skipped.
+ *
+ * Bearings alone aren't enough. Sorting the islands by their angle around
+ * the middle gives a clean loop for anything arranged in a ring - but the
+ * hub sits AT the middle, where a bearing means nothing, and sorting it
+ * with the rest put it in an arbitrary place in the running order.
+ *
+ * So the ring is built from the outer islands by bearing, and each inner
+ * island is then dropped into whichever leg it lengthens least. On this map
+ * that threads the hub between contact and about, which is the shortest way
+ * to serve a central interchange.
+ */
+export function getMonorailStops() {
+  const stops = ISLANDS.filter((i) => i.monorail !== false)
+  if (stops.length < 3) return []
+
+  const cx = stops.reduce((s, i) => s + i.x, 0) / stops.length
+  const cz = stops.reduce((s, i) => s + i.z, 0) / stops.length
+  const out = stops.map((i) => Math.hypot(i.x - cx, i.z - cz))
+  const mean = out.reduce((s, d) => s + d, 0) / out.length
+
+  const bearing = (i) => Math.atan2(i.x - cx, i.z - cz)
+  const ring = []
+  const middle = []
+
+  stops.forEach((island, k) => {
+    ;(out[k] > mean * MONORAIL_INNER_FRACTION ? ring : middle).push(island)
+  })
+
+  // Not enough on the outside to make a ring: fall back to plain bearings,
+  // which is at least deterministic.
+  if (ring.length < 3) return stops.slice().sort((a, b) => bearing(a) - bearing(b))
+
+  ring.sort((a, b) => bearing(a) - bearing(b))
+
+  // Sorted by id so the running order doesn't depend on the file's order
+  middle.sort((a, b) => (a.id < b.id ? -1 : 1))
+
+  const tour = ring.slice()
+  for (const island of middle) {
+    let bestAt = 0
+    let bestCost = Infinity
+
+    for (let i = 0; i < tour.length; i++) {
+      const a = tour[i]
+      const b = tour[(i + 1) % tour.length]
+      const cost = Math.hypot(island.x - a.x, island.z - a.z)
+                 + Math.hypot(b.x - island.x, b.z - island.z)
+                 - Math.hypot(b.x - a.x, b.z - a.z)
+      if (cost < bestCost) { bestCost = cost; bestAt = i + 1 }
+    }
+    tour.splice(bestAt, 0, island)
+  }
+
+  return tour
+}
+
+/**
+ * Everything about one corner of a closed polygon: the two leg directions,
+ * how much of each leg the curve eats, the radius it settles on, and the
+ * bisector it curves towards.
+ *
+ * Shared, because two things need exactly the same arithmetic - the code
+ * that draws the arc, and the code that works out where to put the
+ * polygon's corners so the arcs come out over the islands. When those two
+ * disagree, the line and the stations part company.
+ *
+ * Returns null for a corner too straight or too degenerate to curve.
+ */
+function cornerGeometry(pts, i, radius) {
+  const n = pts.length
+  const prev = pts[(i - 1 + n) % n]
+  const cur = pts[i]
+  const next = pts[(i + 1) % n]
+
+  const la = Math.hypot(prev.x - cur.x, prev.z - cur.z)
+  const lb = Math.hypot(next.x - cur.x, next.z - cur.z)
+  if (la < 1e-6 || lb < 1e-6) return null
+
+  // Unit vectors from the corner back along each leg
+  const ax = (prev.x - cur.x) / la, az = (prev.z - cur.z) / la
+  const bx = (next.x - cur.x) / lb, bz = (next.z - cur.z) / lb
+
+  const theta = Math.acos(Math.max(-1, Math.min(1, ax * bx + az * bz)))
+  if (Math.PI - theta < (MONORAIL_MIN_TURN * Math.PI) / 180) return null
+
+  const half = theta / 2
+  const tan = Math.tan(half)
+  const sin = Math.sin(half)
+  if (tan < 1e-6 || sin < 1e-6) return null
+
+  // How far back along each leg the curve starts, and how big it can be.
+  // A short leg gives a smaller curve rather than one that overruns into
+  // the next corner.
+  let along = radius / tan
+  let r = radius
+  const room = MONORAIL_MAX_CURVE_SHARE * Math.min(la, lb)
+  if (along > room) { along = room; r = along * tan }
+
+  const bisLen = Math.hypot(ax + bx, az + bz)
+  if (bisLen < 1e-6) return null
+
+  return {
+    ax, az, bx, bz, r, along, sin,
+    bisX: (ax + bx) / bisLen,
+    bisZ: (az + bz) / bisLen,
+    // How far the middle of the arc ends up from the corner itself. This is
+    // the number that decides whether a station lands on its island.
+    offset: r * (1 / sin - 1)
+  }
+}
+
+/**
+ * Where to put the polygon's corners so that the ARCS land on the islands.
+ *
+ * A curve of radius R turning through an angle passes the corner at a
+ * distance of R x (1/sin(half the angle) - 1) on the inside. On the
+ * sharpest corner here that's 44 units, which put the `about` platform 3
+ * units from the water - the station was on the beach, and its stairs would
+ * have come down in the sea.
+ *
+ * So the corner is aimed OUTWARD by that distance, and the curve comes back
+ * to the island centre. The corner itself may end up offshore; nobody sees
+ * it, because only the arc is built.
+ *
+ * The offset depends on the angle, which depends on where the corners are,
+ * so this settles in by iteration. It converges quickly - the corners move
+ * tens of units on the first pass and fractions by the fourth.
+ */
+function aimCurvesAtCentres(stops, radius, passes = 5) {
+  const n = stops.length
+  let controls = stops.map((i) => ({ x: i.x, z: i.z }))
+
+  for (let pass = 0; pass < passes; pass++) {
+    const next = []
+    for (let i = 0; i < n; i++) {
+      const c = cornerGeometry(controls, i, radius)
+      next.push(c
+        ? { x: stops[i].x - c.bisX * c.offset, z: stops[i].z - c.bisZ * c.offset }
+        : { x: stops[i].x, z: stops[i].z })
+    }
+    controls = next
+  }
+
+  return controls
+}
+
+/**
+ * Round the corners of a closed polygon with arcs of a given radius.
+ *
+ * Straight runs joined by circular curves - the way a railway is set out on
+ * paper, and the reason it works here is that the radius is something you
+ * state rather than something that falls out of a smoothing pass.
+ *
+ * Each corner is replaced by an arc tangent to both legs. Where a leg is
+ * too short to give the curve room, that corner gets a smaller radius
+ * rather than overrunning into the next one.
+ *
+ * Takes and returns points with no repeated closing point.
+ */
+export function filletCorners(pts, radius) {
+  const n = pts.length
+  if (n < 3) return pts.map((p) => ({ ...p }))
+
+  const out = []
+
+  for (let i = 0; i < n; i++) {
+    const cur = pts[i]
+    const c = cornerGeometry(pts, i, radius)
+    if (!c) { out.push({ ...cur }); continue }
+
+    const { ax, az, bx, bz, along, r, sin, bisX, bisZ } = c
+
+    const start = { x: cur.x + ax * along, z: cur.z + az * along }
+    const end = { x: cur.x + bx * along, z: cur.z + bz * along }
+
+    // The centre sits along the bisector, on the inside of the turn -
+    // which is the right side whether the corner is convex or concave.
+    const cxx = cur.x + bisX * (r / sin)
+    const czz = cur.z + bisZ * (r / sin)
+
+    let a0 = Math.atan2(start.z - czz, start.x - cxx)
+    let a1 = Math.atan2(end.z - czz, end.x - cxx)
+
+    // The short way round. The long way would send the line off round the
+    // far side of the circle and back.
+    let sweep = a1 - a0
+    while (sweep > Math.PI) sweep -= Math.PI * 2
+    while (sweep < -Math.PI) sweep += Math.PI * 2
+
+    const steps = Math.max(4, Math.ceil(Math.abs(sweep) * r / 3))
+    for (let s = 0; s <= steps; s++) {
+      const a = a0 + (sweep * s) / steps
+      out.push({ x: cxx + Math.cos(a) * r, z: czz + Math.sin(a) * r })
+    }
+  }
+
+  out.push({ ...out[0] })
+  return out
+}
+
+/**
+ * The guideway: one closed loop through every station, in WORLD
+ * coordinates (unlike roads, which are island-local - the line spends most
+ * of its length out over the water, belonging to no island).
+ *
+ * Straight spans between the islands, with a curve of a stated radius at
+ * each one - see MONORAIL_CURVE_RADIUS for the two constructions that were
+ * tried first and why neither survived being measured.
+ *
+ * A station therefore sits on the curve rather than at the island's dead
+ * centre. That's a consequence of the geometry, not a choice: a line can't
+ * pass through a point and turn 120 degrees around it at the same time.
+ *
+ * Returns null if there aren't enough islands to make a loop.
+ *
+ *   points     world-space polyline, evenly spaced, last === first
+ *   cumulative distance along the loop at each point
+ *   length     the whole loop
+ *   stations   { island, x, z, heading, at } - `at` is distance along
+ */
+export function getMonorailRoute() {
+  const stops = getMonorailStops()
+  if (stops.length < 3) return null
+
+  const curve = filletCorners(
+    aimCurvesAtCentres(stops, MONORAIL_CURVE_RADIUS), MONORAIL_CURVE_RADIUS)
+
+  // Evenly spaced, because everything downstream measures along the line:
+  // where the piers stand, where the trains are, how far to the next
+  // station.
+  //
+  // The spacing is stretched so it divides the loop a whole number of
+  // times. Resampling at a fixed step leaves whatever is left over as one
+  // short final segment - which on this loop was 0.45 units against 3.4,
+  // and which shows in the beam as a facet at the seam.
+  const total = pathLength(curve)
+  const steps = Math.max(8, Math.round(total / MONORAIL_POINT_SPACING))
+  const points = resamplePath(curve, total / steps)
+
+  // Close it exactly. Even with the spacing made to fit, rounding leaves
+  // the walk a hair short of the start, and a hair is a hole in the beam.
+  const first = points[0]
+  const last = points[points.length - 1]
+  if (Math.hypot(last.x - first.x, last.z - first.z) < (total / steps) * 0.5) {
+    points[points.length - 1] = { x: first.x, z: first.z }
+  } else {
+    points.push({ x: first.x, z: first.z })
+  }
+
+  const { cumulative, length } = measurePath(points)
+
+  const stations = stops.map((island) => {
+    // Where the loop passes closest to the island's middle. That's the
+    // middle of the curve at that island, but it is found by measuring the
+    // finished beam rather than worked out from the arc, so the platform
+    // cannot end up anywhere the beam isn't.
+    let bestAt = 0
+    let bestDist = Infinity
+    for (let i = 0; i < points.length; i++) {
+      const d = Math.hypot(points[i].x - island.x, points[i].z - island.z)
+      if (d < bestDist) { bestDist = d; bestAt = i }
+    }
+
+    const prev = points[(bestAt - 1 + points.length) % points.length]
+    const next = points[(bestAt + 1) % points.length]
+
+    return {
+      island,
+      id: island.id,
+      name: island.name || island.id,
+      accent: island.accent,
+      x: points[bestAt].x,
+      z: points[bestAt].z,
+      // Which way the beam runs here, so the platform lies along it
+      heading: Math.atan2(next.x - prev.x, next.z - prev.z),
+      at: cumulative[bestAt],
+      offCentre: bestDist
+    }
+  })
+
+  // In the order the line meets them, which is what a train needs
+  stations.sort((a, b) => a.at - b.at)
+
+  return { points, cumulative, length, stations }
+}
+
+/**
+ * Where the piers stand, and what each one is standing on.
+ *
+ * Evenly spaced along the loop, skipping the stretch under each station -
+ * a station carries its own, heavier, supports and a column in the middle
+ * of the platform would be in the way.
+ *
+ * `island` is the island a pier comes down on, or null if it's standing in
+ * the sea. World.js needs to know: a pier on land wants a collider and has
+ * to keep clear of the roads, and one in the water wants neither.
+ */
+export function getMonorailPiers(route = getMonorailRoute()) {
+  if (!route) return []
+
+  const piers = []
+  const stationClear = MONORAIL_PIER_SPACING * 0.75
+
+  for (let d = 0; d < route.length - 1; d += MONORAIL_PIER_SPACING) {
+    // Not under a platform
+    const nearStation = route.stations.some((s) => {
+      const gap = Math.abs(s.at - d)
+      return Math.min(gap, route.length - gap) < stationClear
+    })
+    if (nearStation) continue
+
+    // A column standing in the middle of a street is the one thing here
+    // that would look like a mistake rather than a design, so a pier that
+    // lands on a road slides along the beam until it finds room. The beam
+    // doesn't move; only which point of it the pier holds up.
+    const found = bestPierSpot(route, d, 16)
+
+    // Where the beam runs along a road rather than across one, no amount of
+    // sliding helps: every point for the length of the block is over
+    // tarmac. The pier is left out here and the gap filled below.
+    if (found.road < MONORAIL_PIER_MIN_CLEARANCE ||
+        found.deck < MONORAIL_PIER_MIN_CLEARANCE) continue
+
+    piers.push(found)
+  }
+
+  // Now fill any span that ended up far longer than intended, because the
+  // beam has to look supported. A gap containing a station is left alone -
+  // the platform carries its own, heavier columns.
+  //
+  // These fills accept a column near a kerb, which the pass above would
+  // have rejected. What they will not accept is one through a bridge deck:
+  // that's a hole in a road you drive over, and no span length is worth it.
+  const stationClear2 = stationClear
+  const limit = MONORAIL_PIER_SPACING * 2.2
+
+  piers.sort((a, b) => a.at - b.at)
+
+  for (let i = 0; i < piers.length; i++) {
+    const from = piers[i].at
+    const to = i === piers.length - 1 ? piers[0].at + route.length : piers[i + 1].at
+    if (to - from <= limit) continue
+
+    const middle = (from + to) / 2
+    const hasStation = route.stations.some((s) => {
+      const gap = Math.abs(s.at - middle)
+      return Math.min(gap, route.length - gap) < stationClear2 + MONORAIL_PIER_SPACING
+    })
+    if (hasStation) continue
+
+    const fill = bestPierSpot(route, middle, (to - from) / 4)
+    if (fill.deck < MONORAIL_PIER_MIN_CLEARANCE) continue
+
+    piers.push(fill)
+    piers.sort((a, b) => a.at - b.at)
+    i = -1   // spans changed; start again
+  }
+
+  return piers
+}
+
+/**
+ * The roomiest point on the beam within `reach` of a given distance along it.
+ *
+ * Stops as soon as it finds somewhere comfortable rather than searching the
+ * whole window, because the nearest acceptable spot keeps the piers evenly
+ * spaced and the search cheap.
+ */
+function bestPierSpot(route, at, reach) {
+  // `sideways` moves the COLUMN off the beam's centre line, with a cross-arm
+  // reaching back up to it. That's how an elevated line crosses a road
+  // bridge in reality: the columns stand either side of it, not on it. It's
+  // the only option on the hub-to-contact crossing, where a hundred units of
+  // beam runs directly over the bridge and its approach roads.
+  const make = (d, sideways = 0) => {
+    const beam = monorailPointAt(route, d)
+    const acrossX = -Math.cos(beam.heading)
+    const acrossZ = Math.sin(beam.heading)
+    const x = beam.x + acrossX * sideways
+    const z = beam.z + acrossZ * sideways
+
+    const island = islandAt(x, z)
+    const clear = pierClearances(x, z, island)
+
+    return {
+      x, z, at: d, island, heading: beam.heading,
+      // Where the cross-arm has to reach
+      beamX: beam.x, beamZ: beam.z, offset: sideways,
+      road: clear.road, deck: clear.deck,
+      clearance: Math.min(clear.road, clear.deck)
+    }
+  }
+
+  let best = make(at)
+  if (best.clearance >= MONORAIL_ROAD_CLEARANCE) return best
+
+  // Along the beam first: a column directly under it is always tidier than
+  // one on an arm, so the sideways options are only tried once sliding has
+  // failed to find anywhere comfortable.
+  for (let step = 2; step <= reach; step += 2) {
+    for (const shift of [step, -step]) {
+      const candidate = make(at + shift)
+      if (candidate.clearance > best.clearance) best = candidate
+    }
+    if (best.clearance >= MONORAIL_ROAD_CLEARANCE) break
+  }
+
+  if (best.clearance >= MONORAIL_ROAD_CLEARANCE) return best
+
+  for (const sideways of [8, -8, 11, -11, 14, -14]) {
+    const candidate = make(at, sideways)
+    if (candidate.clearance > best.clearance) best = candidate
+    if (best.clearance >= MONORAIL_ROAD_CLEARANCE) break
+  }
+
+  return best
+}
+
+/**
+ * How much room a pier has at a point: the distance to the nearest thing
+ * you could be driving on.
+ *
+ * Roads on the island it stands on, AND the bridges, AND the roads across
+ * them. The bridges are the part that was missed: a pier out over water used
+ * to be given a free pass, on the reasoning that there are no roads at sea -
+ * except that a bridge is a road at sea, and the beam crosses several of
+ * them. Columns came down through the deck.
+ */
+export function pierClearance(worldX, worldZ, island = islandAt(worldX, worldZ)) {
+  return Math.min(...Object.values(pierClearances(worldX, worldZ, island)))
+}
+
+/**
+ * The same measurement, kept apart.
+ *
+ * `deck` is absolute: a column through a bridge deck is a hole in the road
+ * you drive over, and no span length justifies it. `road` is a preference -
+ * a column near a kerb is untidy, and much better than leaving a hundred
+ * units of beam with nothing under it.
+ */
+export function pierClearances(worldX, worldZ, island = islandAt(worldX, worldZ)) {
+  let road = Infinity
+  let deck = Infinity
+
+  if (island) {
+    road = distanceToNearestRoad(
+      getIslandRoads(island), worldX - island.x, worldZ - island.z)
+  }
+
+  // The decks. Measured against the rectangle, not the centre line, because
+  // a bridge is 8.5 wide and a pier beside the middle of it is still on it.
+  for (const bridge of getBridges()) {
+    const dx = worldX - bridge.x
+    const dz = worldZ - bridge.z
+    const cos = Math.cos(bridge.rotationY)
+    const sin = Math.sin(bridge.rotationY)
+
+    // Into the bridge's own frame: along the deck, and across it
+    const along = Math.abs(dz * cos + dx * sin)
+    const across = Math.abs(dx * cos - dz * sin)
+
+    // Past either end of the deck, the distance is to the end itself
+    const overhang = Math.max(0, along - bridge.length / 2)
+    const sideways = Math.max(0, across - bridge.width / 2)
+    deck = Math.min(deck, Math.hypot(overhang, sideways))
+  }
+
+  // And the continuous roads that run across them, which reach a little
+  // further inland than the deck does
+  for (const path of getBridgeRoadPaths()) {
+    deck = Math.min(deck,
+      distanceToPath(path.points, worldX, worldZ) - path.width / 2)
+  }
+
+  return { road, deck }
+}
+
+/**
+ * Where each station's stair tower comes down.
+ *
+ * The platform is 16 units up, so there has to be something joining it to
+ * the pavement. It goes beside the platform rather than under it, and it
+ * has to miss the roads - and the fountain, on the hub, where the station
+ * lands squarely on the plaza.
+ *
+ * Every candidate is scored and the best wins, rather than the first
+ * acceptable one, because on a dense island none of them is clear and
+ * "least bad" is a better answer than "the first one I tried".
+ */
+export function getMonorailStationTowers(route = getMonorailRoute()) {
+  if (!route) return []
+
+  return route.stations.map((station) => {
+    const island = station.island
+    const roads = getIslandRoads(island)
+
+    const fx = Math.sin(station.heading)
+    const fz = Math.cos(station.heading)
+    const sx = -fz
+    const sz = fx
+
+    let best = null
+
+    for (const side of [1, -1]) {
+      for (const along of [0, 6, -6, 11, -11]) {
+        const x = station.x + fx * along + sx * MONORAIL_TOWER_OFFSET * side
+        const z = station.z + fz * along + sz * MONORAIL_TOWER_OFFSET * side
+
+        // On this island at all? A tower on the beach is worse than one
+        // squeezed between two streets.
+        const inland = inlandDistance(island, x - island.x, z - island.z)
+        if (inland < 4) continue
+
+        let score = Math.min(roadClearance(island, roads, x, z), 12)
+
+        // Room for the fountain, wherever the plaza put it
+        for (const d of island.districts || []) {
+          if (d.type !== 'plaza') continue
+          const fxx = island.x + (d.x || 0)
+          const fzz = island.z + (d.z || 0) + PLAZA_FOUNTAIN_OFFSET
+          const gap = Math.hypot(x - fxx, z - fzz) - PLAZA_FOUNTAIN_RADIUS
+          if (gap < 3) score -= (3 - gap) * 4
+        }
+
+        if (!best || score > best.score) {
+          best = { station, island, x, z, heading: station.heading, side, along, score }
+        }
+      }
+    }
+
+    // Nowhere on the island passed the inland test - put it beside the
+    // platform and let it be seen, rather than dropping it and leaving a
+    // station nobody could reach.
+    return best || {
+      station, island, heading: station.heading, side: 1, along: 0, score: -Infinity,
+      x: station.x + sx * MONORAIL_TOWER_OFFSET,
+      z: station.z + sz * MONORAIL_TOWER_OFFSET
+    }
+  })
+}
+
+/**
+ * How tall something at this point is allowed to be, in world units.
+ *
+ * Infinity everywhere except in the strip under the beam, where it's the
+ * beam's underside less the clearance - about 8 units.
+ *
+ * This is the answer to "make the line lower without it cutting through
+ * anything". The line can't dodge the buildings, because the buildings
+ * aren't there yet when the route is worked out: the towns are generated
+ * afterwards, from the island's shape. What CAN happen is what happens under
+ * a real elevated railway - the buildings beneath it are low ones.
+ *
+ * So this is consulted by everything that puts something on the ground, and
+ * it decides how much room there is. Which also means the rule is stated
+ * once, here, rather than as a height check copied into six prop functions
+ * that would drift apart.
+ */
+export function monorailCeiling(route, x, z) {
+  if (!route) return Infinity
+
+  // Cheap reject first. The loop is 500-odd points and this is asked for
+  // every building, tree and bench in the world.
+  const near = distanceToPath(route.points, x, z)
+  if (near > MONORAIL_CORRIDOR) return Infinity
+
+  return MONORAIL_HEIGHT - MONORAIL_BEAM_DEPTH - MONORAIL_CLEARANCE
+}
+
+/**
+ * How many floors will fit at this point.
+ *
+ * Buildings are the main thing the corridor has to shorten, and they're
+ * built in whole storeys, so the rounding belongs here rather than in the
+ * renderer - and the test can then check the answer for every plot in the
+ * world without needing a browser.
+ *
+ * Returns 0 if not even one floor fits, which means don't build.
+ */
+export function monorailFloors(route, x, z, floors, floorHeight = 2.5, roof = 0.5) {
+  const ceiling = monorailCeiling(route, x, z)
+  if (ceiling === Infinity) return floors
+
+  const fit = Math.floor((ceiling - roof) / floorHeight)
+  return Math.max(0, Math.min(floors, fit))
+}
+
+/** Which island a world-space point is standing on, or null for open water. */
+export function islandAt(x, z) {
+  for (const island of ISLANDS) {
+    if (inlandDistance(island, x - island.x, z - island.z) > 0) return island
+  }
+  return null
+}
+
+/**
+ * Wrap a polyline up with its cumulative distances, so it can be walked at
+ * a constant speed.
+ *
+ * Shared by the monorail and the shipping lanes. They're the same problem -
+ * something moving along a fixed line at a known rate - and having one
+ * implementation means a fix to the awkward end cases benefits both.
+ */
+export function measurePath(points) {
+  const cumulative = [0]
+  for (let i = 1; i < points.length; i++) {
+    cumulative.push(cumulative[i - 1] +
+      Math.hypot(points[i].x - points[i - 1].x, points[i].z - points[i - 1].z))
+  }
+  return { points, cumulative, length: cumulative[cumulative.length - 1] }
+}
+
+/**
+ * A point some distance along a measured path, with the direction of travel.
+ *
+ * `wrap` for a loop, where a train can keep counting up forever and never
+ * needs to know it has been round. Without it the distance is clamped, so a
+ * ship that overruns its voyage sits at the end rather than flying off.
+ */
+export function pointAlong(path, distance, wrap = false) {
+  const { points, cumulative, length } = path
+  if (points.length < 2) return { x: points[0].x, z: points[0].z, heading: 0 }
+
+  let d = distance
+  if (wrap) {
+    d %= length
+    if (d < 0) d += length
+  } else {
+    d = Math.max(0, Math.min(length, d))
+  }
+
+  // Walk to the span containing d. Start from an estimate rather than from
+  // zero: this is asked for several times a frame, per vehicle.
+  let i = Math.min(points.length - 2,
+    Math.max(0, Math.floor((d / Math.max(length, 1e-9)) * (points.length - 1))))
+  while (i > 0 && cumulative[i] > d) i--
+  while (i < points.length - 2 && cumulative[i + 1] < d) i++
+
+  const a = points[i]
+  const b = points[i + 1]
+  const span = cumulative[i + 1] - cumulative[i]
+  const t = span > 1e-9 ? (d - cumulative[i]) / span : 0
+
+  return {
+    x: a.x + (b.x - a.x) * t,
+    z: a.z + (b.z - a.z) * t,
+    heading: Math.atan2(b.x - a.x, b.z - a.z)
+  }
+}
+
+/** The monorail loop is a measured path that wraps. */
+export function monorailPointAt(route, distance) {
+  return pointAlong(route, distance, true)
+}
+
+/**
+ * The trains, ready to run, spread evenly around the loop.
+ *
+ * Each one starts AT a station rather than at an arbitrary fraction of the
+ * way round, so no train spends its first seconds braking for a stop it has
+ * already half passed.
+ *
+ * A train is just a distance along the line and a countdown. Nothing here
+ * knows what one looks like - World.js hangs the meshes off these and reads
+ * the distance back every frame.
+ */
+export function makeMonorailTrains(route, count = MONORAIL_TRAINS) {
+  if (!route || !route.stations.length) return []
+
+  const trains = []
+  const stride = Math.max(1, Math.floor(route.stations.length / count))
+
+  for (let i = 0; i < count; i++) {
+    const station = route.stations[(i * stride) % route.stations.length]
+    trains.push({
+      distance: station.at,
+      // Staggered, so they don't all pull out of their platforms together
+      dwell: MONORAIL_DWELL * (i / count),
+      speed: 0,
+      stops: 0
+    })
+  }
+
+  return trains
+}
+
+/**
+ * Advance one train by `delta` seconds.
+ *
+ * Speed comes from where the train IS, not from a timer: how far to the
+ * next platform, how far since the last one, and how close the train ahead
+ * is. That's what stops a train creeping past its station and halting in
+ * mid air, which is exactly what a timed approach does the first time the
+ * frame rate dips.
+ *
+ * `gapAhead` is the distance to the back of the train in front, or
+ * Infinity if there isn't one worth worrying about.
+ *
+ * Mutates the train and returns it.
+ */
+export function stepMonorailTrain(route, train, delta, gapAhead = Infinity) {
+  if (!route || !route.stations.length) return train
+
+  if (train.dwell > 0) {
+    train.dwell -= delta
+    train.speed = 0
+    return train
+  }
+
+  let ahead = Infinity
+  let behind = Infinity
+
+  for (const station of route.stations) {
+    // The station the train is STANDING AT is a lap away, not nought away.
+    //
+    // Without the epsilon a train that has just finished its dwell reads the
+    // platform it is on as zero distance ahead, stops for it again, and does
+    // that forever: the trains never left their first station and the line
+    // sat there looking like scenery.
+    let gap = station.at - train.distance
+    while (gap <= 1e-3) gap += route.length
+    while (gap > route.length) gap -= route.length
+    if (gap < ahead) ahead = gap
+
+    let back = train.distance - station.at
+    while (back < 0) back += route.length
+    while (back >= route.length) back -= route.length
+    if (back < behind) behind = back
+  }
+
+  const slowing = Math.min(1, Math.max(0.06, ahead / MONORAIL_BRAKING))
+  const leaving = Math.min(1, Math.max(0.12, behind / MONORAIL_PULLAWAY))
+  const following = Math.min(1, Math.max(0, (gapAhead - MONORAIL_HEADWAY) / MONORAIL_HEADWAY))
+
+  train.speed = MONORAIL_SPEED * Math.min(slowing, leaving, following)
+
+  // Close enough that another step would overshoot the platform: stop ON it
+  if (ahead <= Math.max(train.speed * delta, 0.05)) {
+    train.distance += ahead
+    train.dwell = MONORAIL_DWELL
+    train.speed = 0
+    train.stops++
+  } else {
+    train.distance += train.speed * delta
+  }
+
+  while (train.distance >= route.length) train.distance -= route.length
+  return train
+}
+
+/**
+ * Move every train, working out each one's headway for it.
+ *
+ * The trains have to be dealt with together, because a train's speed
+ * depends on the one in front. Doing them one at a time from the outside
+ * meant every caller had to sort them first, and the renderer got it wrong.
+ */
+export function stepMonorailTrains(route, trains, delta) {
+  if (!route || !trains.length) return trains
+
+  // Length of a whole train, so the gap is measured to its BACK
+  const rake = MONORAIL_CARS * MONORAIL_CAR_LENGTH
+
+  for (const train of trains) {
+    let gapAhead = Infinity
+
+    for (const other of trains) {
+      if (other === train) continue
+      let gap = other.distance - rake - train.distance
+      while (gap < 0) gap += route.length
+      if (gap < gapAhead) gapAhead = gap
+    }
+
+    stepMonorailTrain(route, train, delta, gapAhead)
+  }
+
+  return trains
+}
+
 /**
  * The whole drivable network, in world coordinates.
  *
@@ -1084,7 +4889,12 @@ export function getRoadNetwork() {
       segments.push({
         points: road.points.map(p => ({ x: island.x + p.x, z: island.z + p.z })),
         island: island.id,
-        kind: road.ring ? 'ring' : 'road',
+        // Carried through because the traffic needs it: a lane sits a
+        // quarter of the road's width off the centre line, so a car on a
+        // 5.5-wide street and one on an 8.5-wide bridge are not the same
+        // distance from the middle.
+        width: road.width || DEFAULT_ROAD_WIDTH,
+        kind: road.ring ? 'ring' : road.spur ? 'spur' : 'road',
         closed: !!road.ring
       })
     }
@@ -1096,6 +4906,7 @@ export function getRoadNetwork() {
     segments.push({
       points: path.points,
       island: null,
+      width: path.width || DEFAULT_BRIDGE_WIDTH,
       kind: 'bridge',
       bridge: BRIDGES[i],
       closed: false
@@ -1190,7 +5001,7 @@ export function getTrafficSignals(island) {
   // told what to do. Leaving them out was why the hub had no lights at
   // all: its five junctions each saw only the ring, so only two arms.
   const roads = getIslandRoads(island)
-    .filter(r => r.street || r.ring || r.auto)
+    .filter(r => r.street || r.ring || r.auto || r.spur)
   if (!roads.length) return []
 
   // Cluster the raw junctions
@@ -1270,8 +5081,26 @@ export function getTrafficSignals(island) {
     }
 
     if (withPoles.length >= 3) {
+      // Two phases: arms roughly in line with the first one share a phase,
+      // everything else takes the other. That's what makes the crossing
+      // flows complementary rather than decorative.
+      //
+      // Assigned HERE rather than in the renderer, because the cars have to
+      // agree with the lamps about who has a green. When each worked it out
+      // for itself there was nothing keeping them in step.
+      const base = withPoles[0]
+      for (const arm of withPoles) {
+        arm.group = Math.abs(base.x * arm.x + base.z * arm.z) > 0.7 ? 0 : 1
+      }
+
       signals.push({
-        x: cluster.x, z: cluster.z, radius: cluster.radius, arms: withPoles
+        x: cluster.x, z: cluster.z, radius: cluster.radius, arms: withPoles,
+        // Where this junction is in its cycle, derived from where it is in
+        // the world. It used to come from the renderer's random number
+        // generator, which meant nothing outside the renderer could know it.
+        offset: (hashString(
+          `${island.id}:${Math.round(cluster.x)}:${Math.round(cluster.z)}`
+        ) % 1000) / 1000 * TRAFFIC_CYCLE
       })
     }
   }
@@ -1685,6 +5514,32 @@ export function validateLayout() {
       problems.push(
         `Bridge "${def.from}" - "${def.to}" has no length; the islands are touching`
       )
+    }
+  }
+
+  // Buildings you placed by hand that the monorail will shorten.
+  //
+  // Generated buildings get quietly capped, which is fine - nobody chose
+  // their height. One you positioned yourself is different: it will still
+  // be built, but lower than you asked for, and without being told you'd
+  // assume the file was being ignored.
+  const route = getMonorailRoute()
+  if (route) {
+    for (const island of ISLANDS) {
+      for (const building of island.buildings || []) {
+        const x = island.x + (building.x || 0)
+        const z = island.z + (building.z || 0)
+        const floors = building.floors || 3
+        const allowed = monorailFloors(route, x, z, floors)
+
+        if (allowed < floors) {
+          warnings.push(
+            `A building on "${island.id}" at (${x.toFixed(0)}, ${z.toFixed(0)}) sits ` +
+            `under the monorail, so it will be built ${allowed} floors ` +
+            `instead of ${floors}. Move it clear of the line to keep its height.`
+          )
+        }
+      }
     }
   }
 
