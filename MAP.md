@@ -1172,6 +1172,99 @@ stop in mid air, never exceed the line speed and never pile into each other.
 
 ---
 
+## The airport
+
+A platform on piles out at sea, with a runway, a taxiway, a terminal and four
+stands. Four aircraft use it: they arrive from off the edge of the world, land,
+taxi in, sit on stand with the airbridge on, push back, take off and leave
+again. Roughly the same life the ships have.
+
+**Nothing about it is in the map file.** The site is searched for, the way a
+port's bearing is - move an island and the airport moves. What it wants, in
+order:
+
+1. **Open water all round it**, measured against each island's real coastline
+   and tested at the platform's four CORNERS, not its centre.
+2. **Out of the bridge crossings.** The arrival at an island is the view every
+   visitor gets.
+3. **Inside the shipping lane**, so the ships keep their circuit. Measured
+   against where a ship actually goes - `innermostShippingLane()` - because the
+   waypoints sit on a circle but a ship sails the chord between two of them,
+   and a chord dips inside the arc.
+4. **Within reach of land**, or nothing could ever connect to it.
+
+**The runway lies tangentially** - across the line out from the middle of the
+world, not along it. Pointing it outward would push one threshold another
+hundred units out to sea and into the shipping lane.
+
+**And the terminal is on the SEAWARD side.** That axis points either straight at
+the islands or straight away from them, and it used to point at them - which put
+an eleven-metre wall between you and everything worth looking at. The runway is
+nearest you now, then the stands, then the terminal as a backdrop. This platform
+is only ever viewed from one side; there is no land on the other.
+
+### The numbers, and where they come from
+
+`AIRPORT_RUNWAY_LENGTH` is eight times `PLANE_LENGTH`. A runway is a multiple of
+the thing that uses it - the proportions are compressed the way every game
+compresses them, because a real airliner wants seventy times its own length of
+concrete and that would be twice the width of this world.
+
+The rest live in `islandLayout.js` as `AIRPORT_*` and `PLANE_*`. The flying is
+there too - `stepPlanes()` - not in `World.js`, for the same reason the train
+timetable and the traffic rules are: `World.js` needs a browser, so a test can
+only ever read it.
+
+### One aircraft on the runway at a time
+
+The whole of the separation rule, and the only thing that can block. Two places
+may hold, and they are the two where holding is free: at the holding point on
+the ground, and out at the approach fix, where an aircraft can be turned round
+and brought back in. **Nothing holds once it is on finals** - by then it is
+committed and there is nowhere to wait.
+
+That asymmetry is the same lesson the traffic learned the hard way: a rule that
+can stop something with nowhere to stop is a rule that produces a deadlock.
+Holding only the ground traffic left landings queueing behind a rollout, which
+measured as 980 frames of two aircraft on the runway in six minutes.
+
+**You cannot drive there yet.** There is no causeway; the airport is something
+you fly past. The site is deliberately kept within `AIRPORT_MAX_SPAN` of land so
+one can be built.
+
+---
+
+## Helicopters
+
+Ten pads: four on rooftops in the towns, and one on the ground on every island
+including the jungle ones - the point of those being somewhere to fly that is
+not a city. Three machines lift off vertically, cross at 46 units, and land on a
+different pad.
+
+**A pad is almost entirely a question of clearance.** A helicopter needs no
+runway, so the only thing that can stop it is something overhead, and there is
+exactly one such thing in this world: the monorail beam, 9.5 to 11 units up,
+running straight over the towns. `monorailCeiling()` says how tall anything may
+be at a point, and a pad must clear it by a **rotor's width** - not merely fit
+under it. A machine that can sit on a pad and never leave is worse than no pad,
+because it looks like it works.
+
+**The pad is sized off the roof, not off the helicopter.** A town plot is 9 by 8;
+the pad was 9, so every rooftop failed by one unit and the world had no rooftop
+pads at all while the function returned a perfectly healthy six. `HELIPAD_SIZE`
+comes off `DEFAULT_PLOT_DEPTH` now. The rotor is allowed to overhang the pad, as
+it does on real ones.
+
+A ground pad is tested as a **rectangle** against the roads, not as the circle
+round it - the same distinction that once placed no fire stations anywhere.
+
+Numbers in `islandLayout.js` as `HELI_*` and `HELIPAD_*`; the flying is
+`stepHelicopters()`, in the same file and for the same reason as everything else
+with a decision in it. `tests/helicopters.mjs` runs ten simulated minutes and
+counts landings, pads used and double-bookings.
+
+---
+
 ## What is *not* in this file
 
 | What | Where |
@@ -1183,3 +1276,5 @@ stop in mid air, never exceed the line speed and never pile into each other.
 | Driving feel | `src/world/Vehicle.js` → `this.params` |
 | Day length, weather | `src/systems/Environment.js` |
 | 3D model files | `public/models/` — see `MODELS.md` |
+| The airport and its aircraft | `src/world/islandLayout.js` → `AIRPORT_*`, `PLANE_*` |
+| Helipads and helicopters | `src/world/islandLayout.js` → `HELIPAD_*`, `HELI_*` |

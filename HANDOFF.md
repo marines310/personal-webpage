@@ -1051,6 +1051,214 @@ HTTP, and checks every asset the published site requests actually returns
     and the plugs disappear - and there are fewer traffic lights, which is what
     Mike wanted anyway.
 
+**Added 31 July - task 94 investigated, and it is not what item 30 says.**
+
+31. **The short lanes are real; fixing them is not the way to 94 vehicles.**
+    Measured, not argued. Everything below was run in a mirror of the working
+    tree; the simulation is deterministic, so these are exact comparisons.
+
+    **What the four pairs actually are.** Item 30 has them as "two opinions
+    about what a junction is". They are more specific than that:
+
+    | apart | island | what meets what | what it costs |
+    |---|---|---|---|
+    | 11.0 | projects | two town streets on the ring | the piece is below `LANE_MIN_LENGTH`, so **no lane is built at all** - the ring is severed there |
+    | 12.7 | projects | a street meeting the ring **12.7u from where the bridge lands** | 12.4 / 13.3-unit ring lanes |
+    | 12.7 | about | the same shape | 12.4 / 13.0-unit ring lanes |
+    | 18.7 | projects | two town roads, off the ring | an 18.7-unit lane |
+
+    **Merging the network nodes is the wrong fix**, three ways:
+
+    - A merged node moves off both junctions it replaces. Free for a road
+      passing through; not free for one that ENDS there, because its last
+      point does not move.
+    - Widening `LANE_JOIN_TOLERANCE` from 7 to 15 to cover that put a sideways
+      jump of up to **13.3 units into 19 of 211 turns** - against the 3.6-unit
+      jumps item 19 already had to ease in the renderer - and made the traffic
+      worse at every fleet size below 94.
+    - Declining unsafe merges by testing the JUNCTIONS is a proxy, and it
+      passed a merge that pulled the ring's cut eight units off a **bridge
+      landing**. The bridge lane arrived at a node with nothing leaving it:
+      you could drive onto the island and not off it. Reachability went from
+      every lane to 42 of 109. Nothing about the members' own positions showed
+      it. The bridge's last point did.
+
+    **And the headline: 94 vehicles is more than this world holds, whatever
+    the layout.** Six configurations, 113 to 202 lanes, 29 to 42 signals:
+
+    | fleet | build | slowest | median | relocations |
+    |---|---|---|---|---|
+    | 52, last-committed mix | untouched (**the control**) | 658 | 1105 | 6 - passes 43/43 |
+    | 58 | untouched | 508 | 882 | 11 |
+    | 73 | untouched | 236 | 861 | 18 |
+    | 94 | untouched | 97 | 704 | 37 |
+
+    The median never leaves 528-704 across all of them, against a 1000 target.
+
+    **Three corrections to item 30:**
+
+    - **"Scale the fleet by about 0.62" does not work.** At 58 the suite still
+      fails: median 882 against 1000, 11 relocations against 6.
+    - **The network saturates between 52 and 58**, and it is not the extra
+      metal: total vehicle length is 290 units at the passing 52 against 295
+      at the failing 58. There is no slack left.
+    - **The red-light violation at 94 is density, not geometry.** The
+      untouched build at 73 produces one too.
+    - Item 30's table does not reproduce. Like-for-like at 58 gives
+      508 / 882 / 11, not 507 / 1,169 / 18 - that row used a different mix.
+    - **Mike's ratios starve the stations.** Scaled to 52 they give 10 service
+      vehicles across 7 stations, where the fleet that passes has 28.
+
+32. **Denser towns: built, measured, and PARKED. Not in the repo.**
+    Mike asked for busier, more urbanised cities using more land. It is done
+    and it measures worse than what is committed, so it was not shipped. The
+    work is in the session mirror only; re-derive it or ask for the diff.
+
+    What it did: block size 34 -> 24; a `grid: true` flag on the hub (which had
+    no streets at all, and carries five bridges); streets that SLIDE along the
+    ring to clear a bridge landing rather than being deleted; a usefulness test
+    that drops streets which neither shorten a journey nor cross anything; and
+    lights only where a road meets an arterial. Streets 9 -> 20, lanes 113 -> 202.
+
+    **Why it is parked.** At 52 vehicles it scores median 1025 / slowest 78 /
+    25 relocations, against the committed build's 1105 / 658 / 6. The cause is
+    specific: **`stepTraffic()` assumes a lane is long enough to queue on.** On
+    a 24-unit block, five lanes cannot hold a bus behind their own stop line at
+    all and 51 are shorter than a bus plus its stopping distance. Until a
+    vehicle on a too-short lane commits and carries through - the way a bus
+    already does on the two 12-unit ring pieces - a denser grid costs more than
+    it gives.
+
+    Two things learned on the way, both from Mike looking at the map:
+
+    - **Only two of six islands had street grids.** `hub` was `plain` and
+      `contact` was `mixed`, so both were bare rings. That, not the block size,
+      was most of why the world read sparse.
+    - **A street that clips a corner of the ring is a bad junction and a useful
+      route.** Pruning them lifted the median (604 -> 687) and dropped the
+      slowest vehicle from 186 to 32. The fix is to remove the LIGHTS, not the
+      street.
+
+33. **The whole fleet was floating 1.4 units above the water.** Fixed 31 July,
+    from a screenshot of Mike's.
+
+    The hulls are modelled with their waterline at local y = 0 - the cargo
+    ship's boot topping, the dark band a real ship wears at the waterline,
+    straddles it from -0.75 to +0.35 - and they were being placed at world
+    y = 0 while the sea is drawn at `SEA_LEVEL` (-1.4).
+
+    **The interesting part is why nothing caught it.** `worldsanity.mjs`
+    section 8 exists to find things left at a fixed height and had an explicit
+    exception: `ship - afloat`. True, and it quietly meant nobody ever asked at
+    what height. `ports.mjs` sails the fleet for fifteen simulated minutes
+    across 124 checks and never once looks up. Same shape as the tunable in a
+    branch that never ran, and the pavement that shipped blank with 396 checks
+    green.
+
+    **When you exempt something from a rule, say what the rule IS for it.** The
+    guard now checks every hull is placed at `SEA_LEVEL`, verified by putting
+    the bug back and watching it fail.
+
+34. **The Ticker could run time backwards, and it whited out the world.**
+    Fixed 31 July.
+
+    `this.delta = Math.min((currentTime - this.lastTime) / 1000, 0.1)` capped
+    delta at the top and not at zero. It CAN go negative:
+    requestAnimationFrame hands you the timestamp of the start of the frame,
+    which is earlier than the `performance.now()` captured in `start()`.
+
+    A negative delta does not pause things, it runs them in reverse, and
+    anything decaying toward zero grows instead. The one that shows is
+    `flash = Math.max(0, flash - delta * 4.5)`, which climbs - and flash feeds
+    the fog. Measured in a headless browser: **flash 114 on a CLEAR morning
+    with no lightning anywhere, fog density 0.093 against the 0.0018 it is
+    meant to sit at.** Dense enough to white out anything past thirty units.
+    Three screenshots of the new airport came back as a white void before the
+    cause turned out to be this rather than the airport.
+
+    Clamped at both ends now. Flash also drives sky brightness and light
+    intensity, so a washed-out or oddly bright world after a tab switch was
+    probably always this.
+
+35. **The airport.** Done 31 July. A platform on piles out at sea, with a
+    runway, taxiway, terminal and four stands. Four aircraft land, roll out,
+    taxi in, board, push back, take off and depart off-world - and the hull is
+    re-used as an arrival from a different direction, exactly as the ships do.
+    15 simulated minutes: 22 arrivals, 21 departures, all four stands used,
+    zero runway conflicts. `tests/airport.mjs`, 23 checks.
+
+    **Nothing about it is in the map file.** The site is searched for: open
+    water measured against each island's real coastline, clear of the bridge
+    crossings, inside the shipping lane, within reach of land. Move an island
+    192 units and the airport re-sites itself 787 units away - the test
+    demonstrates that rather than asserting it.
+
+    Four mistakes, and every one is the tally on the previous page wearing a
+    new hat:
+
+    - **The site was scored against a FORMULA for the platform's size** while
+      the layout built a slightly different one. A corner came out 26 units off
+      CONTACT where 30 were asked for.
+    - **The site was not the platform's centre.** The runway is on one side and
+      the terminal on the other, so scoring the site scored the wrong point -
+      the slab hung 33 units off to one side.
+    - **The shipping lane was checked against the ring's RADIUS.** A ship sails
+      the chord between two waypoints and a chord dips inside the arc, ten
+      units here. `innermostShippingLane()` is the honest figure.
+    - **The terminal faced the islands**, so from every angle anyone will ever
+      see it, an eleven-metre wall stood in front of the runway and the
+      aircraft. Mike spotted it immediately. The runway is laid tangentially,
+      so that axis points either straight at the world or straight away from
+      it; it now points away. **No measurement I had written would ever have
+      failed on this** - the checks asked whether the pieces fit, never whether
+      you could see them.
+
+    Also: `pointAlong()` silently dropped `y`. Everything that had ever used it
+    was flat - ships on the sea, trains on a level beam, traffic on roads that
+    carry their own height per vertex - so an aircraft would have flown its
+    entire approach at sea level with the descent invisible. It carries height
+    now, which the elevated bridges (25) will want too.
+
+36. **Helicopters.** Done 31 July. Ten pads - four on rooftops across ABOUT and
+    EXPERIENCE, one on the ground per island - and three machines lifting off
+    vertically, crossing at 46 units and landing on a different pad. Ten
+    simulated minutes: 34 landings, all ten pads used, no pad double-booked.
+    `tests/helicopters.mjs`, 18 checks.
+
+    The whole problem is clearance, and one thing takes it away: the monorail
+    beam. `monorailCeiling()` states how tall anything may be at a point, and a
+    pad has to clear it by a rotor's width rather than merely fit under it - a
+    machine that can sit on a pad and never leave is worse than no pad.
+
+    - **The pad was sized off the HELICOPTER instead of the roof it sits on.**
+      A town plot is 9 by 8 and the pad was 9, so every rooftop failed by one
+      unit and the world had **zero rooftop pads** while `getHelipads()`
+      returned a healthy-looking six. Tied to `DEFAULT_PLOT_DEPTH` now, and the
+      test asks whether there are pads OF EACH KIND - "are there pads" passed
+      the whole time.
+    - **And one of the checks passed for the wrong reason.** "Every pad clears
+      the beam" was true and proved nothing, because no pad lands anywhere near
+      the beam on this map; it would have read identically with the rule
+      deleted. It now also finds ground under the line, confirms the ceiling
+      there is 5.1 units against the 15 a pad needs, and confirms nothing was
+      placed there.
+
+**Still open after 31 July:**
+
+- **Make the airport drivable.** No causeway to it, so it is something you fly
+  past. The site is already constrained to sit within `AIRPORT_MAX_SPAN` of
+  land precisely so a crossing is possible.
+- **The short-lane rule in `stepTraffic()`**, which unblocks item 32 and with
+  it a bigger fleet.
+- **The 19 structural failures** behind the parked density work, including
+  `streetedit` showing street take-over is no longer invisible - a broken
+  invariant, not a threshold.
+- **Push the rings outward.** SKILLS reaches 66% of the way to its coast, the
+  hub 76%. The "use more land" half of Mike's request is untouched.
+- The helicopter model is crude and reads as a blue wedge at distance; the pads
+  could be more obvious from the ground. Both want Mike's eye, not more
+  measurement.
+
 **Also open, from earlier:**
 
 - **Better/more 3D models** — his standing top priority. Only `car`,

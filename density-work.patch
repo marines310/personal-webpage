@@ -1,0 +1,469 @@
+--- baseline/src/world/islandLayout.js	2026-07-30 22:05:27.813088954 +0000
++++ portfolio/src/world/islandLayout.js	2026-07-31 01:34:20.925997877 +0000
+@@ -123,14 +123,32 @@
+ export const DEFAULT_STREET_WIDTH = 5.5
+ 
+ /**
+- * How far apart the streets of a town grid run. This is the block size,
+- * so it has to fit two rows of buildings back to back plus their gardens
+- * - about 34 units for 8-deep buildings.
++ * How far apart the streets of a town grid run. This is the block size, so it
++ * has to fit two rows of buildings back to back plus their gardens.
++ *
++ * 24 units: two 8-deep buildings back to back leaves four units of garden each
++ * side and the pavements either side of the street. It was 34, which fits the
++ * buildings comfortably and reads as suburban - wide gaps, a lot of grass, few
++ * junctions. A short city block is what makes a town look built-up.
++ *
++ * This is also the single biggest lever on how many vehicles the world can
++ * carry, which is what the fleet has been starved of: 34 gives 113 lanes
++ * across the map and 24 gives 155, on the same two islands.
+  */
+-export const DEFAULT_BLOCK_SIZE = 34
++export const DEFAULT_BLOCK_SIZE = 24
+ 
+-/** Shorter than this and a clipped street is a stub, not a road. */
+-export const MIN_STREET_LENGTH = 18
++/**
++ * Shorter than this and a clipped street is a stub, not a road.
++ *
++ * One block. A street shorter than the grid's own spacing is a fragment of
++ * the grid rather than a street: it is what is left where a sweep line grazes
++ * the edge of the ring, and it arrives with two junctions on the ring and
++ * almost no road between them. It was a flat 18, which at a 34-unit block was
++ * about half a block and at a 24-unit block let 21-unit scraps through.
++ *
++ * Tied to the block size so it cannot come adrift from it again.
++ */
++export const MIN_STREET_LENGTH = DEFAULT_BLOCK_SIZE
+ 
+ /** Pavement between the kerb and the building line. */
+ export const PAVEMENT_WIDTH = 2.4
+@@ -169,6 +187,24 @@
+ export const MIN_ROAD_SEPARATION = 9
+ 
+ /**
++ * How far the surfacing at a junction reaches from its centre.
++ *
++ * Two roads crossing at right angles form a diamond whose corners sit
++ * hypot(wA/2, wB/2) from the middle. Using max(w)/2 left those corners bare,
++ * which is what read as one road's surface overlapping the other's. The
++ * margin covers the rounding in the ribbon meshes.
++ *
++ * This is also how far back a stop line has to be, and therefore part of how
++ * much clear road two junctions need between them - see
++ * MIN_RING_JUNCTION_GAP. It is a function rather than a constant because it
++ * depends on which two roads meet, and it lives here rather than inline in
++ * getIslandJunctions() so the spacing rule and the patch cannot drift apart.
++ */
++export function junctionReach(widthA, widthB) {
++  return Math.hypot(widthA / 2, widthB / 2) + 0.6
++}
++
++/**
+  * How far two roads may run alongside each other before one of them is a
+  * mistake, in world units.
+  *
+@@ -647,6 +683,32 @@
+ /** Emergency lights: full flashes a second. */
+ export const SIREN_RATE = 2.4
+ 
++/**
++ * How much clear road there has to be between two junctions on a ring.
++ *
++ * Every road is cut at every junction on it, so two junctions close together
++ * leave a lane between them that is shorter than a vehicle needs. Twelve units
++ * of ring holds exactly one bus, and once a bus is on it the whole arm is
++ * shut - which is what four pairs on the current map were doing, two of them
++ * on the piece you drive the moment you come off a bridge.
++ *
++ * Derived from what has to fit, not chosen to make this map work: the longest
++ * vehicle, the distance that vehicle needs to stop from its cruising speed,
++ * and the setback of the stop line it has to stop at. The bus is worst on
++ * length and the police car on stopping distance, so the maximum is taken
++ * across the fleet rather than assumed to be either.
++ *
++ * If the fleet ever gains something longer, this grows with it, and the towns
++ * are laid out to suit. That is the right way round: the road should fit the
++ * traffic.
++ */
++export const MIN_RING_JUNCTION_GAP =
++  Math.max(...Object.keys(TRAFFIC_LENGTHS).map(kind =>
++    TRAFFIC_LENGTHS[kind] +
++    (TRAFFIC_SPEEDS[kind] ** 2) / (2 * TRAFFIC_BRAKE))) +
++  STOP_LINE_MARGIN +
++  junctionReach(DEFAULT_ROAD_WIDTH, DEFAULT_STREET_WIDTH)
++
+ // ---------------------------------------------------------------------------
+ // PORTS AND SHIPPING
+ // ---------------------------------------------------------------------------
+@@ -1495,6 +1557,17 @@
+   const span = Math.hypot(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ)
+   const streets = []
+ 
++  // Where the ring is already spoken for. The bridges go in first because a
++  // bridge landing is the one junction on the ring that CANNOT move: it is
++  // where the water is narrowest and it is the only way on and off the
++  // island. A street can always meet the ring further round, so the street
++  // gives way. Every street then holds its own place against later ones, the
++  // same way crowdsAnother() works.
++  const ringMeasure = measurePath(ring)
++  const taken = getBridgeLandings(island)
++    .map(l => ringPositionOf(ringMeasure, l.dirX * l.shore, l.dirZ * l.shore))
++    .filter(at => at !== null)
++
+   // Two sets of parallel lines at right angles, swept across the island
+   for (const axis of [0, 1]) {
+     const dirX = axis ? Math.cos(angle) : -Math.sin(angle)
+@@ -1524,6 +1597,21 @@
+           key: `s${axis}.${i}.${runIndex}`
+         }
+ 
++        // A street that would meet the ring too close to a bridge landing
++        // slides along until it clears, rather than being dropped.
++        //
++        // Dropping it is what the first version did, and on the hub - five
++        // bridges around a 341-unit ring, so 202 units of it spoken for - that
++        // rejected every street on the island and left the busiest place in
++        // the world with no town at all. A street has no reason to be at
++        // exactly this offset: the grid is a convenience, not a survey.
++        const slid = slideClear(candidate, ring, ringMeasure, taken,
++                                ox, oz, dirX, dirZ, span, runIndex, spacing)
++        if (slid) {
++          candidate.points = slid.points
++          candidate.slid = slid.by      // for the tests, and for the editor
++        }
++
+         // Reject anything running alongside a road already there. The
+         // ring is the usual culprit: a grid line clipped near the edge of
+         // the island can shadow it for most of its length, leaving two
+@@ -1535,11 +1623,53 @@
+         // And reject anything meeting the ring at a glancing angle
+         if (meetsTooShallow(candidate, ring)) continue
+ 
++        // And anything that would put a junction on the ring too close to one
++        // already there, leaving a stub of ring between them too short to
++        // drive. Measured ALONG the ring, because the arc is what gets cut
++        // into a lane - two points 12 units apart across a bend can be twice
++        // that far apart on the road itself.
++        // **Against the bridge landings only, not against other streets.**
++        //
++        // A bridge landing cannot move: it is where the water is narrowest and
++        // it is the only way on and off the island, so a street that would
++        // crowd it gives way and meets the ring further round. There are
++        // plenty of other streets; losing one costs nothing.
++        //
++        // Streets used to reserve their own ends here too, and that fights
++        // density head on. A 24-unit block puts junctions on the ring about
++        // 24 units apart by design, so a 20-unit exclusion around each one
++        // rejected most of the grid: at block 24 it gave SEVEN streets across
++        // the map where no rule at all gives thirteen. A town whose blocks are
++        // shorter than a bus's stopping distance is not a mistake, it is what
++        // a city looks like - so the short pieces between its junctions are
++        // for the traffic rules to cope with, not for the map to design away.
++        //
++        // **That part is NOT built yet, and it is why this is not finished.**
++        // `stepTraffic()` assumes a lane is long enough to queue on: on this
++        // map five lanes cannot hold a bus behind their own stop line at all.
++        // Until it can, a denser grid measures worse than a sparse one at
++        // every fleet size - see the table in HANDOFF.md.
++        const ends = candidate.points
++          .map(p => ringPositionOf(ringMeasure, p.x, p.z))
++          .filter(at => at !== null)
++
++        if (ends.some(at => taken.some(other =>
++          ringGap(ringMeasure.length, at, other) < MIN_RING_JUNCTION_GAP))) {
++          continue
++        }
++
+         streets.push(candidate)
+       }
+     }
+   }
+ 
++  // Drop the streets that are not worth their junctions.
++  //
++  // Done here, after the whole grid exists, because whether a street earns its
++  // place depends on what else crosses it - which is not known while the grid
++  // is still being laid out.
++  const worthwhile = earnsItsJunctions(streets, ring, ringMeasure)
++
+   // Drop the ones you've taken over or removed - LAST, after every street
+   // has been through the tests above.
+   //
+@@ -1549,7 +1679,54 @@
+   // to it, previously rejected for shadowing it, would appear out of
+   // nowhere. Generate the full grid, then hide what's been claimed.
+   const claimed = takenOverStreets(island)
+-  return claimed.size ? streets.filter(s => !claimed.has(s.key)) : streets
++  return claimed.size ? worthwhile.filter(s => !claimed.has(s.key)) : worthwhile
++}
++
++/**
++ * Keep the streets that pay for the junctions they create.
++ *
++ * Every street meets the ring twice, and every one of those meetings is a
++ * junction the traffic system cuts a lane at, queues at, and may put a set of
++ * lights on. A street earns that if it is **a way through**: either driving it
++ * is meaningfully shorter than going round the ring between the same two
++ * points, or something crosses it, so it offers a turn partway along.
++ *
++ * A street that does neither is one that clips a corner of the ring and runs
++ * back to it - it duplicates the ring rather than adding to the map. On this
++ * map they were 21 to 51 units long with their two ends 24 to 63 units apart
++ * round the ring, so the longest saved a driver twelve units and cost two sets
++ * of traffic lights.
++ *
++ * That is the whole of why more road made the traffic WORSE: at a 24-unit
++ * block the grid produced six of these, signals went from 31 to 42, and the
++ * median distance covered fell from 704 to 644 even though the network had 79%
++ * more lane in it. Mike spotted them in the map before the numbers did.
++ *
++ * The ratio is not a tuned number - the two populations do not overlap. Every
++ * street worth keeping on this map scores 1.36 or better and every corner
++ * clipper scores 1.31 or worse, so anything in between separates them.
++ */
++export const STREET_DETOUR_RATIO = 1.4
++
++function earnsItsJunctions(streets, ring, ringMeasure) {
++  return streets.filter(street => {
++    // Crossing another street is enough on its own: the value is the turn it
++    // offers partway along, not the journey between its ends. This is why the
++    // test cannot run while the grid is still being built.
++    if (streets.some(other => other !== street &&
++        pathCrossings(street.points, other.points, DEFAULT_STREET_WIDTH).length)) {
++      return true
++    }
++
++    const [a, b] = [street.points[0], street.points[street.points.length - 1]]
++    const length = Math.hypot(b.x - a.x, b.z - a.z)
++    if (!length) return false
++
++    const at = [a, b].map(p => ringPositionOf(ringMeasure, p.x, p.z))
++    if (at.some(v => v === null)) return true      // not a ring-to-ring street
++
++    return ringGap(ringMeasure.length, at[0], at[1]) >= length * STREET_DETOUR_RATIO
++  })
+ }
+ 
+ /**
+@@ -1867,6 +2044,74 @@
+ }
+ 
+ /**
++ * Slide a street along its own perpendicular until both ends meet the ring
++ * clear of everything already there, or give up.
++ *
++ * Tried nearest-first and alternating either way, so a street moves as little
++ * as it can and the block either side of it stays as even as possible. The
++ * search stops at half a block: past that it is closer to its neighbour's
++ * place than its own, and two streets converging on the same offset is worse
++ * than one missing street.
++ *
++ * Returns the moved points and how far it moved, or null if the street was
++ * already fine or nothing within reach works.
++ */
++function slideClear(candidate, ring, ringMeasure, taken,
++                    ox, oz, dirX, dirZ, span, runIndex, spacing) {
++  const clear = points => points
++    .map(p => ringPositionOf(ringMeasure, p.x, p.z))
++    .filter(at => at !== null)
++    .every(at => taken.every(other =>
++      ringGap(ringMeasure.length, at, other) >= MIN_RING_JUNCTION_GAP))
++
++  if (clear(candidate.points)) return null
++
++  const perpX = -dirZ
++  const perpZ = dirX
++  const limit = spacing / 2
++
++  for (let step = 2; step <= limit; step += 2) {
++    for (const hand of [1, -1]) {
++      const by = step * hand
++      const runs = runsInsideRing(ring, ox + perpX * by, oz + perpZ * by,
++                                  dirX, dirZ, span)
++      const run = runs[runIndex]
++      if (!run) continue
++
++      const points = [run.from, run.to]
++      if (clear(points)) return { points, by }
++    }
++  }
++
++  return null
++}
++
++/**
++ * How far round the ring the nearest point to (x, z) sits.
++ *
++ * The ring is a closed 385-point loop, so "how far apart" is a distance along
++ * it and not a straight line between two points. A street meeting the ring on
++ * the far side of a bend can be a few units away as the gull flies and forty
++ * units of tarmac from the same place.
++ *
++ * **Projected, never rejected for being off the ring.** A street end is on the
++ * ring because it was clipped to it, but a bridge landing is on the COAST,
++ * which is the ring's inset further out - twelve to fifteen units on this map.
++ * Guarding this with "must be within a road's width of the ring" therefore
++ * discarded every landing silently, and the two junctions beside the bridges
++ * stayed exactly as they were while the rule appeared to be working.
++ */
++function ringPositionOf(measured, x, z) {
++  return distanceAlongPath(measured.points, x, z)
++}
++
++/** The shorter way round a closed loop between two distances along it. */
++function ringGap(length, a, b) {
++  const direct = Math.abs(a - b)
++  return Math.min(direct, length - direct)
++}
++
++/**
+  * Does this street run into the ring at a glancing angle?
+  *
+  * Both ends are checked. A street that grazes the ring converges with it
+@@ -5273,6 +5518,7 @@
+ 
+   for (const cluster of clusters) {
+     const arms = []
++    const met = []
+ 
+     for (const road of roads) {
+       let nearest = Infinity
+@@ -5283,6 +5529,8 @@
+       })
+       if (nearest > cluster.radius + SIGNAL_MERGE_DISTANCE * 0.7) continue
+ 
++      met.push(road)
++
+       const tan = tangentAt(road.points, cluster.x, cluster.z)
+       if (!tan) continue
+ 
+@@ -5329,7 +5577,7 @@
+       if (pole) withPoles.push({ ...arm, pole })
+     }
+ 
+-    if (withPoles.length >= 3) {
++    if (withPoles.length >= 3 && warrantsSignals(met)) {
+       // Two phases: arms roughly in line with the first one share a phase,
+       // everything else takes the other. That's what makes the crossing
+       // flows complementary rather than decorative.
+@@ -5358,6 +5606,33 @@
+ }
+ 
+ /**
++ * Does this junction warrant lights, or should it give way?
++ *
++ * Lights where a road meets an **arterial** - the ring, or a bridge approach.
++ * Two side streets crossing in the middle of a town give way instead, which is
++ * what they do in a real town: you do not put a signalled crossroads every
++ * hundred metres of a residential grid.
++ *
++ * Signalling everything with three or more approaches was fine when a town had
++ * four streets and is not fine when it has seven. At a 24-unit block it took
++ * the map from 31 sets of lights to 42, and Mike spotted the effect in the
++ * world before the numbers did: more junctions to stop at, so the median
++ * distance a vehicle covered FELL from 704 to 644 even though the network had
++ * 79% more lane in it.
++ *
++ * The interesting part is what the measurement said next. Deleting those
++ * streets lifted the median to 604 and wrecked everything else - the slowest
++ * vehicle went from 186 units to 32 and relocations nearly doubled - because a
++ * minor street is a bad junction AND a useful route. So the street stays and
++ * the lights go. The give-way rules, the junction claim and the collision veto
++ * already handle an unsignalled junction; nothing new is needed to make one
++ * work.
++ */
++function warrantsSignals(roads) {
++  return roads.some(r => r.ring || r.auto || r.spur)
++}
++
++/**
+  * A spot for a signal pole beside an approach: back from the junction and
+  * off to the right, stepped outwards until it clears every carriageway.
+  *
+@@ -5411,12 +5686,7 @@
+ 
+   for (let a = 0; a < roads.length; a++) {
+     for (let b = a + 1; b < roads.length; b++) {
+-      // Big enough to reach the CORNERS of the crossing, not just the
+-      // edge of the wider road. Two roads crossing at right angles form a
+-      // diamond whose corners sit hypot(wA/2, wB/2) from the centre -
+-      // using max(w)/2 left those corners bare, which is what read as one
+-      // road's surface overlapping the other's.
+-      const radius = Math.hypot(roads[a].width / 2, roads[b].width / 2) + 0.6
++      const radius = junctionReach(roads[a].width, roads[b].width)
+ 
+       for (const point of pathCrossings(roads[a].points, roads[b].points, radius)) {
+         hits.push({ ...point, radius })
+--- baseline/src/world/mapData.js	2026-07-30 22:05:27.813400530 +0000
++++ portfolio/src/world/mapData.js	2026-07-31 01:06:51.713899843 +0000
+@@ -44,6 +44,12 @@
+     palms: 14,
+     shape: 'blob',
+     shapeSeed: 12,
++    // Streets without changing the theme. `grid` overrides "towns only", so
++    // the plaza and the palms stay exactly as they are and the island gets a
++    // street network around them. The hub carries five bridges and every
++    // journey across the map passes through it, so it was the emptiest place
++    // in the world and the busiest.
++    grid: true,
+     districts: [
+       { type: 'plaza', x: 0, z: 0, size: 34 }
+     ],
+@@ -128,6 +134,10 @@
+     palms: 12,
+     shape: 'triangle',
+     shapeSeed: 6,
++    // No grid. CONTACT stays mixed - scattered trees, bushes, rocks and the
++    // odd building - and SKILLS and BLOG stay jungle. Only ABOUT, EXPERIENCE
++    // and the hub are built up. Six urban islands would be as monotonous as
++    // six of the same shape, and the variety is the point.
+     hills: [
+       { x: -26, z: -26, radius: 48, height: 4 },
+       { x: 34, z: 24, radius: 40, height: 2.5 }
+--- baseline/tests/town.mjs	2026-07-30 22:05:27.818486685 +0000
++++ portfolio/tests/town.mjs	2026-07-30 23:33:59.973568642 +0000
+@@ -210,8 +210,18 @@
+   const junctions = L.getIslandJunctions(isl)
+   const signals = L.getTrafficSignals(isl)
+ 
+-  chk(`${isl.id.padEnd(9)} ${junctions.length} junctions merge to ${signals.length} signals`,
+-      signals.length < junctions.length, `${signals.length} vs ${junctions.length}`)
++  // Never MORE signals than junctions. This used to demand strictly FEWER -
++  // that is, it asserted that some pair was always close enough to need
++  // merging, which is the defect merging exists to cover rather than a
++  // property worth having. Once the street grid started keeping its junctions
++  // MIN_RING_JUNCTION_GAP apart, `about` came out with its closest pair 24.5
++  // units apart, nothing to merge, and seven junctions honestly making seven
++  // signals - and this failed the island for being laid out properly.
++  //
++  // What matters is the two checks below: no two sets of lights close enough
++  // to read as one, and three or four approaches each. Both still hold.
++  chk(`${isl.id.padEnd(9)} ${junctions.length} junctions make ${signals.length} signals`,
++      signals.length <= junctions.length, `${signals.length} vs ${junctions.length}`)
+ 
+   // No two sets of lights close enough to read as one cluttered junction
+   let closest = Infinity
+--- baseline/tests/cityui.mjs	2026-07-30 22:05:27.815724280 +0000
++++ portfolio/tests/cityui.mjs	2026-07-30 23:34:07.869569111 +0000
+@@ -37,9 +37,16 @@
+ setMode('road')
+ const isl = run(`(function(){const i=getIsland('projects');return{x:i.x,z:i.z}})()`)
+ const roadsBefore = run(`(getIsland('projects').roads||[]).length`)
+-down(isl.x-8, isl.z-8)
+-move(isl.x+10, isl.z+9)
+-move(isl.x+12, isl.z+11)
++// Drawn between two points that are ON generated streets, because section 4
++// then checks both ends snapped onto the grid. The old drag ran from (-8, -8)
++// to (+12, +11), which landed on a street only by accident of where the grid
++// fell - when the grid changed, section 4 reported 0 of 2 ends joined and read
++// exactly like the snapping being broken, which it was not. A fixture that
++// depends on which streets happen to exist should say so and pick them
++// deliberately.
++down(isl.x+11.5, isl.z-21.1)
++move(isl.x+6, isl.z-30)
++move(isl.x+3.5, isl.z-36.5)
+ up()
+ const roadsAfter = run(`(getIsland('projects').roads||[]).length`)
+ chk(`press-drag-release makes one road (${roadsBefore} -> ${roadsAfter})`, roadsAfter===roadsBefore+1)
