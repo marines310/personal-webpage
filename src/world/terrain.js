@@ -565,6 +565,52 @@ export function makeHeightField(spec) {
              minZ: minZ - reach, maxZ: maxZ + reach }
   })
 
+  // A grid over every road POINT on the island, so a query looks at the
+  // handful of points near it instead of all of them.
+  //
+  // The bounding box above rejects most roads cheaply and is useless for the
+  // one that matters: the ring's box covers the whole island, so every single
+  // query walked all 385 of its points, plus every street whose box it fell
+  // in. Measured, that was 644,000 first-time queries costing 13.4 seconds -
+  // essentially the entire time the world takes to build, and the thing that
+  // grows when the islands do.
+  //
+  // Exact, not approximate. A cell is at least as wide as the furthest a road
+  // can still have a say (its half width, its shoulder and its blend), so
+  // searching the cell a point falls in and its eight neighbours cannot miss a
+  // road that would have scored above zero. Anything not found is a road whose
+  // strength would have been zero anyway.
+  const cell = Math.max(12, ROAD_BLEND + ROAD_SHOULDER +
+                        Math.max(0, ...roads.map(r => r.width / 2)))
+  const roadGrid = new Map()
+  const cellKey = (cx, cz) => cx * 4194304 + cz
+
+  roads.forEach((road, roadIndex) => {
+    for (let i = 0; i < road.points.length; i++) {
+      const p = road.points[i]
+      const cx = Math.floor(p.x / cell)
+      const cz = Math.floor(p.z / cell)
+      const key = cellKey(cx, cz)
+      let bucket = roadGrid.get(key)
+      if (!bucket) { bucket = []; roadGrid.set(key, bucket) }
+      bucket.push(roadIndex)
+    }
+  })
+
+  // Which roads could possibly have a say at this point.
+  const roadsNear = (x, z) => {
+    const cx = Math.floor(x / cell)
+    const cz = Math.floor(z / cell)
+    const found = new Set()
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const bucket = roadGrid.get(cellKey(cx + dx, cz + dz))
+        if (bucket) for (const r of bucket) found.add(r)
+      }
+    }
+    return found
+  }
+
   const open = (x, z) =>
     hillHeight(hills, x, z) * coastFactor(inlandAt(x, z), beach)
 
@@ -603,7 +649,7 @@ export function makeHeightField(spec) {
     let roadFull = 0
     let roadFullSum = 0
 
-    for (let i = 0; i < roads.length; i++) {
+    for (const i of roadsNear(x, z)) {
       const box = bounds[i]
       if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue
 
@@ -667,7 +713,10 @@ export function makeHeightField(spec) {
   function claimAt(x, z) {
     let strongest = 0
 
-    for (let i = 0; i < roads.length; i++) {
+    // Indexed, like heightAt. The paved claim reaches less far than the height
+    // blend does, so a cell sized for the blend cannot miss anything here
+    // either.
+    for (const i of roadsNear(x, z)) {
       const box = bounds[i]
       if (x < box.minX || x > box.maxX || z < box.minZ || z > box.maxZ) continue
 
@@ -763,6 +812,14 @@ export const GROUND_MESH_MIN_EDGE = 0.8
  */
 export function subdivideTriangles(triangles, maxEdge, heightAt = null,
                                    tolerance = GROUND_MESH_TOLERANCE) {
+  // One surface or several. The drawn ground and the collider are the same
+  // shape sampled two ways - the drawn one ducks under anything paved
+  // (GROUND_SINK) and the collider does not - so one tessellation can serve
+  // both, provided it is fine enough for the WORST of them. Splitting against
+  // only one and reusing it for the other would be the same bet that put
+  // grass through the tarmac: assuming two surfaces agree because they are
+  // nearly the same.
+  const fields = !heightAt ? [] : (Array.isArray(heightAt) ? heightAt : [heightAt])
   const out = []
   const queue = [...triangles]
   const limit = maxEdge * maxEdge
@@ -799,13 +856,15 @@ export function subdivideTriangles(triangles, maxEdge, heightAt = null,
     // that runs parallel to its longest edge has no error along THAT edge at
     // all, and a test that only looks there passes it - which is how banks
     // three quarters of a metre out survived a tolerance of two centimetres.
-    if (!split && heightAt && worst > floor) {
+    if (!split && fields.length && worst > floor) {
       for (let i = 0; i < 3 && !split; i++) {
         const p = t[i]
         const q = t[(i + 1) % 3]
         const m = { x: (p.x + q.x) / 2, z: (p.z + q.z) / 2 }
-        const chord = (heightAt(p.x, p.z) + heightAt(q.x, q.z)) / 2
-        if (Math.abs(heightAt(m.x, m.z) - chord) > tolerance) split = true
+        for (const field of fields) {
+          const chord = (field(p.x, p.z) + field(q.x, q.z)) / 2
+          if (Math.abs(field(m.x, m.z) - chord) > tolerance) { split = true; break }
+        }
       }
     }
 

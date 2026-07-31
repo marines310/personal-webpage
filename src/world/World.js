@@ -615,9 +615,12 @@ export class World {
       terrain.heightAt(x, z) - GROUND_SINK * terrain.claimAt(x, z)
 
     // --- Top face (sand) ---
+    // Subdivided once for this island and shared with the collider below.
+    const shared = this.islandGroundTriangles(island, outline)
+
     const sandTop = this.polygonMesh(outline, cx, 0, cz, {
       color: PALETTE.sand, roughness: 1, metalness: 0, flatShading: true
-    }, height)
+    }, height, shared)
     sandTop.receiveShadow = true
     this.game.add(sandTop)
 
@@ -664,23 +667,73 @@ export class World {
   }
 
   /**
+   * The island's outline, triangulated and subdivided - computed ONCE.
+   *
+   * The sand mesh and the physics collider are the same polygon, subdivided to
+   * the same edge length, against the same height field. They were doing that
+   * work twice: triangulate, then split every triangle until it follows the
+   * ground, asking the height field at every midpoint on the way. On this map
+   * that is the single most expensive thing the loader does, and scaling the
+   * islands 1.7x multiplied the whole load by 2.8 - it is what grows with the
+   * area.
+   *
+   * Subdivided against BOTH surfaces (see subdivideTriangles): the drawn
+   * ground ducks under anything paved and the collider does not, so the shared
+   * tessellation has to be fine enough for whichever is worse. They then each
+   * apply their own height to the same x/z points - which also means the two
+   * now share vertices exactly, rather than being two meshes that happen to
+   * nearly agree.
+   */
+  islandGroundTriangles(island, outline) {
+    if (!this.groundTessellation) this.groundTessellation = new Map()
+
+    const cached = this.groundTessellation.get(island.id)
+    if (cached) return cached
+
+    // Both fields worked out HERE rather than passed in, so the answer cannot
+    // depend on which caller happens to arrive first. Passing them in meant
+    // the sand asking for both and the collider asking for one, and whichever
+    // ran first decided how fine the mesh was for both - a trap that would sit
+    // quietly until someone reordered two lines in createIsland().
+    const terrain = getIslandTerrain(island)
+    const fields = [
+      (x, z) => terrain.heightAt(x, z),
+      (x, z) => terrain.heightAt(x, z) - GROUND_SINK * terrain.claimAt(x, z)
+    ]
+
+    const contour = outline.map(p => new THREE.Vector2(p.x, p.z))
+    const faces = THREE.ShapeUtils.triangulateShape(contour, [])
+    const flat = faces.map(face => [face[2], face[1], face[0]].map(
+      idx => ({ x: contour[idx].x, z: contour[idx].y })))
+
+    const triangles = subdivideTriangles(flat, GROUND_MESH_EDGE, fields)
+    this.groundTessellation.set(island.id, triangles)
+    return triangles
+  }
+
+  /**
    * Triangulate a polygon into a flat horizontal mesh at height `y`.
    * Points are island-local; cx/cz place it in the world.
    */
-  polygonMesh(points, cx, y, cz, materialOptions, heightAt = null) {
-    // THREE triangulates in the XY plane, so feed it (x, z) and lay it flat
-    const contour = points.map(p => new THREE.Vector2(p.x, p.z))
-    const faces = THREE.ShapeUtils.triangulateShape(contour, [])
+  polygonMesh(points, cx, y, cz, materialOptions, heightAt = null,
+              readyTriangles = null) {
+    let triangles = readyTriangles
 
-    // Island-local triangles, before any height is applied
-    let triangles = faces.map(face => [face[2], face[1], face[0]].map(
-      idx => ({ x: contour[idx].x, z: contour[idx].y })))
+    if (!triangles) {
+      // THREE triangulates in the XY plane, so feed it (x, z) and lay it flat
+      const contour = points.map(p => new THREE.Vector2(p.x, p.z))
+      const faces = THREE.ShapeUtils.triangulateShape(contour, [])
 
-    // Ground that goes up and down needs vertices to go up and down WITH, and
-    // a triangulated coastline has triangles a hundred units across. Split
-    // them until every edge is short enough to follow a hill.
-    if (heightAt) {
-      triangles = subdivideTriangles(triangles, GROUND_MESH_EDGE, heightAt)
+      // Island-local triangles, before any height is applied
+      triangles = faces.map(face => [face[2], face[1], face[0]].map(
+        idx => ({ x: contour[idx].x, z: contour[idx].y })))
+
+      // Ground that goes up and down needs vertices to go up and down WITH,
+      // and a triangulated coastline has triangles a hundred units across.
+      // Split them until every edge is short enough to follow a hill.
+      if (heightAt) {
+        triangles = subdivideTriangles(triangles, GROUND_MESH_EDGE, heightAt)
+      }
     }
 
     const positions = new Float32Array(triangles.length * 9)
@@ -757,15 +810,13 @@ export class World {
     // Top surface. Subdivided and lifted by the SAME height field the grass
     // mesh uses - if the collider were left flat the car would drive along an
     // invisible plane at sea level with the hillside passing through it.
+    // The same triangles the sand mesh was built from - see
+    // islandGroundTriangles(). The collider applies the TRUE height, with no
+    // GROUND_SINK duck: what you drive on stays the real surface.
     const terrain = getIslandTerrain(island)
-    const contour = outline.map(p => new THREE.Vector2(p.x, p.z))
-    const faces = THREE.ShapeUtils.triangulateShape(contour, [])
+    const shared = this.islandGroundTriangles(island, outline)
 
-    const flat = faces.map(face => [face[2], face[1], face[0]].map(
-      idx => ({ x: contour[idx].x, z: contour[idx].y })))
-
-    const height = (x, z) => terrain.heightAt(x, z)
-    for (const triangle of subdivideTriangles(flat, GROUND_MESH_EDGE, height)) {
+    for (const triangle of shared) {
       for (const p of triangle) push(p.x, terrain.heightAt(p.x, p.z), p.z)
     }
 
