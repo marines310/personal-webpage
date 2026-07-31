@@ -186,7 +186,9 @@ const flatPlacements = [...code.matchAll(
     //   bridge   - a bridge deck spans WATER at a stated height. Raising it
     //              clear of the shipping is its own job (task 88).
     //   px/pz    - the railings that stand on that deck.
-    //   ship     - afloat.
+    //   ship     - afloat. Exempt from the GROUND, not from having a right
+    //              answer: see the check immediately below, which is the half
+    //              this exception used to hide.
     const where = `${m[1]} ${m[2]} ${m[4]}`
     return !/\bcx\b|\bcz\b|\bbridge\.|\bpx\b|\bpz\b|\bship\b/.test(where)
   })
@@ -195,6 +197,24 @@ console.log(`   ${flatPlacements.length} placements still at a fixed height`)
 chk('everything placed by x and z asks the ground how high it is',
     flatPlacements.length === 0,
     flatPlacements.slice(0, 5).map(m => m[0]).join('  '))
+
+// A ship is exempt from the ground because it floats. It is NOT exempt from
+// floating at the right height, and nothing checked that: every hull sat at
+// world y = 0 while the sea is drawn at SEA_LEVEL (-1.4), so the whole fleet
+// hovered 1.4 units clear of the water. Mike saw it in a screenshot; 22 checks
+// in ports.mjs sail the fleet for fifteen minutes and not one of them looks up.
+//
+// The same shape as the constant that was imported but never used, and the
+// pavement that shipped blank with 396 checks green: an exemption written for
+// a real reason, covering a case nobody then asked about. When you exempt
+// something from a rule, say what the rule IS for it.
+const shipPlacements = [...code.matchAll(
+  /ship\.mesh\.position\.set\(([^)]*)\)/g)]
+console.log(`   ${shipPlacements.length} places put a hull in the water`)
+chk('and every hull is put in the water at SEA_LEVEL, not at zero',
+    shipPlacements.length > 0 &&
+      shipPlacements.every(m => /SEA_LEVEL/.test(m[1])),
+    shipPlacements.filter(m => !/SEA_LEVEL/.test(m[1])).map(m => m[0]).join('  '))
 
 // And the two that would be worst: the ground mesh and its collider have to
 // come from the same field, or the car drives on an invisible surface.

@@ -2955,7 +2955,7 @@ export class World {
       // Started where it actually is, so nothing flies in from the origin
       // on the first frame.
       const at = shipPosition(this.seaGraph, ship)
-      ship.mesh.position.set(at.x, 0, at.z)
+      ship.mesh.position.set(at.x, SEA_LEVEL, at.z)
       ship.mesh.rotation.y = at.heading
       ship.heading = at.heading
       this.game.add(ship.mesh)
@@ -3117,7 +3117,12 @@ export class World {
       const phase = this.elapsed * 0.55 + (at.x + at.z) * 0.03
       const swell = at.docked ? 0.25 : 0.55
 
-      ship.mesh.position.set(at.x, Math.sin(phase) * swell * 0.5, at.z)
+      // SEA_LEVEL, not zero. The hulls are modelled with their waterline at
+      // local y = 0 - the cargo ship's boot topping, the dark band a real ship
+      // wears at the waterline, straddles it from -0.75 to +0.35 - so leaving
+      // the group at world zero floated the whole fleet exactly 1.4 units
+      // clear of the water it was supposed to be sitting in.
+      ship.mesh.position.set(at.x, SEA_LEVEL + Math.sin(phase) * swell * 0.5, at.z)
       ship.mesh.rotation.y = ship.heading
       ship.mesh.rotation.z = Math.sin(phase * 0.8) * swell * 0.035
       ship.mesh.rotation.x = Math.sin(phase * 1.3 + 1) * swell * 0.02
