@@ -445,6 +445,8 @@ export const LANE_SHARED_LENGTH = 12
 export const TRAFFIC_SPEEDS = {
   sedan: 12,
   convertible: 13.5,
+  pickup: 11.5,
+  suv: 12.5,
   police: 15,
   ambulance: 14,
   fire: 11,
@@ -599,11 +601,13 @@ export const BUS_DWELL = 6
  * or accept the jams. `tests/traffic.mjs` will tell you which you got.
  */
 export const TRAFFIC_FLEET = {
-  sedan: 14,
-  convertible: 6,
-  police: 12,
-  ambulance: 8,
-  fire: 8,
+  sedan: 30,
+  convertible: 10,
+  pickup: 10,
+  suv: 20,
+  police: 8,
+  ambulance: 6,
+  fire: 6,
   bus: 4
 }
 
@@ -611,6 +615,10 @@ export const TRAFFIC_FLEET = {
 export const TRAFFIC_LENGTHS = {
   sedan: 4.4,
   convertible: 4.2,
+  // A pickup is a cab and a bed; an SUV is a tall estate. Both longer than a
+  // sedan and no wider than an ambulance, so both still fit a 5.5-unit street.
+  pickup: 5.2,
+  suv: 4.8,
   police: 4.6,
   ambulance: 6,
   fire: 7,
@@ -628,6 +636,8 @@ export const TRAFFIC_LENGTHS = {
 export const TRAFFIC_WIDTHS = {
   sedan: 1.9,
   convertible: 1.9,
+  pickup: 2.1,
+  suv: 2.05,
   police: 2,
   ambulance: 2.2,
   fire: 2.4,

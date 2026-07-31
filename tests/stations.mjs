@@ -163,9 +163,11 @@ const homed = vehicles.filter(v => v.home)
 console.log(`   ${vehicles.length} vehicles, ${service.length} of them service, ` +
             `${homed.length} with a home bay`)
 
-chk('the service fleet is four of each kind or more',
-    TRAFFIC_FLEET.police >= 12 && TRAFFIC_FLEET.ambulance >= 8 &&
-    TRAFFIC_FLEET.fire >= 8,
+// The numbers themselves are Mike's to choose; what this guards is that there
+// are enough of each to fill the bays and still have some out on the streets.
+chk('there is a service fleet of every kind',
+    TRAFFIC_FLEET.police >= 4 && TRAFFIC_FLEET.ambulance >= 4 &&
+    TRAFFIC_FLEET.fire >= 4,
     JSON.stringify(TRAFFIC_FLEET))
 
 chk('no bay is promised to two vehicles',

@@ -1025,6 +1025,32 @@ HTTP, and checks every asset the published site requests actually returns
     test only looked along the longest edge, so a bank running parallel to
     that edge sailed past it.
 
+30. **The fleet is deliberately ahead of the network. `npm test` FAILS.**
+    Read this before assuming something regressed.
+
+    Mike asked for 94 vehicles - 30 sedans, 10 convertibles, 10 pickups, 20
+    SUVs, 8 police, 6 ambulances, 6 fire, 4 buses - and pickups and SUVs were
+    added as new kinds to carry it. The network cannot take 94. Measured over
+    five simulated minutes:
+
+    | fleet | slowest covers | median | relocations |
+    |---|---|---|---|
+    | 58 | 507 | 1,169 | 18 |
+    | 73 | 268 | 884 | 32 |
+    | 94 | 97 | 704 | 37, and a pair welded together for 113 samples |
+
+    So `traffic.mjs` and `stations.mjs` fail on purpose until task 94 lands.
+    Either fix the network or scale the fleet by about 0.62, which keeps Mike's
+    ratios exactly.
+
+    **And the cause is worth the reading (task 94):** the short lanes are the
+    gap between two opinions about what a junction is. The lights merge
+    junctions within 22 units into one signal; the road network keeps them as
+    two nodes and cuts the road at both, leaving a 12-unit lane between that
+    holds exactly one vehicle. Four such pairs on this map. Make the two agree
+    and the plugs disappear - and there are fewer traffic lights, which is what
+    Mike wanted anyway.
+
 **Also open, from earlier:**
 
 - **Better/more 3D models** — his standing top priority. Only `car`,

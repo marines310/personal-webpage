@@ -188,6 +188,8 @@ export const GARAGE_DOOR_TIME = 2.4
 export const TRAFFIC_HEIGHTS = {
   sedan: 1.8,
   convertible: 1.5,
+  pickup: 2.1,
+  suv: 2.2,
   police: 1.8,
   ambulance: 2.4,
   fire: 2.7,
@@ -1803,6 +1805,8 @@ export class World {
       case 'ambulance': return this.buildAmbulance(v)
       case 'fire': return this.buildFireEngine(v)
       case 'convertible': return this.buildCar(v, true)
+      case 'pickup': return this.buildPickup(v)
+      case 'suv': return this.buildSUV(v)
       default: return this.buildCar(v, false)
     }
   }
@@ -1892,6 +1896,141 @@ export class World {
 
     this.addLampsAndTail(group, length, width)
     this.addWheels(group, length, width)
+    return group
+  }
+
+  /**
+   * A pickup: a tall cab up front and an open bed behind it.
+   *
+   * The bed is drawn as a floor and three low sides rather than a solid box,
+   * because an open back is the whole of what makes it read as a pickup from
+   * the pavement. Everything is a fraction of the length and width the layout
+   * states, so a change to TRAFFIC_LENGTHS moves the cab and the bed with it -
+   * every fitting that has come adrift in this project came adrift because it
+   * was positioned from a number that then changed.
+   */
+  buildPickup(v) {
+    const group = new THREE.Group()
+    const length = TRAFFIC_LENGTHS[v.kind]
+    const width = TRAFFIC_WIDTHS[v.kind]
+
+    const paint = this.pick([
+      PALETTE.carRed, PALETTE.carBlue, PALETTE.carWhite,
+      PALETTE.carSand, PALETTE.carGreen, PALETTE.carGrey
+    ])
+    const body = new THREE.MeshStandardMaterial({
+      color: paint, roughness: 0.55, metalness: 0.2, flatShading: true
+    })
+
+    // Chassis, full length, sitting higher than a car
+    const chassis = new THREE.Mesh(
+      new THREE.BoxGeometry(width, 0.7, length), body)
+    chassis.position.y = 0.85
+    chassis.castShadow = true
+    group.add(chassis)
+
+    // Cab over the front axle
+    const cab = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.94, 0.85, length * 0.38), body)
+    cab.position.set(0, 1.62, length * 0.16)
+    cab.castShadow = true
+    group.add(cab)
+
+    const glass = new THREE.MeshStandardMaterial({
+      color: PALETTE.glass, roughness: 0.2, metalness: 0.5,
+      emissive: new THREE.Color(PALETTE.windowLit), emissiveIntensity: 0
+    })
+    this.registerNightLight(glass, 0.5)
+
+    const screen = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.8, 0.5, 0.08), glass)
+    screen.position.set(0, 1.68, length * 0.16 + length * 0.19)
+    group.add(screen)
+
+    for (const side of [1, -1]) {
+      const pane = new THREE.Mesh(
+        new THREE.BoxGeometry(0.06, 0.42, length * 0.3), glass)
+      pane.position.set(side * width * 0.48, 1.66, length * 0.16)
+      group.add(pane)
+    }
+
+    // The bed: three sides, open at the back
+    const sideWall = new THREE.BoxGeometry(0.1, 0.42, length * 0.5)
+    for (const side of [1, -1]) {
+      const wall = new THREE.Mesh(sideWall, body)
+      wall.position.set(side * (width / 2 - 0.05), 1.4, -length * 0.19)
+      group.add(wall)
+    }
+
+    const head = new THREE.Mesh(
+      new THREE.BoxGeometry(width, 0.42, 0.1), body)
+    head.position.set(0, 1.4, -length * 0.19 + length * 0.25)
+    group.add(head)
+
+    this.addLampsAndTail(group, length, width)
+    this.addWheels(group, length, width, 0.52)
+    return group
+  }
+
+  /** An SUV: a sedan's shape, taller, with the cabin carried right back. */
+  buildSUV(v) {
+    const group = new THREE.Group()
+    const length = TRAFFIC_LENGTHS[v.kind]
+    const width = TRAFFIC_WIDTHS[v.kind]
+
+    const paint = this.pick([
+      PALETTE.carRed, PALETTE.carBlue, PALETTE.carWhite,
+      PALETTE.carSand, PALETTE.carGreen, PALETTE.carGrey
+    ])
+    const body = new THREE.MeshStandardMaterial({
+      color: paint, roughness: 0.5, metalness: 0.22, flatShading: true
+    })
+
+    const shell = new THREE.Mesh(
+      new THREE.BoxGeometry(width, 0.95, length), body)
+    shell.position.y = 0.82
+    shell.castShadow = true
+    group.add(shell)
+
+    // The cabin runs almost the whole length - that squarer profile is what
+    // tells an SUV from a sedan at a distance, more than the extra height.
+    const cabin = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.92, 0.78, length * 0.66), body)
+    cabin.position.set(0, 1.68, -length * 0.06)
+    cabin.castShadow = true
+    group.add(cabin)
+
+    const glass = new THREE.MeshStandardMaterial({
+      color: PALETTE.glass, roughness: 0.2, metalness: 0.5,
+      emissive: new THREE.Color(PALETTE.windowLit), emissiveIntensity: 0
+    })
+    this.registerNightLight(glass, 0.5)
+
+    for (const side of [1, -1]) {
+      const pane = new THREE.Mesh(
+        new THREE.BoxGeometry(0.06, 0.48, length * 0.58), glass)
+      pane.position.set(side * width * 0.47, 1.7, -length * 0.06)
+      group.add(pane)
+    }
+
+    const screen = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.82, 0.52, 0.08), glass)
+    screen.position.set(0, 1.72, -length * 0.06 + length * 0.33)
+    group.add(screen)
+
+    // A roof rack, because an SUV without one is just a tall hatchback
+    const rack = new THREE.MeshStandardMaterial({
+      color: PALETTE.tyre, roughness: 0.9, flatShading: true
+    })
+    for (const side of [1, -1]) {
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(0.08, 0.08, length * 0.5), rack)
+      rail.position.set(side * width * 0.3, 2.11, -length * 0.06)
+      group.add(rail)
+    }
+
+    this.addLampsAndTail(group, length, width)
+    this.addWheels(group, length, width, 0.5)
     return group
   }
 
