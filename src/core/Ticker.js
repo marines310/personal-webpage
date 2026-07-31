@@ -68,8 +68,23 @@ export class Ticker {
   tick(currentTime) {
     if (!this.isRunning) return
 
-    // Calculate delta time (in seconds)
-    this.delta = Math.min((currentTime - this.lastTime) / 1000, 0.1) // Cap at 100ms
+    // Calculate delta time (in seconds).
+    //
+    // Clamped at BOTH ends. The cap at 100ms was always here - it stops a slow
+    // frame teleporting everything - but nothing stopped delta going NEGATIVE,
+    // and it can: requestAnimationFrame hands you the timestamp of the start
+    // of the frame, which is earlier than the performance.now() captured in
+    // start(), so the very first tick runs backwards.
+    //
+    // A negative delta does not merely pause things, it runs them in reverse,
+    // and anything decaying toward zero grows instead. The one that shows is
+    // the lightning flash: `flash = max(0, flash - delta * 4.5)` climbs rather
+    // than falls, and flash feeds the fog density. Measured in a headless
+    // browser it reached 114 on a CLEAR morning with no lightning anywhere,
+    // putting fog density at 0.093 against the 0.0018 it is meant to sit at -
+    // dense enough to white out anything past about thirty units.
+    const raw = (currentTime - this.lastTime) / 1000
+    this.delta = Math.min(Math.max(raw, 0), 0.1)
     this.lastTime = currentTime
     this.elapsed += this.delta
 

@@ -769,6 +769,52 @@ export const SMALL_BOATS = 5
 export const OFF_WORLD_CHANCE = 0.38
 
 // ---------------------------------------------------------------------------
+// THE AIRPORT
+// ---------------------------------------------------------------------------
+
+/**
+ * The aircraft, and the runway sized off them.
+ *
+ * Derived rather than picked: a runway is a multiple of the thing that uses
+ * it. The proportions are compressed the way every game compresses them - a
+ * real airliner wants seventy times its own length of concrete, which here
+ * would be twice the width of the world.
+ */
+export const PLANE_LENGTH = 26
+export const PLANE_SPAN = 24
+export const AIRPORT_RUNWAY_LENGTH = PLANE_LENGTH * 8
+export const AIRPORT_RUNWAY_WIDTH = 24
+
+/** The apron and terminal sit alongside the runway, never on it. */
+export const AIRPORT_APRON_DEPTH = 46
+export const AIRPORT_EDGE = 14
+export const AIRPORT_STANDS = 4
+
+/**
+ * Open water the platform needs around it, and how far a link to land may
+ * reach.
+ *
+ * The clearance is what stops an apron overhanging a beach. The span is what
+ * stops the search picking a beautiful site nothing could ever connect to:
+ * the existing bridges cross about 130 units of water, so 210 is a long
+ * crossing rather than an impossible one.
+ */
+export const AIRPORT_CLEARANCE = 30
+export const AIRPORT_MAX_SPAN = 210
+
+/** How long an aircraft sits on stand, boarding and disembarking. */
+export const PLANE_TURNAROUND = 28
+
+/** Cruise, approach and taxi speeds, world units a second. */
+export const PLANE_SPEED_CRUISE = 46
+export const PLANE_SPEED_APPROACH = 26
+export const PLANE_SPEED_TAXI = 6
+
+/** How many aircraft the world runs, and how high they cruise. */
+export const PLANE_FLEET = 4
+export const PLANE_CRUISE_HEIGHT = 120
+
+// ---------------------------------------------------------------------------
 // THE MAP DATA lives in mapData.js - that's the file you edit (or that the
 // map editor overwrites). It's re-exported here so nothing else has to care
 // where it came from.
@@ -3735,6 +3781,285 @@ export function getPorts() {
   return ISLANDS.map(getPort).filter(Boolean)
 }
 
+let airportCache = null
+
+/**
+ * The airport: a platform on piers out at sea, with a runway, a taxiway, a
+ * terminal and its stands.
+ *
+ * **Derived, like everything else.** Nothing about it is written in the map
+ * file: move an island and the airport re-sites itself, the same way the
+ * monorail reroutes and the ports re-aim. What it wants, in order:
+ *
+ *  1. **Open water all round it**, measured against each island's real
+ *     coastline rather than the circle round it. That distinction has caught
+ *     this project out five times now - most recently the hub getting a quay
+ *     facing a 36-unit gap - so the platform's own half-diagonal is checked,
+ *     not its centre.
+ *  2. **Out of the bridge corridors.** A bridge crossing is the view every
+ *     visitor gets on the way to an island, and a runway across it isn't it.
+ *  3. **Within reach of land**, or nothing could ever connect to it.
+ *
+ * The runway lies TANGENTIALLY - across the line out from the middle of the
+ * world rather than along it. Pointing it outward would push one threshold
+ * another hundred units out to sea and into the shipping lane ring, which is
+ * derived from the map extent and would then have to grow to dodge it.
+ */
+export function getAirport() {
+  if (airportCache) return airportCache
+
+  // How much open water is under a point: its distance beyond the nearest
+  // island's actual shore, in the direction that island sees it.
+  const openWater = (x, z) => {
+    let worst = Infinity
+    for (const island of ISLANDS) {
+      const dx = x - island.x
+      const dz = z - island.z
+      worst = Math.min(worst, Math.hypot(dx, dz) - shoreDistance(island, dx, dz))
+    }
+    return worst
+  }
+
+  const offBridges = (x, z) => {
+    let worst = Infinity
+    for (const def of BRIDGES) {
+      const from = getIsland(def.from)
+      const to = getIsland(def.to)
+      if (!from || !to) continue
+      const vx = to.x - from.x
+      const vz = to.z - from.z
+      const len2 = vx * vx + vz * vz || 1
+      let u = ((x - from.x) * vx + (z - from.z) * vz) / len2
+      u = Math.max(0, Math.min(1, u))
+      worst = Math.min(worst,
+        Math.hypot(x - (from.x + vx * u), z - (from.z + vz * u)))
+    }
+    return worst
+  }
+
+  // A bound generous enough that it can never reject a site the exact test
+  // would have accepted: the platform's own half-diagonal PLUS how far its
+  // centre sits from the point being scored, because the runway is on one
+  // side of the platform and the terminal on the other.
+  // The site IS the platform's centre, so this is simply its half-diagonal.
+  // Adding the runway-to-platform offset on top - which was right back when
+  // the site meant the runway - demanded 190 units of open water against a
+  // 210-unit reachability limit, and the search found nowhere in the world to
+  // put an airport at all.
+  const { length, width } = airportFootprint()
+  const bound = Math.hypot(length / 2, width / 2)
+
+  let best = null
+  const reach = getMapExtent() + AIRPORT_MAX_SPAN
+  for (let x = -reach; x <= reach; x += 10) {
+    for (let z = -reach; z <= reach; z += 10) {
+      // Cheap rejection first, on the centre. Everything that survives is then
+      // measured properly - the fast test is allowed to be approximate only
+      // because it is never the one that decides.
+      const water = openWater(x, z)
+      if (water < bound + AIRPORT_CLEARANCE) continue
+      if (water > AIRPORT_MAX_SPAN) continue             // unreachable
+      if (offBridges(x, z) < bound + 25) continue
+
+      // Now ask the geometry where it actually ends up. The site is not the
+      // platform's centre and the platform is not the circle around it -
+      // scoring the centre against a formula for the size left one corner 26
+      // units off CONTACT where 30 were asked for.
+      const laid = layOutAirport({ x, z }, Math.atan2(x, z) + Math.PI / 2)
+      let worstWater = Infinity
+      let worstBridge = Infinity
+      let reachesOut = 0
+      for (const corner of platformCorners(laid)) {
+        worstWater = Math.min(worstWater, openWater(corner.x, corner.z))
+        worstBridge = Math.min(worstBridge, offBridges(corner.x, corner.z))
+        reachesOut = Math.max(reachesOut, Math.hypot(corner.x, corner.z))
+      }
+      if (worstWater < AIRPORT_CLEARANCE || worstBridge < 25) continue
+
+      // And it has to stay inside the shipping lane ring. The ring is a circle
+      // of waypoints at the map extent plus a margin, and every leg between two
+      // adjacent waypoints is safe BY CONSTRUCTION because there is nothing out
+      // there - a platform sitting on it would quietly break that guarantee and
+      // no test would catch it, because the sea graph never asks about
+      // anything but islands. Keeping the airport inside the ring also keeps it
+      // part of the world rather than a thing beyond the horizon.
+      if (reachesOut > innermostShippingLane() - AIRPORT_CLEARANCE) continue
+
+      // Deep water and clear of the crossings, without wandering off to the
+      // horizon: the last term is what keeps it part of the world.
+      const score = Math.min(worstWater, 140) + Math.min(worstBridge, 200) * 0.5 -
+                    Math.hypot(x, z) * 0.15
+      if (!best || score > best.score) {
+        best = { x, z, water: worstWater, bridges: worstBridge, score }
+      }
+    }
+  }
+
+  if (!best) return (airportCache = null)
+
+  // Tangential: across the line out from the middle of the world.
+  airportCache = layOutAirport(best, Math.atan2(best.x, best.z) + Math.PI / 2)
+  return airportCache
+}
+
+/**
+ * How big the platform is, and how far its centre sits from the runway.
+ *
+ * One implementation, so the search and the layout cannot disagree about the
+ * size of the thing being sited - which is exactly how a corner ended up in
+ * the wrong place the first time.
+ */
+function airportFootprint() {
+  const taxiAcross = AIRPORT_RUNWAY_WIDTH / 2 + 12
+  const standAcross = taxiAcross + 20
+  const offset = (standAcross + AIRPORT_APRON_DEPTH / 2) / 2
+
+  return {
+    taxiAcross,
+    standAcross,
+    offset,
+    length: AIRPORT_RUNWAY_LENGTH + AIRPORT_EDGE * 2,
+    width: AIRPORT_RUNWAY_WIDTH / 2 + standAcross +
+           AIRPORT_APRON_DEPTH / 2 + AIRPORT_EDGE
+  }
+}
+
+/** The four corners of the platform, in world coordinates. */
+export function platformCorners(airport) {
+  const p = airport.platform
+  const hl = p.length / 2
+  const hw = p.width / 2
+  const out = []
+
+  for (const [sl, sw] of [[1, 1], [1, -1], [-1, -1], [-1, 1]]) {
+    out.push({
+      x: p.x + airport.along.x * hl * sl + airport.across.x * hw * sw,
+      z: p.z + airport.along.z * hl * sl + airport.across.z * hw * sw
+    })
+  }
+
+  return out
+}
+
+/**
+ * Where the open-water shipping lane runs.
+ *
+ * The same figure `buildSeaGraph()` uses, taken from the same two inputs, so
+ * the airport cannot be sited onto a lane that has moved.
+ */
+export function shippingRingRadius() {
+  return getMapExtent() + SEA_LANE_MARGIN
+}
+
+/**
+ * How close to the middle of the world a ship on the lane ring ever gets.
+ *
+ * Not the ring's radius: the waypoints sit on the circle but a ship sails the
+ * straight leg between two of them, and a chord dips inside the arc. With
+ * SEA_LANE_NODES waypoints that is a factor of cos(pi / nodes) - nineteen
+ * units on the current map, which is most of the clearance a platform sited
+ * against the radius would have thought it had.
+ *
+ * The same shape of mistake as measuring a building against the circle round
+ * it instead of its rectangle. Ask where the ship actually goes.
+ */
+export function innermostShippingLane() {
+  return shippingRingRadius() * Math.cos(Math.PI / SEA_LANE_NODES)
+}
+
+/**
+ * The pieces, once the site and the heading are settled.
+ *
+ * Everything is measured from the runway centre line outward, so the apron
+ * cannot end up under the runway and a stand cannot end up off the platform -
+ * the two mistakes this project keeps making when a position is worked out
+ * from a formula instead of from the thing it has to sit beside.
+ */
+function layOutAirport(site, heading) {
+  const ax = Math.sin(heading)          // along the runway
+  const az = Math.cos(heading)
+
+  // Across it, toward the apron - and it points OUT to sea, away from the
+  // middle of the world.
+  //
+  // The runway is laid tangentially, so this axis runs either straight at the
+  // islands or straight away from them. It used to run at them, which put the
+  // terminal between the world and the runway: everything worth looking at -
+  // the aircraft, the markings, the stands - was behind an eleven-metre wall
+  // from every angle anyone would ever see it. Facing it the other way makes
+  // the apron the thing you see and the terminal the backdrop.
+  //
+  // Worth stating because it is not a preference: this platform is only ever
+  // viewed from one side. There is no land on the other.
+  const acrossAngle = heading - Math.PI / 2
+  const sx = Math.sin(acrossAngle)
+  const sz = Math.cos(acrossAngle)
+
+  // The site is the middle of the PLATFORM, not the middle of the runway.
+  //
+  // Everything below is still measured from the runway, because that is what
+  // the distances mean - a stand is so far across from the runway, not so far
+  // from the centre of a slab. So the whole layout is shifted by the offset
+  // between the two, which puts the platform symmetrically about the site.
+  //
+  // Getting this wrong is why the search could not place the airport at all
+  // once the terminal moved to the seaward side: the slab hung 33 units off
+  // to one side of the point being scored, so it reached 67 units further out
+  // than the search believed and every candidate failed the shipping lane.
+  const at = (along, across) => ({
+    x: site.x + ax * along + sx * (across - offset),
+    z: site.z + az * along + sz * (across - offset)
+  })
+
+  const halfRun = AIRPORT_RUNWAY_LENGTH / 2
+  const { taxiAcross, standAcross, offset, length, width } = airportFootprint()
+
+  // Stands spaced by a wingspan and a gap, centred on the apron.
+  const pitch = PLANE_SPAN + 8
+  const stands = []
+  for (let i = 0; i < AIRPORT_STANDS; i++) {
+    const along = (i - (AIRPORT_STANDS - 1) / 2) * pitch
+    stands.push({
+      index: i,
+      ...at(along, standAcross),
+      // Nose in, tail toward the taxiway: the aircraft faces the terminal.
+      // Taken from the across axis rather than written out again, so it cannot
+      // end up pointing the opposite way when that axis is flipped - which is
+      // exactly what happened when the terminal was moved to the seaward side.
+      heading: acrossAngle,
+      hold: at(along, taxiAcross)
+    })
+  }
+
+  return {
+    ...site,
+    heading,
+    along: { x: ax, z: az },
+    across: { x: sx, z: sz },
+    runway: {
+      from: at(-halfRun, 0),
+      to: at(halfRun, 0),
+      width: AIRPORT_RUNWAY_WIDTH,
+      length: AIRPORT_RUNWAY_LENGTH
+    },
+    // Where a landing rolls out to, and where a departure lines up.
+    threshold: [at(-halfRun, 0), at(halfRun, 0)],
+    taxiway: {
+      from: at(-halfRun + 14, taxiAcross),
+      to: at(halfRun - 14, taxiAcross),
+      width: 14
+    },
+    terminal: {
+      ...at(0, standAcross + AIRPORT_APRON_DEPTH / 2),
+      heading,
+      length: AIRPORT_STANDS * pitch,
+      depth: 22
+    },
+    stands,
+    platform: { x: site.x, z: site.z, heading, length, width }
+  }
+}
+
 /**
  * Where a cargo port's shed and containers stand.
  *
@@ -4970,11 +5295,29 @@ export function pointAlong(path, distance, wrap = false) {
   const span = cumulative[i + 1] - cumulative[i]
   const t = span > 1e-9 ? (d - cumulative[i]) / span : 0
 
-  return {
+  const out = {
     x: a.x + (b.x - a.x) * t,
     z: a.z + (b.z - a.z) * t,
     heading: Math.atan2(b.x - a.x, b.z - a.z)
   }
+
+  // Height, when the path has any. Everything that used this before was flat -
+  // ships on the sea, trains on a level beam, traffic on roads that carry
+  // their own height per vertex - so `y` was simply dropped. An aircraft
+  // asking this for its approach would have been told it was at sea level the
+  // whole way down, and the descent would have been invisible.
+  //
+  // Interpolated here rather than left to whatever draws it: a descent is a
+  // property of the route. Same reason the train timetable lives in this file.
+  //
+  // Note the distance along a path is still measured in the HORIZONTAL plane
+  // (see measurePath), so a climb does not shorten the ground track. That is
+  // what you want for a speed: it is a ground speed.
+  if (a.y !== undefined || b.y !== undefined) {
+    out.y = (a.y || 0) + ((b.y || 0) - (a.y || 0)) * t
+  }
+
+  return out
 }
 
 /** The monorail loop is a measured path that wraps. */
@@ -5810,4 +6153,687 @@ export function validateLayout() {
   }
 
   return { problems, warnings }
+}
+
+// ---------------------------------------------------------------------------
+// FLYING
+// ---------------------------------------------------------------------------
+
+/**
+ * The air routes: stands, the taxiway, the two runway thresholds, the fixes
+ * an aircraft flies to, and the points off the edge of the world.
+ *
+ * Derived from the airport the same way the sea graph is derived from the
+ * ports. Nothing is stored, so moving an island re-sites the airport and the
+ * routes follow it.
+ */
+export function getAirGraph(airport = getAirport()) {
+  if (!airport) return null
+
+  const { along, across, runway, stands, taxiway } = airport
+
+  // The two ends of the runway, each with the fix an aircraft lines up on.
+  // A threshold is a DIRECTION as much as a place: which way you land tells
+  // you which way the approach lies, and getting that backwards would put
+  // aircraft landing downwind into the terminal.
+  const ends = [0, 1].map(i => {
+    const at = i === 0 ? runway.from : runway.to
+    const other = i === 0 ? runway.to : runway.from
+    const dx = other.x - at.x
+    const dz = other.z - at.z
+    const len = Math.hypot(dx, dz) || 1
+    const dir = { x: dx / len, z: dz / len }   // the way you travel on landing
+
+    return {
+      at,
+      dir,
+      heading: Math.atan2(dir.x, dir.z),
+      // Where the wheels touch: into the runway, not on its very edge.
+      touchdown: { x: at.x + dir.x * PLANE_LENGTH, z: at.z + dir.z * PLANE_LENGTH },
+      // Lined up on the approach, out and high.
+      approach: {
+        x: at.x - dir.x * AIRPORT_APPROACH_RUN,
+        z: at.z - dir.z * AIRPORT_APPROACH_RUN,
+        y: AIRPORT_APPROACH_HEIGHT
+      },
+      // And where a departure has climbed to by the time it leaves the circuit.
+      climbout: {
+        x: other.x + dir.x * AIRPORT_APPROACH_RUN,
+        z: other.z + dir.z * AIRPORT_APPROACH_RUN,
+        y: AIRPORT_APPROACH_HEIGHT
+      }
+    }
+  })
+
+  // Where a landing turns off, and where a departure joins: the taxiway ends.
+  const exits = [taxiway.from, taxiway.to]
+
+  // Off the edge of the world, well past the fog, at cruising height. Same
+  // idea as the shipping: an aircraft that leaves is re-used as one arriving
+  // from somewhere else, so departures and arrivals balance without anything
+  // counting them.
+  const offworld = []
+  for (let i = 0; i < OFF_WORLD_NODES; i++) {
+    const angle = (i / OFF_WORLD_NODES) * Math.PI * 2
+    offworld.push({
+      x: Math.sin(angle) * OFF_WORLD_RADIUS,
+      z: Math.cos(angle) * OFF_WORLD_RADIUS,
+      y: PLANE_CRUISE_HEIGHT
+    })
+  }
+
+  return { airport, ends, exits, stands, offworld, along, across }
+}
+
+/**
+ * How far out an aircraft is established on the approach, and how high.
+ *
+ * The run is what makes a landing read as a landing rather than a drop: at
+ * PLANE_SPEED_APPROACH it is several seconds of visible straight-and-level
+ * before the wheels touch. The height is set from that run and the gradient a
+ * real approach uses - about one in sixteen - rather than picked, so
+ * lengthening the approach does not quietly make it a dive.
+ */
+export const AIRPORT_APPROACH_RUN = 320
+export const AIRPORT_APPROACH_HEIGHT = AIRPORT_APPROACH_RUN / 16
+
+/**
+ * The fleet, spread across the phases so the airport is not empty at start-up
+ * and not all-at-once either.
+ *
+ * **Stands are claimed here, not on arrival.** The ships taught this one: the
+ * bug was never during a voyage, it was `makeShips` picking start berths
+ * freely and putting two hulls in the same water on frame one. Start-up state
+ * needs the same invariants as the running simulation.
+ */
+export function makePlanes(graph, fleet = PLANE_FLEET) {
+  const planes = []
+  if (!graph || !graph.stands.length) return planes
+
+  let seed = 24601
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647
+    return (seed - 1) / 2147483646
+  }
+
+  const takenStands = new Set()
+
+  for (let i = 0; i < fleet; i++) {
+    // Half the fleet starts on stand, the rest strung out on the way in, so
+    // the first thing you see is an airport working rather than one waiting.
+    const onStand = i % 2 === 0
+    const free = graph.stands.filter(s => !takenStands.has(s.index))
+    if (!free.length) break
+
+    const stand = free[Math.floor(rand() * free.length) % free.length]
+    takenStands.add(stand.index)
+
+    const plane = {
+      id: i,
+      stand: stand.index,
+      end: i % 2,                       // which runway direction it uses
+      phase: onStand ? 'stand' : 'inbound',
+      // Staggered, so four aircraft don't all push back together.
+      timer: onStand ? PLANE_TURNAROUND * (0.2 + rand() * 0.8) : 0,
+      progress: onStand ? 0 : rand() * 0.6,
+      from: Math.floor(rand() * graph.offworld.length) % graph.offworld.length,
+      boarding: onStand
+    }
+
+    plane.path = planePath(graph, plane)
+    planes.push(plane)
+  }
+
+  return planes
+}
+
+/**
+ * The route for whatever an aircraft is currently doing.
+ *
+ * Every phase is a measured path and a speed, so one piece of machinery moves
+ * everything - the same `measurePath` / `pointAlong` the ships and the trains
+ * use. There is no second implementation of "something moving along a fixed
+ * line at a known rate" anywhere in this project and there should not be one.
+ */
+function planePath(graph, plane) {
+  const end = graph.ends[plane.end]
+  const other = graph.ends[1 - plane.end]
+  const stand = graph.stands.find(s => s.index === plane.stand) || graph.stands[0]
+  const exit = nearestPoint(graph.exits, end.touchdown)
+
+  switch (plane.phase) {
+    case 'inbound':
+      return measurePath([
+        { ...graph.offworld[plane.from], y: PLANE_CRUISE_HEIGHT },
+        { ...end.approach }
+      ])
+
+    case 'finals':
+      return measurePath([
+        { ...end.approach },
+        { x: end.touchdown.x, z: end.touchdown.z, y: 0 }
+      ])
+
+    case 'rollout':
+      return measurePath([
+        { x: end.touchdown.x, z: end.touchdown.z, y: 0 },
+        { x: exit.x, z: exit.z, y: 0 }
+      ])
+
+    case 'taxiIn':
+      return measurePath([
+        { x: exit.x, z: exit.z, y: 0 },
+        { x: stand.hold.x, z: stand.hold.z, y: 0 },
+        { x: stand.x, z: stand.z, y: 0 }
+      ])
+
+    case 'taxiOut': {
+      // Out to the far end and line up: you take off INTO the direction the
+      // other threshold faces, which is why this walks to `other`.
+      const lineup = nearestPoint(graph.exits, other.at)
+      return measurePath([
+        { x: stand.x, z: stand.z, y: 0 },
+        { x: stand.hold.x, z: stand.hold.z, y: 0 },
+        { x: lineup.x, z: lineup.z, y: 0 },
+        { x: other.at.x, z: other.at.z, y: 0 }
+      ])
+    }
+
+    case 'takeoff':
+      return measurePath([
+        { x: other.at.x, z: other.at.z, y: 0 },
+        { x: other.touchdown.x, z: other.touchdown.z, y: 0 },
+        { ...other.climbout }
+      ])
+
+    case 'outbound':
+      return measurePath([
+        { ...other.climbout },
+        { ...graph.offworld[plane.from], y: PLANE_CRUISE_HEIGHT }
+      ])
+
+    default:
+      return measurePath([{ x: stand.x, z: stand.z, y: 0 },
+                          { x: stand.x, z: stand.z, y: 0 }])
+  }
+}
+
+/** Whichever of these is closest to a point. */
+function nearestPoint(points, to) {
+  let best = points[0]
+  let bd = Infinity
+  for (const p of points) {
+    const d = Math.hypot(p.x - to.x, p.z - to.z)
+    if (d < bd) { bd = d; best = p }
+  }
+  return best
+}
+
+/** How fast an aircraft moves in each phase. */
+function planeSpeed(phase) {
+  switch (phase) {
+    case 'inbound':
+    case 'outbound': return PLANE_SPEED_CRUISE
+    case 'finals': return PLANE_SPEED_APPROACH
+    case 'rollout': return PLANE_SPEED_APPROACH * 0.7
+    case 'takeoff': return PLANE_SPEED_APPROACH
+    case 'taxiIn':
+    case 'taxiOut': return PLANE_SPEED_TAXI
+    default: return 0
+  }
+}
+
+/** What each phase does when it finishes. */
+const PLANE_NEXT = {
+  inbound: 'finals',
+  finals: 'rollout',
+  rollout: 'taxiIn',
+  taxiIn: 'stand',
+  stand: 'taxiOut',
+  taxiOut: 'takeoff',
+  takeoff: 'outbound',
+  outbound: 'inbound'
+}
+
+/** Which phases have the aircraft on the runway itself. */
+const ON_RUNWAY = new Set(['finals', 'rollout', 'takeoff'])
+
+/**
+ * Move the fleet on.
+ *
+ * **One aircraft on the runway at a time**, which is the whole of the
+ * separation rule and the only thing here that can block. A landing already
+ * committed is never held - there is nowhere for it to wait - so the runway is
+ * claimed at the point an aircraft would BEGIN using it and held until it is
+ * clear. Anything else queues on the ground, where queueing is free.
+ *
+ * That asymmetry is deliberate and it is the same lesson the traffic learned
+ * the hard way: a rule that can stop something with nowhere to stop is a rule
+ * that produces a deadlock.
+ */
+export function stepPlanes(graph, planes, delta) {
+  if (!graph) return
+
+  // Who has the runway. A committed landing outranks anything on the ground.
+  let runway = null
+  for (const plane of planes) {
+    if (!ON_RUNWAY.has(plane.phase)) continue
+    if (!runway || plane.phase === 'finals') runway = plane
+  }
+
+  for (const plane of planes) {
+    if (plane.phase === 'stand') {
+      plane.timer -= delta
+      plane.boarding = true
+      if (plane.timer <= 0) {
+        plane.boarding = false
+        advance(graph, plane)
+      }
+      continue
+    }
+
+    // Waiting for the runway to clear. Two places can hold, and they are the
+    // two places where holding is free:
+    //
+    //   taxiOut - stopped at the holding point, which is what it is for;
+    //   inbound - still out at the approach fix, where an aircraft can be
+    //             turned round and brought back in.
+    //
+    // Nothing holds once it is on finals. By then it is committed and there is
+    // nowhere to wait, which is precisely the shape of rule the traffic
+    // learned the hard way: a rule that can stop something with nowhere to
+    // stop is a rule that produces a deadlock. Holding only `taxiOut` left
+    // landings queueing up behind a rollout - 980 frames of two aircraft on
+    // the runway in six minutes.
+    const canHold = plane.phase === 'taxiOut' || plane.phase === 'inbound'
+    if (canHold && plane.progress >= 0.999 && runway && runway !== plane) {
+      plane.holding = true
+      continue
+    }
+    plane.holding = false
+
+    const length = plane.path.length || 1
+    plane.progress += (planeSpeed(plane.phase) * delta) / length
+
+    if (plane.progress >= 1) {
+      plane.progress = 1
+      // Don't enter the runway while somebody else is on it.
+      if (canHold && runway && runway !== plane) continue
+      advance(graph, plane)
+      // Whatever just took the runway holds it against everyone else this
+      // frame, or two aircraft cleared into it in the same step.
+      if (ON_RUNWAY.has(plane.phase)) runway = plane
+    }
+  }
+}
+
+function advance(graph, plane) {
+  plane.phase = PLANE_NEXT[plane.phase] || 'stand'
+  plane.progress = 0
+
+  if (plane.phase === 'stand') {
+    plane.timer = PLANE_TURNAROUND
+    plane.arrivals = (plane.arrivals || 0) + 1
+  }
+
+  if (plane.phase === 'inbound') {
+    // Re-used as an arrival from somewhere else, exactly as a hull is. The
+    // aircraft that left is not the one that comes back, and nobody can tell.
+    plane.from = (plane.from + 3) % graph.offworld.length
+    plane.end = 1 - plane.end
+    plane.departures = (plane.departures || 0) + 1
+  }
+
+  plane.path = planePath(graph, plane)
+}
+
+/**
+ * Where an aircraft is right now, and which way it is pointing.
+ *
+ * Height comes from the path, so a descent is a property of the route rather
+ * than a thing the renderer works out for itself - the trains taught that one:
+ * anything with logic in it belongs where a test can run it.
+ */
+export function planePosition(graph, plane) {
+  const at = pointAlong(plane.path, plane.progress * plane.path.length)
+  const ahead = pointAlong(plane.path,
+    Math.min(plane.path.length, plane.progress * plane.path.length + 2))
+
+  const dx = ahead.x - at.x
+  const dz = ahead.z - at.z
+  const heading = (dx || dz) ? Math.atan2(dx, dz) : 0
+
+  // Pitch from the climb or descent actually being flown, not from the phase.
+  const run = Math.hypot(dx, dz) || 1
+  const pitch = Math.atan2((ahead.y || 0) - (at.y || 0), run)
+
+  return {
+    x: at.x,
+    y: (at.y || 0) + PIER_DECK_Y,
+    z: at.z,
+    heading,
+    pitch,
+    onGround: !ON_RUNWAY.has(plane.phase) || (at.y || 0) < 0.5,
+    boarding: plane.phase === 'stand'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HELICOPTERS
+// ---------------------------------------------------------------------------
+
+/**
+ * Rooftop pads, ground pads, and the machines that use them.
+ *
+ * A helicopter needs far less than an aircraft - no runway, no taxiway, just
+ * somewhere flat and something above it that is nothing. So the whole problem
+ * is clearance, and there is exactly one thing in this world that takes it
+ * away: the monorail beam, which runs 9.5 to 11 units up straight over the
+ * towns. A pad under it has no way out.
+ */
+/**
+ * The pad is sized off the ROOF it has to sit on, not off the helicopter.
+ *
+ * A town plot is 9 by 8, so a 9-unit pad fits none of them once you want any
+ * margin - and the first version placed zero rooftop pads in the entire world
+ * while looking perfectly reasonable. Tied to the plot depth so it cannot come
+ * adrift from it again.
+ *
+ * The ROTOR may overhang the pad, as it does on real rooftop pads, so that is
+ * sized off the airframe instead.
+ */
+export const HELIPAD_SIZE = DEFAULT_PLOT_DEPTH - 2
+export const HELI_ROTOR = 11
+export const HELI_LENGTH = 12
+
+/**
+ * How much clear air a pad needs above it before a machine can lift off.
+ *
+ * A rotor's width, so the disc clears whatever it is sitting between, plus a
+ * little. Anything less and the pad is decorative.
+ */
+export const HELIPAD_HEADROOM = HELI_ROTOR + 4
+
+/** How many floors a rooftop pad's building gets, where the beam allows. */
+export const HELIPAD_FLOORS = 5
+export const FLOOR_HEIGHT = 2.5
+
+/** Cruise height, speeds, and how long one sits on the pad. */
+export const HELI_CRUISE_HEIGHT = 46
+export const HELI_SPEED_CRUISE = 22
+export const HELI_SPEED_CLIMB = 7
+export const HELI_TURN_RATE = 0.8
+export const HELI_DWELL = 22
+export const HELI_FLEET = 3
+
+let helipadCache = null
+
+/**
+ * Every pad in the world: on rooftops where a town has them, on the ground
+ * where it doesn't.
+ *
+ * Derived, and each one measured for the thing that actually matters - open
+ * air above it. `monorailCeiling()` states how tall anything may be at a
+ * point, and a pad has to clear that by a rotor's width, not merely fit under
+ * it: a machine that can sit on a pad and never leave is worse than no pad.
+ */
+export function getHelipads() {
+  if (helipadCache) return helipadCache
+
+  const route = getMonorailRoute()
+  const pads = []
+
+  for (const island of ISLANDS) {
+    const roads = getIslandRoads(island)
+
+    // Rooftops first, on the islands that have towns to put them on. Plots are
+    // spaced apart so two pads are never on adjacent roofs, which would read
+    // as a heliport rather than as a city with a few pads on it.
+    const plots = getTownPlots(island)
+    let taken = 0
+    for (let i = 0; i < plots.length && taken < 2; i += 7) {
+      const plot = plots[i]
+      const x = island.x + plot.x
+      const z = island.z + plot.z
+
+      // How tall this building may be, and therefore where its roof lands.
+      const floors = monorailFloors(route, x, z, HELIPAD_FLOORS, FLOOR_HEIGHT)
+      if (floors < 3) continue                    // a pad on a bungalow is odd
+
+      const roof = groundHeight(x, z) + floors * FLOOR_HEIGHT
+      const ceiling = monorailCeiling(route, x, z)
+      if (ceiling !== Infinity &&
+          ceiling - floors * FLOOR_HEIGHT < HELIPAD_HEADROOM) continue
+
+      // The pad must fit the roof it sits on, with a margin either side.
+      if (Math.min(plot.width, plot.depth) < HELIPAD_SIZE + 1) continue
+
+      pads.push({
+        kind: 'roof', island: island.id, x, z, y: roof,
+        heading: (plot.rotation || 0) * Math.PI / 180,
+        floors
+      })
+      taken++
+    }
+
+    // And a pad on the ground, clear of the roads and of the beam. Islands
+    // without towns get one too - that is the point of them: somewhere to fly
+    // to that isn't a city.
+    const ground = findGroundPad(island, roads, route)
+    if (ground) pads.push(ground)
+  }
+
+  helipadCache = pads
+  return pads
+}
+
+/**
+ * Somewhere flat on an island for a ground pad.
+ *
+ * Swept like the ports are, and tested as a RECTANGLE against the roads
+ * rather than as the circle round it - the mistake that once placed no fire
+ * stations at all, because a town with streets every 34 units has 16 clear
+ * units nowhere.
+ */
+function findGroundPad(island, roads, route) {
+  const reach = islandReach(island)
+
+  for (let ring = 0.35; ring <= 0.75; ring += 0.1) {
+    for (let a = 0; a < 360; a += 15) {
+      const angle = (a * Math.PI) / 180
+      const localX = Math.sin(angle) * reach * ring
+      const localZ = Math.cos(angle) * reach * ring
+      const x = island.x + localX
+      const z = island.z + localZ
+
+      // On land, with room for the pad and a margin.
+      if (inlandDistance(island, localX, localZ) < HELIPAD_SIZE) continue
+
+      // Clear of every road, by the pad's own half-diagonal.
+      const half = Math.hypot(HELIPAD_SIZE, HELIPAD_SIZE) / 2
+      if (distanceToNearestRoad(roads, localX, localZ) < half + 4) continue
+
+      // And open air above it.
+      const ceiling = monorailCeiling(route, x, z)
+      if (ceiling !== Infinity && ceiling < HELIPAD_HEADROOM) continue
+
+      return {
+        kind: 'ground', island: island.id, x, z,
+        y: groundHeight(x, z), heading: angle, floors: 0
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * The machines, spread across the pads.
+ *
+ * **A pad is claimed at departure, not on arrival**, and claimed here at
+ * start-up too. That is the ships' lesson written down once and applied every
+ * time since: the bug was never during a voyage, it was `makeShips` picking
+ * start berths freely and putting two hulls in the same water on frame one.
+ */
+export function makeHelicopters(pads = getHelipads(), fleet = HELI_FLEET) {
+  const machines = []
+  if (pads.length < 2) return machines
+
+  let seed = 7331
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647
+    return (seed - 1) / 2147483646
+  }
+
+  const claimed = new Set()
+
+  for (let i = 0; i < fleet && claimed.size < pads.length; i++) {
+    let home = Math.floor(rand() * pads.length) % pads.length
+    let guard = 0
+    while (claimed.has(home) && guard++ < pads.length) {
+      home = (home + 1) % pads.length
+    }
+    if (claimed.has(home)) break
+    claimed.add(home)
+
+    machines.push({
+      id: i,
+      pad: home,
+      target: home,
+      phase: 'parked',
+      timer: HELI_DWELL * (0.3 + rand() * 1.2),
+      progress: 0,
+      heading: pads[home].heading,
+      path: null
+    })
+  }
+
+  return machines
+}
+
+/** Where a machine is going next: any pad but the one it is standing on. */
+function nextPad(pads, from, rand) {
+  if (pads.length < 2) return from
+  let to = Math.floor(rand * pads.length) % pads.length
+  if (to === from) to = (to + 1) % pads.length
+  return to
+}
+
+/**
+ * Fly them.
+ *
+ * Three phases and nothing else: straight up, across, straight down. A
+ * helicopter is the one thing in this world that can stop in mid-air, so it
+ * needs no separation rule - two of them cannot want the same piece of sky
+ * for long, and they cannot want the same PAD at all, because a pad is
+ * reserved before anyone sets off for it.
+ */
+export function stepHelicopters(pads, machines, delta, elapsed = 0) {
+  if (!pads.length) return
+
+  const reserved = new Set(machines.map(m => m.target))
+
+  for (const machine of machines) {
+    const pad = pads[machine.pad]
+
+    switch (machine.phase) {
+      case 'parked': {
+        machine.timer -= delta
+        if (machine.timer > 0) break
+
+        // Somewhere to go, and it has to be free before setting off.
+        const wanted = nextPad(pads, machine.pad,
+                               (machine.id * 0.37 + elapsed * 0.013) % 1)
+        if (reserved.has(wanted) && wanted !== machine.pad) {
+          machine.timer = 2                   // wait, try again shortly
+          break
+        }
+        reserved.add(wanted)
+        machine.target = wanted
+        machine.phase = 'climb'
+        machine.progress = 0
+        break
+      }
+
+      case 'climb': {
+        machine.progress += (HELI_SPEED_CLIMB * delta) / HELI_CRUISE_HEIGHT
+        if (machine.progress >= 1) {
+          machine.progress = 0
+          machine.phase = 'cruise'
+          const to = pads[machine.target]
+          machine.path = measurePath([
+            { x: pad.x, z: pad.z, y: pad.y + HELI_CRUISE_HEIGHT },
+            { x: to.x, z: to.z, y: to.y + HELI_CRUISE_HEIGHT }
+          ])
+        }
+        break
+      }
+
+      case 'cruise': {
+        const length = machine.path.length || 1
+        machine.progress += (HELI_SPEED_CRUISE * delta) / length
+        if (machine.progress >= 1) {
+          machine.progress = 0
+          machine.phase = 'descend'
+          machine.pad = machine.target
+        }
+        break
+      }
+
+      case 'descend': {
+        machine.progress += (HELI_SPEED_CLIMB * delta) / HELI_CRUISE_HEIGHT
+        if (machine.progress >= 1) {
+          machine.progress = 0
+          machine.phase = 'parked'
+          machine.timer = HELI_DWELL
+          machine.landings = (machine.landings || 0) + 1
+        }
+        break
+      }
+    }
+  }
+}
+
+/**
+ * Where a machine is, and which way it points.
+ *
+ * Headings are TURNED, not set - the same rule the ships needed. A straight
+ * set spins the airframe on the spot at the moment it starts moving, which
+ * reads as a glitch rather than as a departure.
+ */
+export function helicopterPosition(pads, machine, delta = 0) {
+  const pad = pads[machine.pad]
+  let x = pad.x
+  let z = pad.z
+  let y = pad.y
+  let want = machine.heading
+
+  if (machine.phase === 'climb') {
+    y = pad.y + HELI_CRUISE_HEIGHT * machine.progress
+  } else if (machine.phase === 'descend') {
+    y = pad.y + HELI_CRUISE_HEIGHT * (1 - machine.progress)
+  } else if (machine.phase === 'cruise' && machine.path) {
+    const at = pointAlong(machine.path, machine.progress * machine.path.length)
+    x = at.x
+    z = at.z
+    y = at.y
+    want = at.heading
+  }
+
+  if (delta > 0) {
+    let diff = want - machine.heading
+    while (diff > Math.PI) diff -= Math.PI * 2
+    while (diff < -Math.PI) diff += Math.PI * 2
+    const step = HELI_TURN_RATE * delta
+    machine.heading += Math.max(-step, Math.min(step, diff))
+  }
+
+  return {
+    x, y, z,
+    heading: machine.heading,
+    // Nose down a little in the cruise, level on the pad. A helicopter that
+    // flies dead flat looks like it is being dragged.
+    pitch: machine.phase === 'cruise' ? 0.12 : 0,
+    flying: machine.phase !== 'parked'
+  }
 }

@@ -48,6 +48,21 @@ import {
   shipPosition,
   PIER_DECK_Y,
   PIER_DECK_DEPTH,
+  getAirport,
+  getAirGraph,
+  getHelipads,
+  makeHelicopters,
+  stepHelicopters,
+  helicopterPosition,
+  HELIPAD_SIZE,
+  HELI_ROTOR,
+  HELI_LENGTH,
+  makePlanes,
+  stepPlanes,
+  planePosition,
+  AIRPORT_RUNWAY_WIDTH,
+  PLANE_LENGTH,
+  PLANE_SPAN,
   makeMonorailTrains,
   stepMonorailTrains,
   monorailPointAt,
@@ -327,6 +342,9 @@ export class World {
     this.createMonorail()
     this.createPorts()
     this.createShips()
+    this.createAirport()
+    this.createPlanes()
+    this.createHelicopters()
     this.createBusStops()
     this.createStations()
     this.createTraffic()
@@ -2937,6 +2955,521 @@ export class World {
   }
 
   // -------------------------------------------------------------
+  // The airport
+  // -------------------------------------------------------------
+
+  /**
+   * The platform, its piles, the runway and the terminal.
+   *
+   * Every piece is placed from the layout in islandLayout.js rather than
+   * measured out here, for the reason that file gives: World.js needs a
+   * browser, so nothing in it can be run by a test. The geometry that has to
+   * be RIGHT - where the platform sits, whether its corners are in open
+   * water, whether a stand overlaps the runway - is decided where a test can
+   * check it. This draws what it is told.
+   */
+  createAirport() {
+    const air = getAirport()
+    this.airport = air
+    if (!air) return
+
+    const deckY = PIER_DECK_Y
+    const along = air.along
+    const across = air.across
+
+    const at = (a, c, y = deckY) => ({
+      x: air.x + along.x * a + across.x * c,
+      z: air.z + along.z * a + across.z * c,
+      y
+    })
+
+    const concreteMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.quay, roughness: 0.9, flatShading: true
+    })
+    const asphaltMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.asphalt, roughness: 0.95, flatShading: true
+    })
+    const lineMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.roadLine, roughness: 0.8, flatShading: true
+    })
+
+    // The deck. Underside below the waterline, like the quays, so there is no
+    // gap to see the sea through at the edge.
+    const plat = air.platform
+    const deck = new THREE.Mesh(
+      new THREE.BoxGeometry(plat.width, PIER_DECK_DEPTH, plat.length), concreteMat)
+    deck.position.set(plat.x, deckY - PIER_DECK_DEPTH / 2, plat.z)
+    deck.rotation.y = air.heading
+    deck.receiveShadow = true
+    this.game.add(deck)
+
+    // Solid, so you can drive onto it once something reaches it - and so a
+    // plane is standing on something rather than hovering over water.
+    this.game.physics.createStaticBoxAt(
+      plat.x, deckY - PIER_DECK_DEPTH / 2, plat.z,
+      plat.width, PIER_DECK_DEPTH, plat.length, air.heading)
+
+    // Piles. A platform at sea has to stand on something visible or it reads
+    // as a raft: spaced along both long edges and down into the water.
+    const pileMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.beamDark, roughness: 0.85, flatShading: true
+    })
+    const piles = Math.max(4, Math.round(plat.length / 26))
+    for (let i = 0; i <= piles; i++) {
+      const a = -plat.length / 2 + (plat.length * i) / piles
+      for (const side of [1, -1]) {
+        const c = (plat.width / 2 - 3) * side + (air.platformOffset || 0)
+        const p = at(a, c)
+        const pile = new THREE.Mesh(
+          new THREE.CylinderGeometry(1.5, 1.8, 9, 8), pileMat)
+        pile.position.set(p.x, SEA_LEVEL - 3.6, p.z)
+        pile.castShadow = true
+        this.game.add(pile)
+      }
+    }
+
+    // The runway, laid on the deck rather than replacing it.
+    const run = air.runway
+    const strip = new THREE.Mesh(
+      new THREE.BoxGeometry(run.width, 0.32, run.length), asphaltMat)
+    strip.position.set((run.from.x + run.to.x) / 2, deckY + 0.16,
+                       (run.from.z + run.to.z) / 2)
+    strip.rotation.y = air.heading
+    strip.receiveShadow = true
+    this.game.add(strip)
+
+    // Centreline, dashed, and a threshold bar at each end. The markings are
+    // what makes it read as a runway rather than a grey rectangle.
+    const dashes = Math.floor(run.length / 24)
+    for (let i = 0; i < dashes; i++) {
+      const a = -run.length / 2 + 12 + i * 24
+      const p = at(a, 0)
+      const dash = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.06, 12), lineMat)
+      dash.position.set(p.x, deckY + 0.34, p.z)
+      dash.rotation.y = air.heading
+      this.game.add(dash)
+    }
+
+    for (const end of [-1, 1]) {
+      for (let b = 0; b < 6; b++) {
+        const c = (b - 2.5) * 3.2
+        const p = at(end * (run.length / 2 - 7), c)
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.06, 11), lineMat)
+        bar.position.set(p.x, deckY + 0.34, p.z)
+        bar.rotation.y = air.heading
+        this.game.add(bar)
+      }
+    }
+
+    // The taxiway, and a marked box at every stand.
+    const taxi = air.taxiway
+    const taxiLen = Math.hypot(taxi.to.x - taxi.from.x, taxi.to.z - taxi.from.z)
+    const taxiway = new THREE.Mesh(
+      new THREE.BoxGeometry(taxi.width, 0.3, taxiLen), asphaltMat)
+    taxiway.position.set((taxi.from.x + taxi.to.x) / 2, deckY + 0.15,
+                         (taxi.from.z + taxi.to.z) / 2)
+    taxiway.rotation.y = air.heading
+    this.game.add(taxiway)
+
+    for (const stand of air.stands) {
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(PLANE_SPAN + 4, 0.06, PLANE_LENGTH + 4), lineMat)
+      box.position.set(stand.x, deckY + 0.33, stand.z)
+      box.rotation.y = air.heading
+      this.game.add(box)
+    }
+
+    this.buildTerminal(air, deckY)
+
+    // Approach lights on the water, leading in to each threshold. Cheap, and
+    // it is what tells you at night that the thing out there is an airport.
+    for (const end of air.stands.length ? [0, 1] : []) {
+      const graph = getAirGraph(air)
+      if (!graph) break
+      const e = graph.ends[end]
+      for (let i = 1; i <= 6; i++) {
+        const d = i * 12
+        this.addStreetlight(e.at.x - e.dir.x * d, e.at.z - e.dir.z * d,
+                            { x: e.at.x, z: e.at.z })
+      }
+    }
+  }
+
+  /** The terminal, its glass, and an airbridge reaching to each stand. */
+  buildTerminal(air, deckY) {
+    const t = air.terminal
+
+    const shellMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.wallWhite, roughness: 0.7, flatShading: true
+    })
+    const roofMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.roofDark, roughness: 0.8, flatShading: true
+    })
+
+    const shell = new THREE.Mesh(
+      new THREE.BoxGeometry(t.depth, 11, t.length), shellMat)
+    shell.position.set(t.x, deckY + 5.5, t.z)
+    shell.rotation.y = air.heading
+    shell.castShadow = true
+    shell.receiveShadow = true
+    this.game.add(shell)
+
+    const roof = new THREE.Mesh(
+      new THREE.BoxGeometry(t.depth + 3, 0.8, t.length + 3), roofMat)
+    roof.position.set(t.x, deckY + 11.4, t.z)
+    roof.rotation.y = air.heading
+    this.game.add(roof)
+
+    // Glass along the apron face, lit after dark. registerNightLight is the
+    // same path the shopfronts and the station signs use - one implementation
+    // of "this glows at night", so a terminal cannot come on at a different
+    // hour from everything else.
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.glass, roughness: 0.2, metalness: 0.4,
+      emissive: new THREE.Color(PALETTE.windowLit), emissiveIntensity: 0
+    })
+    this.registerNightLight(glassMat, 1)
+
+    const glass = new THREE.Mesh(
+      new THREE.BoxGeometry(0.4, 6, t.length - 4), glassMat)
+    const face = {
+      x: t.x - air.across.x * (t.depth / 2 + 0.1),
+      z: t.z - air.across.z * (t.depth / 2 + 0.1)
+    }
+    glass.position.set(face.x, deckY + 5, face.z)
+    glass.rotation.y = air.heading
+    this.game.add(glass)
+
+    this.game.physics.createStaticBoxAt(t.x, deckY + 5.5, t.z,
+                                        t.depth, 11, t.length, air.heading)
+
+    // An airbridge per stand, reaching from the terminal toward the aircraft.
+    this.airbridges = []
+    for (const stand of air.stands) {
+      const reach = 12
+      const bridge = new THREE.Mesh(
+        new THREE.BoxGeometry(reach, 3.4, 4.2), shellMat)
+      const mid = {
+        x: (stand.x + t.x) / 2,
+        z: (stand.z + t.z) / 2
+      }
+      bridge.position.set(mid.x, deckY + 5.4, mid.z)
+      bridge.rotation.y = air.heading
+      bridge.castShadow = true
+      this.game.add(bridge)
+      this.airbridges.push({ mesh: bridge, stand: stand.index, home: bridge.position.clone() })
+    }
+  }
+
+  /**
+   * The aircraft, hung off the flight the layout is already flying.
+   *
+   * No colliders, for the same reason the ships have none.
+   */
+  createPlanes() {
+    this.airGraph = getAirGraph(this.airport)
+    this.planes = []
+    if (!this.airGraph) return
+
+    this.planes = makePlanes(this.airGraph)
+
+    for (const plane of this.planes) {
+      plane.mesh = this.buildPlane()
+      const where = planePosition(this.airGraph, plane)
+      plane.mesh.position.set(where.x, where.y, where.z)
+      plane.mesh.rotation.y = where.heading
+      this.game.add(plane.mesh)
+    }
+  }
+
+  buildPlane() {
+    const group = new THREE.Group()
+
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.carWhite, roughness: 0.45, metalness: 0.25, flatShading: true
+    })
+    const trimMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.trainBody, roughness: 0.5, metalness: 0.2, flatShading: true
+    })
+    const darkMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.beamDark, roughness: 0.7, flatShading: true
+    })
+
+    // Fuselage. Built along +Z, which is the direction everything else in this
+    // world calls forward - the car, the ships and the trains all do, and a
+    // model that disagrees gets rotated once on load rather than everything
+    // else being special-cased around it.
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.1, 2.1, PLANE_LENGTH * 0.78, 10), bodyMat)
+    body.rotation.x = Math.PI / 2
+    body.position.y = 3.4
+    body.castShadow = true
+    group.add(body)
+
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(2.1, 5, 10), bodyMat)
+    nose.rotation.x = Math.PI / 2
+    nose.position.set(0, 3.4, PLANE_LENGTH * 0.39 + 2.5)
+    group.add(nose)
+
+    const tailCone = new THREE.Mesh(new THREE.ConeGeometry(2.1, 6, 10), bodyMat)
+    tailCone.rotation.x = -Math.PI / 2
+    tailCone.position.set(0, 3.9, -PLANE_LENGTH * 0.39 - 3)
+    group.add(tailCone)
+
+    // Wings, swept back a little so it reads as an airliner rather than a
+    // plank. Span is the constant the stands are spaced off, so the drawn
+    // aircraft and the parking box cannot disagree.
+    const wing = new THREE.Mesh(
+      new THREE.BoxGeometry(PLANE_SPAN, 0.6, 6), bodyMat)
+    wing.position.set(0, 2.9, -1)
+    wing.castShadow = true
+    group.add(wing)
+
+    const tailplane = new THREE.Mesh(new THREE.BoxGeometry(9, 0.5, 3), bodyMat)
+    tailplane.position.set(0, 5.4, -PLANE_LENGTH * 0.39 - 1.5)
+    group.add(tailplane)
+
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.6, 6, 4.5), trimMat)
+    fin.position.set(0, 7.4, -PLANE_LENGTH * 0.39 - 1.5)
+    fin.castShadow = true
+    group.add(fin)
+
+    // Engines under the wings, and a stripe down the side.
+    for (const side of [1, -1]) {
+      const engine = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.5, 1.5, 5, 8), darkMat)
+      engine.rotation.x = Math.PI / 2
+      engine.position.set(side * (PLANE_SPAN * 0.27), 1.9, 0.5)
+      engine.castShadow = true
+      group.add(engine)
+    }
+
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(4.35, 0.9, PLANE_LENGTH * 0.78), trimMat)
+    stripe.position.y = 3.1
+    group.add(stripe)
+
+    // Cabin windows, lit at night with everything else.
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.glass, roughness: 0.2, metalness: 0.3,
+      emissive: new THREE.Color(PALETTE.windowLit), emissiveIntensity: 0
+    })
+    this.registerNightLight(glassMat, 1)
+    for (const side of [1, -1]) {
+      const strip = new THREE.Mesh(
+        new THREE.BoxGeometry(0.2, 0.8, PLANE_LENGTH * 0.62), glassMat)
+      strip.position.set(side * 2.05, 4.1, 1)
+      group.add(strip)
+    }
+
+    return group
+  }
+
+  /**
+   * Fly them.
+   *
+   * The flying itself is stepPlanes() in islandLayout.js, for the same reason
+   * the train timetable and the traffic rules live there: this file cannot be
+   * run by a test, so anything with a decision in it belongs where one can.
+   * This asks where each aircraft is and puts it there.
+   */
+  updatePlanes(delta) {
+    if (!this.airGraph || !this.planes || !this.planes.length) return
+
+    stepPlanes(this.airGraph, this.planes, delta)
+
+    for (const plane of this.planes) {
+      const where = planePosition(this.airGraph, plane)
+      plane.mesh.position.set(where.x, where.y, where.z)
+      plane.mesh.rotation.y = where.heading
+      // Nose up on the climb and down on the approach, from the gradient the
+      // route is actually flying rather than from the phase name.
+      plane.mesh.rotation.x = -where.pitch
+    }
+
+    // The airbridge reaches out when its aircraft is on stand and sits back
+    // against the terminal when it isn't - which is the only way to see, from
+    // outside, that anybody is getting on.
+    if (!this.airbridges) return
+    for (const bridge of this.airbridges) {
+      const parked = this.planes.some(p => p.stand === bridge.stand &&
+                                           p.phase === 'stand')
+      const want = parked ? 1 : 0
+      bridge.at = bridge.at === undefined ? want : bridge.at
+      bridge.at += Math.max(-delta * 0.6, Math.min(delta * 0.6, want - bridge.at))
+      const reach = 4.5 * bridge.at
+      bridge.mesh.position.set(
+        bridge.home.x - this.airport.across.x * reach,
+        bridge.home.y,
+        bridge.home.z - this.airport.across.z * reach)
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Helicopters
+  // -------------------------------------------------------------
+
+  /**
+   * The pads and the machines.
+   *
+   * Where a pad may go is decided in islandLayout.js - it is a question about
+   * the monorail beam and about roof sizes, and both are things a test has to
+   * be able to check. This draws them.
+   */
+  createHelicopters() {
+    this.helipads = getHelipads()
+    this.helicopters = []
+    if (!this.helipads.length) return
+
+    const padMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.asphalt, roughness: 0.92, flatShading: true
+    })
+    const markMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.roadLine, roughness: 0.8, flatShading: true
+    })
+
+    for (const pad of this.helipads) {
+      // The deck. A rooftop pad sits ON the roof, so it is drawn just above
+      // the height the layout worked out; a ground pad sits on the ground.
+      const deck = new THREE.Mesh(
+        new THREE.BoxGeometry(HELIPAD_SIZE, 0.3, HELIPAD_SIZE), padMat)
+      deck.position.set(pad.x, pad.y + 0.15, pad.z)
+      deck.rotation.y = pad.heading
+      deck.receiveShadow = true
+      this.game.add(deck)
+
+      // The circle and the H, which is the only thing that says "helipad"
+      // rather than "grey square".
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(HELIPAD_SIZE * 0.34, 0.22, 6, 18), markMat)
+      ring.rotation.x = -Math.PI / 2
+      ring.position.set(pad.x, pad.y + 0.33, pad.z)
+      this.game.add(ring)
+
+      for (const bar of [[-1.1, 0.5, 2.4], [1.1, 0.5, 2.4], [0, 2.2, 0.5]]) {
+        const mark = new THREE.Mesh(
+          new THREE.BoxGeometry(bar[1], 0.08, bar[2]), markMat)
+        const c = Math.cos(pad.heading)
+        const sn = Math.sin(pad.heading)
+        mark.position.set(pad.x + bar[0] * c, pad.y + 0.34, pad.z - bar[0] * sn)
+        mark.rotation.y = pad.heading
+        this.game.add(mark)
+      }
+
+      // A ground pad gets a light so it reads after dark. A rooftop one does
+      // not - a lamp post on a roof looks like a mistake.
+      if (pad.kind === 'ground') {
+        this.addStreetlight(pad.x + HELIPAD_SIZE, pad.z, { x: pad.x, z: pad.z })
+      }
+    }
+
+    this.helicopters = makeHelicopters(this.helipads)
+    for (const machine of this.helicopters) {
+      machine.mesh = this.buildHelicopter()
+      const where = helicopterPosition(this.helipads, machine, 0)
+      machine.mesh.position.set(where.x, where.y, where.z)
+      machine.mesh.rotation.y = where.heading
+      this.game.add(machine.mesh)
+    }
+  }
+
+  buildHelicopter() {
+    const group = new THREE.Group()
+
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.carBlue, roughness: 0.5, metalness: 0.25, flatShading: true
+    })
+    const darkMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.beamDark, roughness: 0.7, flatShading: true
+    })
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.glass, roughness: 0.2, metalness: 0.4, flatShading: true
+    })
+
+    // Cabin, built along +Z like everything else that moves in this world.
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 5.4), bodyMat)
+    cabin.position.set(0, 1.9, 0.6)
+    cabin.castShadow = true
+    group.add(cabin)
+
+    const nose = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.2, 1.8), glassMat)
+    nose.position.set(0, 2.1, 3.6)
+    group.add(nose)
+
+    // Tail boom and fin.
+    const boom = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 6), bodyMat)
+    boom.position.set(0, 2.4, -3.6)
+    group.add(boom)
+
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.4, 2.4, 1.4), bodyMat)
+    fin.position.set(0, 3.4, -6.2)
+    group.add(fin)
+
+    // Skids, which is what makes it read as a helicopter when it is on a pad.
+    for (const side of [1, -1]) {
+      const skid = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 5), darkMat)
+      skid.position.set(side * 1.3, 0.2, 0.6)
+      group.add(skid)
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.2, 0.25), darkMat)
+      leg.position.set(side * 1.3, 0.8, 0.6)
+      group.add(leg)
+    }
+
+    // Main rotor and tail rotor, kept on the group so they can be spun.
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.8, 6), darkMat)
+    hub.position.set(0, 3.7, 0.6)
+    group.add(hub)
+
+    const rotor = new THREE.Group()
+    for (let i = 0; i < 2; i++) {
+      const blade = new THREE.Mesh(
+        new THREE.BoxGeometry(HELI_ROTOR, 0.12, 0.7), darkMat)
+      blade.rotation.y = (i * Math.PI) / 2
+      rotor.add(blade)
+    }
+    rotor.position.set(0, 4.1, 0.6)
+    group.add(rotor)
+
+    const tailRotor = new THREE.Group()
+    for (let i = 0; i < 2; i++) {
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.12, 3.2, 0.4), darkMat)
+      blade.rotation.z = (i * Math.PI) / 2
+      tailRotor.add(blade)
+    }
+    tailRotor.position.set(0.6, 3.4, -6.2)
+    group.add(tailRotor)
+
+    group.userData.rotor = rotor
+    group.userData.tailRotor = tailRotor
+    return group
+  }
+
+  /**
+   * Fly them, and spin the rotors.
+   *
+   * The flying is stepHelicopters() in islandLayout.js. The only thing decided
+   * here is the rotor speed, which is cosmetic: it idles on the pad and winds
+   * up in the air, because a machine sitting with its rotor stopped reads as
+   * broken and one with it at full speed reads as about to leave.
+   */
+  updateHelicopters(delta) {
+    if (!this.helipads || !this.helicopters || !this.helicopters.length) return
+
+    stepHelicopters(this.helipads, this.helicopters, delta, this.elapsed)
+
+    for (const machine of this.helicopters) {
+      const where = helicopterPosition(this.helipads, machine, delta)
+      machine.mesh.position.set(where.x, where.y, where.z)
+      machine.mesh.rotation.y = where.heading
+      machine.mesh.rotation.x = where.pitch
+
+      const spin = where.flying ? 26 : 6
+      machine.mesh.userData.rotor.rotation.y += spin * delta
+      machine.mesh.userData.tailRotor.rotation.x += spin * 1.4 * delta
+    }
+  }
+
+  // -------------------------------------------------------------
   // Shipping
   // -------------------------------------------------------------
 
@@ -4344,6 +4877,8 @@ export class World {
     this.updateTrafficLights()
     this.updateMonorail(delta)
     this.updateShips(delta)
+    this.updatePlanes(delta)
+    this.updateHelicopters(delta)
     this.updateTraffic(delta)
     this.updateGarageDoors(delta)
 

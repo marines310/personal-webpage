@@ -33,6 +33,8 @@ const SUITES = [
   'traffic.mjs',       // lanes, right of way, and thirty vehicles on them
   'monorail.mjs',      // the loop, its piers and stations, and the trains
   'ports.mjs',         // quays, shipping lanes, and the fleet at sea
+  'airport.mjs',       // the platform at sea, and the aircraft flying to it
+  'helicopters.mjs',   // rooftop and ground pads, and clearance above them
   'stations.mjs',      // fire, police and hospital: bays, doors, coming and going
   'windows.mjs',       // the windows in the building models, read from the models
 
