@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { Game } from '../core/Game.js'
 import {
-  FALL_LIMIT, spawnPoint, groundSlope,
+  FALL_LIMIT, spawnPoint, groundSlope, routeToPoint, pointAlong, SIREN_RATE,
   TRAFFIC_LENGTHS, TRAFFIC_WIDTHS
 } from './islandLayout.js'
 import {
@@ -61,6 +61,22 @@ export const CAR_WIDTH = 1.9
 export const CAR_HEIGHT = 0.4 * CAR_SCALE
 
 const WHEEL_RADIUS = 0.25 * CAR_SCALE
+
+/**
+ * Getting unstuck.
+ *
+ * A large vehicle caught on a kerb or a hill will sit with the throttle open
+ * and go nowhere, and nothing the player can press recovers it. Three
+ * seconds of asking to move and not moving is long enough that it is not a
+ * red light, a queue or a bus pulling out, and short enough that you do not
+ * have time to conclude the game is broken.
+ */
+const STUCK_SPEED = 0.4
+const STUCK_SECONDS = 3
+
+/** How far above the road a recovered car is dropped, so it lands rather
+ *  than being placed inside the surface. */
+const RECOVER_DROP = 1.6
 
 // Spawn position comes from the map file, so moving the starting island
 // in islandLayout.js moves the car with it.
@@ -324,6 +340,11 @@ export class Vehicle {
     // a reference to the last vehicle's.
     outer.userData.lights = inner.userData.lights
     outer.userData.wheels = inner.userData.wheels
+    outer.userData.beacons = inner.userData.beacons
+    // Only the fire engine has one. Carried up for the same reason as the
+    // rest: World hides it while the aerial is run out, and it should not
+    // have to know how deeply the mesh happens to be nested.
+    outer.userData.stowedLadder = inner.userData.stowedLadder
     return outer
   }
 
@@ -450,6 +471,19 @@ export class Vehicle {
     lights.left.emissiveIntensity = level.left
     lights.right.emissiveIntensity = level.right
     if (beam) beam.intensity = level.beam * 34
+
+    // The blue lights, on the same beat as every other emergency vehicle in
+    // the city. `updateTraffic` did this for the AI and nothing did it for
+    // the player, so driving a police car, an ambulance or a fire engine
+    // yourself was the one way to have a silent roof - which is exactly the
+    // vehicle you would pick to see them.
+    const beacons = this.mesh.userData.beacons
+    if (!beacons) return
+    const beat = Math.floor(
+      (this.game.world ? this.game.world.elapsed : 0) * SIREN_RATE) % 2 === 0
+    for (const beacon of beacons) {
+      beacon.material.emissiveIntensity = ((beacon.side === 1) === beat) ? 2.4 : 0.05
+    }
   }
 
   /**
@@ -594,15 +628,127 @@ export class Vehicle {
     return wheels
   }
 
-  /** Put the car back on the hub after driving off into the void. */
-  respawn() {
-    if (!this.body) return
-    this.body.setTranslation({ x: SPAWN.x, y: SPAWN.y, z: SPAWN.z }, true)
-    this.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
+  /**
+   * Put the car back on a road, pointing along it.
+   *
+   * ONE recovery, used by everything that needs one - driving into the sea,
+   * and getting wedged on a kerb. They are the same problem: the car is
+   * somewhere it cannot drive out of, and the fix is to put it somewhere it
+   * can. Two separate recoveries would be two places to get it wrong, and the
+   * fixed spawn point was already getting it wrong: respawning always dropped
+   * the car on the hub, on top of the plaza furniture, which is how a car
+   * that fell in the sea came back stuck on the pedestal.
+   *
+   * `near` is where to look from - wherever the car is, normally. Falling off
+   * the map is the exception: there is no sensible road near the bottom of
+   * the sea, so that case asks from the spawn point instead.
+   */
+  recoverToRoad(near) {
+    if (!this.body) return false
+
+    const world = this.game.world
+    const at = near || this.body.translation()
+    let x = SPAWN.x, y = SPAWN.y, z = SPAWN.z, heading = 0
+
+    if (world && world.lanes) {
+      const route = routeToPoint(world.lanes, at.x, at.z)
+      if (route) {
+        const lane = world.lanes.lanes[route.lane]
+        // A little way along the lane rather than at its very start, which is
+        // inside a junction and therefore the one place other traffic is
+        // certain to be.
+        const spot = pointAlong(lane, Math.min(lane.length * 0.5, 12))
+        x = spot.x
+        z = spot.z
+        heading = spot.heading
+        // Dropped in from above and allowed to fall. Placed exactly on the
+        // surface it can end up inside it, and a car inside the road is
+        // stuck in a way that no amount of throttle fixes.
+        y = (world.groundAt ? world.groundAt(x, z) : 0) + RECOVER_DROP
+      }
+    }
+
+    this.body.setTranslation({ x, y, z }, true)
+    this.body.setRotation(
+      { x: 0, y: Math.sin(heading / 2), z: 0, w: Math.cos(heading / 2) }, true)
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
     this.currentSpeed = 0
     this.currentSteering = 0
+    this.stuckFor = 0
+    this.heading = heading
+    this._lastHeading = heading
+    return true
+  }
+
+  /** Put the car back on the road after driving off into the void. */
+  respawn() {
+    // From the spawn point, not from where it is: where it is, is the bottom
+    // of the sea, and the nearest lane to that is on the wrong island.
+    this.recoverToRoad({ x: SPAWN.x, z: SPAWN.z })
+  }
+
+  /**
+   * Notice when the car is wedged, and get it out.
+   *
+   * A bus or a fire engine caught on a kerb sits there with the throttle
+   * open and nothing happening, and there is no input that recovers it -
+   * which is what Mike found. The three conditions together are what make
+   * this safe to act on: you are ASKING to move, you are NOT moving, and it
+   * has been true for long enough that it is not a red light or a queue.
+   *
+   * Deliberately not "speed is low". A car stopped at a junction with no
+   * throttle is not stuck, it is stopped, and teleporting it would be
+   * alarming.
+   */
+  updateStuck(delta) {
+    const inputs = this.game.inputs
+    const selector = this.game.vehicleSelector
+    if (!inputs || !this.body || (selector && selector.isBusy())) {
+      this.stuckFor = 0
+      this._stuckFrom = null
+      return
+    }
+
+    const asking = Math.abs(inputs.getInput().forward) > 0.1
+
+    // HOW FAR IT ACTUALLY WENT, not how fast it thinks it is going.
+    //
+    // This was `Math.abs(this.currentSpeed) > STUCK_SPEED`, and that is the
+    // whole bug Mike hit twice. `currentSpeed` is the bicycle model's INTENDED
+    // speed: press the throttle and it ramps up to cruise whether or not the
+    // vehicle is going anywhere. An ambulance wedged nose-up on a kerb reports
+    // a confident five units a second while its body sits perfectly still - so
+    // `moving` was true, the timer reset every frame, and the recovery valve
+    // built to rescue exactly this case could never fire.
+    //
+    // It is the project's oldest lesson in a new place: ask the geometry where
+    // the thing ended up, never a proxy for it. The body's own translation is
+    // the geometry; currentSpeed is a proxy, and a proxy that disagrees with
+    // reality precisely when something has gone wrong is worse than none.
+    const now = this.body.translation()
+    const from = this._stuckFrom
+    this._stuckFrom = { x: now.x, y: now.y, z: now.z }
+
+    // No reading yet, or the frame is degenerate - wait for the next one
+    // rather than guessing.
+    if (!from || delta <= 0) { this.stuckFor = 0; return }
+
+    const covered = Math.hypot(now.x - from.x, now.z - from.z) / delta
+    const moving = covered > STUCK_SPEED
+
+    if (!asking || moving) { this.stuckFor = 0; return }
+
+    this.stuckFor = (this.stuckFor || 0) + delta
+    if (this.stuckFor >= STUCK_SECONDS) {
+      this.recoverToRoad()
+      // The recovery is a teleport, so the next frame's displacement would be
+      // enormous and the reference has to go with it - otherwise the car reads
+      // as "moving fast" for one frame, which is harmless, and then the stale
+      // reference reads as stuck again, which is not.
+      const put = this.body.translation()
+      this._stuckFrom = { x: put.x, y: put.y, z: put.z }
+    }
   }
 
   /** Move `value` toward `target` by at most `maxDelta`. */
@@ -793,6 +939,7 @@ export class Vehicle {
 
     this.updateIndicators(delta)
     this.updateLights(delta)
+    this.updateStuck(delta)
 
     // Drove off the edge of an island - put the car back on the hub
     if (position.y < FALL_LIMIT) {

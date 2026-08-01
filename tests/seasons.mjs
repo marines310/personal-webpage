@@ -376,8 +376,15 @@ chk('and how much each surface holds comes from the table',
 // Flowers grow rather than pop, and only get rewritten when they move.
 chk('the flower field is instanced, not a mesh per flower',
     /new THREE\.InstancedMesh\(stemGeo/.test(world))
+// This guard used to read `this.flowering`. It now reads `field.amount`: the
+// flower field was generalised into growField() when the holiday decorations
+// turned out to want exactly the same behaviour, and a second copy of it
+// would have been two implementations of one idea. Same check, where the
+// code now lives.
 chk('and it only rewrites when the amount has actually changed',
-    /Math\.abs\(a - this\.flowering\) < /.test(world))
+    /Math\.abs\(a - field\.amount\) < /.test(world))
+chk('the flowers grow through the same field machinery as everything else',
+    /growField\(this\.flowerField, amount\)/.test(world))
 chk('the palms take only a fraction of the season',
     /registerSeasonal\(frondMat, 'foliage', 0\.\d+\)/.test(world))
 

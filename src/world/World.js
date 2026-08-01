@@ -6,6 +6,8 @@ import {
   SEA_LEVEL,
   getBridges,
   getIslandRoads,
+  getIsland,
+  pointAlong,
   distanceToNearestRoad,
   getSpawnIsland,
   getBridgeRoadPaths,
@@ -124,8 +126,17 @@ export const GROUND_SINK = 0.7
  */
 export const GRASS_ABOVE_SAND = 0.3
 import { mixHex, SNOW_COLOUR, SNOW_TAKE } from '../systems/seasons.js'
-import { lampBrightness, blinkOn, gloomLevel } from './vehicleLights.js'
-import { newFireState, stepFire, smokeStrength, RESPONDERS } from './fireGame.js'
+import { DECOR_KINDS, emptyLayer } from '../systems/holidays.js'
+import { lampBrightness, blinkOn, gloomLevel, sideOfVehicle } from './vehicleLights.js'
+import { newFireState, stepFire, smokeStrength, fireHud, RESPONDERS } from './fireGame.js'
+import {
+  newPoliceState, stepPolice, policeHud, chooseRobber, ROBBER_SPEED
+} from './policeGame.js'
+import {
+  newAmbulanceState, stepAmbulance, ambulanceHud, crewTarget,
+  CRASH_CARS, CRASH_SIDE_OFFSET, crashBlocks
+} from './ambulanceGame.js'
+import { chooseMission } from './missions.js'
 import { insetPolygon, insetPolygonRadial, polygonCentroid, rayDistanceToBoundary } from './shapes.js'
 import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
 
@@ -315,8 +326,120 @@ export const SMOKE_COUNT = 130
 export const SMOKE_LIFE = 5.5
 export const SMOKE_RISE = 46
 
+/**
+ * The fire engine's aerial - a tower ladder, built from Mike's photographs.
+ *
+ * Three things in those pictures the first version had wrong, and each of
+ * them is the sort of thing you only see when you look at the real object:
+ *
+ * 1. IT IS REAR-MOUNTED. The turntable sits at the BACK of the truck, behind
+ *    the body, and the ladder lies forward over the cab when it is stowed.
+ *    The first version had it rising out of the middle of the roof, which is
+ *    where you would put it if you had never seen one.
+ * 2. IT IS A BOX TRUSS, not a ladder. Four chords - two top, two bottom -
+ *    with rungs across the bottom pair and diagonal bracing down each side.
+ *    That lattice is the whole silhouette against the sky.
+ * 3. THE WATER COMES OUT OF THE BASKET. There is a platform at the tip with a
+ *    monitor on its rail, and the jet starts THERE. It does not run up the
+ *    ladder from the truck.
+ *
+ * And a fourth, which Mike pointed out directly: the basket stands OFF the
+ * building. It is parked in the air a few metres clear and hoses in - it does
+ * not go up to the wall and touch it.
+ */
+export const LADDER_WIDTH = 0.62
+
+/**
+ * Top chords to bottom chords. This is what makes it a truss rather than a
+ * ladder, and it is the measurement that reads at distance: side-on, the
+ * depth is the whole depth of the object.
+ */
+export const LADDER_DEPTH = 0.46
+
+/**
+ * The bracing, in bays of roughly constant length however far it is run out.
+ *
+ * The bays are repositioned each frame rather than living inside the scaled
+ * section, and that is not fussiness. Diagonals inside a node scaled 12x in z
+ * shear: a brace authored at 45 degrees comes out at 5, which is
+ * indistinguishable from the chords it is meant to be bracing. So the chords
+ * - which genuinely do stretch - are scaled, and the rungs and braces are
+ * placed.
+ */
+export const LADDER_BAY = 0.85
+export const LADDER_MAX_BAYS = 30
+
+/**
+ * Where the turntable sits: how far back from the middle of the truck, as a
+ * fraction of its length, and how high.
+ *
+ * 2.05 is the top of the rear body (its centre is 1.15, its height 1.7), so
+ * the turntable stands ON the bodywork rather than inside it.
+ */
+export const LADDER_MOUNT_BACK = 0.3
+export const LADDER_MOUNT = 2.05
+
+/**
+ * How far clear of the building the basket parks, and how far above its roof.
+ *
+ * Mike: "the basket is a bit separated from the building it's working on".
+ * Both matter - a basket touching the wall reads as a crash, and one level
+ * with the roof disappears behind the parapet.
+ */
+export const LADDER_STANDOFF = 3.2
+export const BASKET_ABOVE_ROOF = 1.9
+
+/** The platform at the tip. */
+export const BASKET_WIDTH = 1.3
+export const BASKET_DEPTH = 1
+export const BASKET_RAIL = 0.9
+
+/** How fast it swings, lifts and runs out. Low enough to watch. */
+export const LADDER_RATE = 1.5
+
+/**
+ * The smoke off a crashed engine.
+ *
+ * Small on purpose, and its own thing rather than a reuse of the fire's: that
+ * column rises 46 units and is meant to be seen from the next island. A
+ * bonnet smoking after a shunt should say "something happened here" from
+ * across the street without implying the road is ablaze.
+ */
+export const CRASH_SMOKE_COUNT = 90
+export const CRASH_SMOKE_LIFE = 2.6
+export const CRASH_SMOKE_RISE = 4.5
+
+/**
+ * The festive lighting, on a building's front.
+ *
+ * A storey here is only used to space the strands down the façade - it does
+ * not have to match whatever the model actually did with its floors, because
+ * a string of lights hung across a wall is not surveyed to the brickwork.
+ */
+export const STOREY_HEIGHT = 3
+export const DOOR_HEIGHT = 2.4
+export const DOOR_WIDTH = 1.6
+export const DOOR_BULBS = 9
+
 /** Droplets in the water jet. */
 export const JET_COUNT = 90
+
+/**
+ * The player's top speed, so the robber can be set just under it.
+ *
+ * Taken from Vehicle's own tuning rather than written out again - if the car
+ * ever gets faster, the robber does too, and a chase stays a chase.
+ */
+export const PLAYER_TOP_SPEED = 18
+
+/** How fast a robber's paintwork flashes, so you can pick it out. */
+export const ROBBER_FLASH = 3.2
+
+/** And what colour it flashes. Warm, so it reads against blue lights. */
+export const ROBBER_FLASH_COLOUR = 0xffc04a
+
+/** How often the patrol cars are re-pointed at a moving robber. */
+export const CHASE_REROUTE = 4
 
 export const FLOWERS_PER_CLUMP = 3
 export const FLOWER_COLOURS = [
@@ -326,6 +449,55 @@ export const FLOWER_COLOURS = [
   0xb98cf0,   // lilac
   0xff9a4d    // marigold
 ]
+
+/**
+ * How thickly holiday decorations are sown, per kind, as a share of the
+ * sites collected while building.
+ *
+ * Not one number for all of them, because they are not the same sort of
+ * thing. Easter eggs are hidden by the dozen and gifts pile up; a bunny or a
+ * turkey is an animal, and a lawn carrying as many turkeys as it carries eggs
+ * is a poultry farm rather than Thanksgiving. The shares are what make the
+ * sparse ones read as sightings.
+ */
+export const DECOR_SHARE = {
+  eggs: 0.85,
+  bunnies: 0.16,
+  pumpkins: 0.5,
+  turkeys: 0.18,
+  gifts: 0.55,
+  // A Christmas tree is a thing somebody put there, so they are commoner than
+  // the animals and rarer than the eggs; a snowman is somebody's afternoon,
+  // so rarer still.
+  trees: 0.45,
+  snowmen: 0.28
+}
+
+/** How far apart decoration sites are sown, as area per site. */
+export const DECOR_SITE_AREA = 260
+
+export const EGG_COLOURS = [
+  0xff8fb8, 0x8fd8ff, 0xfff08f, 0xa8f0a0, 0xd8a8ff, 0xffd0a0
+]
+export const GIFT_COLOURS = [0xd6342e, 0x2f7d43, 0x2b58a8, 0xe0b03a]
+
+/**
+ * The festive bulbs, one strand per colour.
+ *
+ * Three strands rather than one with per-instance colours, and the reason is
+ * worth recording: an InstancedMesh has ONE material, and it is the material
+ * that carries `emissive`. Per-instance colour tints the diffuse only, so a
+ * single strand at night - when emissive is doing all the work - washes out
+ * to one colour and the whole point of a string of lights is lost. Three
+ * materials is three draw calls and keeps them red, green and gold after dark.
+ */
+export const FESTIVE_COLOURS = [0xff3b30, 0x35c759, 0xffcf4a]
+
+/** How many bulbs go round a building's eaves. */
+export const BULBS_PER_BUILDING = 16
+
+/** And how many are wound down a Christmas tree. */
+export const TREE_BULBS = 11
 
 export class World {
   constructor() {
@@ -342,6 +514,11 @@ export class World {
     this.buildings = []       // everything with a roof, so one can catch fire
     this.seasonals = []       // materials that change colour with the year
     this.flowerSites = []     // where spring flowers come up, filled while building
+    this.decorSites = []      // and where holiday decorations go, likewise
+    this.wreathSites = []     // one per building door, for Christmas
+    this.fields = []          // every instanced field that grows: flowers, decorations
+    this.holiday = emptyLayer()
+    this.festiveLevel = 0     // how much of the festive lighting is on
     this.swayables = []       // foliage that moves in the wind
     this.trafficLights = []   // signal heads, grouped by junction
     this.lightPools = []      // the patch of lit ground under a lamp
@@ -395,6 +572,10 @@ export class World {
     // the traffic to exist before it can send anybody.
     this.fire = newFireState()
     this.createFireEffects()
+    this.police = newPoliceState()
+    this.ambulance = newAmbulanceState()
+    this.crashSites = this.findCrashSites()
+    this.createWreck()
   }
 
   /**
@@ -508,9 +689,19 @@ export class World {
     return pool
   }
 
-  registerNightLight(material, strength = 1) {
+  /**
+   * A material that lights up after dark.
+   *
+   * `festive` marks it as a holiday light, which is scaled by the holiday
+   * layer on top of the night factor. It is a flag on this list rather than a
+   * second list because there must be exactly one answer to "how lit is this
+   * material" - two lists would be two answers, and the Christmas bulbs would
+   * end up on their own dusk curve that drifted away from every street lamp
+   * in the world.
+   */
+  registerNightLight(material, strength = 1, festive = false) {
     material.emissive = new THREE.Color(material.emissive || 0x000000)
-    this.nightEmissives.push({ material, strength })
+    this.nightEmissives.push({ material, strength, festive })
     return material
   }
 
@@ -556,6 +747,12 @@ export class World {
       entry.material.color.setHex(mixHex(seasonal, SNOW_COLOUR, lying))
     }
     this.setFlowering(view.flowers)
+
+    // Snowmen belong to the SNOW, not to the calendar and not to Christmas.
+    // They come up as the ground goes white and go as it thaws - which means
+    // a flurry in a mild season builds a few and then takes them away again,
+    // and a green Christmas has none, both of which are right.
+    this.growField(this.snowmanField, view.snow)
   }
 
   // -------------------------------------------------------------
@@ -681,6 +878,9 @@ export class World {
     // Two instanced meshes for the whole world rather than a mesh per
     // flower - there are thousands of them and they all move together.
     this.createFlowers()
+    // After the flowers, and after every island: the festive strands are hung
+    // off `this.buildings`, which is not complete until the last one is up.
+    this.createDecorations()
   }
 
   /**
@@ -2052,6 +2252,11 @@ export class World {
       color: paint, roughness: 0.45, metalness: 0.25, flatShading: true
     })
 
+    // The paintwork, kept so a robber can be made to flash. Every kind of
+    // car records it, because a robber is whichever car happened to be
+    // chosen and not a special one.
+    group.userData.body = body
+
     const shell = new THREE.Mesh(new THREE.BoxGeometry(width, 0.85, length), body)
     shell.position.y = 0.72
     shell.castShadow = true
@@ -2121,6 +2326,7 @@ export class World {
     const body = new THREE.MeshStandardMaterial({
       color: paint, roughness: 0.55, metalness: 0.2, flatShading: true
     })
+    group.userData.body = body
 
     // Chassis, full length, sitting higher than a car
     const chassis = new THREE.Mesh(
@@ -2185,6 +2391,7 @@ export class World {
     const body = new THREE.MeshStandardMaterial({
       color: paint, roughness: 0.5, metalness: 0.22, flatShading: true
     })
+    group.userData.body = body
 
     const shell = new THREE.Mesh(
       new THREE.BoxGeometry(width, 0.95, length), body)
@@ -2303,7 +2510,12 @@ export class World {
 
       // Indicators outboard of the main lamps, at all four corners, because
       // an indicator you cannot see from behind is not an indicator.
-      const material = side === 1 ? right : left
+      //
+      // Which side an X is on is ASKED rather than assumed - see
+      // sideOfVehicle(). Assuming it put every indicator in the world on the
+      // wrong side of every vehicle, and no test could see it, because the
+      // tests checked which way to signal and never which lamp that lit.
+      const material = sideOfVehicle(side) < 0 ? left : right
       for (const z of [nose, tailZ]) {
         const blinker = new THREE.Mesh(
           new THREE.BoxGeometry(0.16 * scale, 0.15, 0.09), material)
@@ -2438,14 +2650,48 @@ export class World {
     rear.castShadow = true
     group.add(rear)
 
-    // The ladder, which is what makes it a fire engine at fifty units
-    const ladder = new THREE.Mesh(
-      new THREE.BoxGeometry(0.35, 0.22, length * 0.72),
-      new THREE.MeshStandardMaterial({
-        color: PALETTE.beam, roughness: 0.7, metalness: 0.3, flatShading: true
-      }))
-    ladder.position.set(0, 2.1, -length * 0.1)
-    group.add(ladder)
+    // The aerial, stowed: what makes it a fire engine at fifty units.
+    //
+    // Rear-mounted, as in Mike's photographs - the turntable is at the BACK,
+    // and the ladder lies forward from it over the cab and out past the
+    // windscreen. It was a single box over the middle of the roof before,
+    // which is where you would put it if you had never seen one. Built as the
+    // same box truss the deployed aerial is, at the same width and depth, so
+    // running it out does not swap one object for a different-looking one.
+    const stowed = new THREE.Group()
+    const steel = new THREE.MeshStandardMaterial({
+      color: 0xd8d2c4, roughness: 0.6, metalness: 0.3, flatShading: true
+    })
+
+    const pivot = -length * LADDER_MOUNT_BACK
+    const nose = length * 0.54
+    const run = nose - pivot
+    const halfW = LADDER_WIDTH / 2
+
+    const pedestal = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.35, 1.5), body)
+    pedestal.position.set(0, 2.15, pivot)
+    stowed.add(pedestal)
+
+    for (const side of [1, -1]) {
+      for (const level of [0, LADDER_DEPTH]) {
+        const chord = new THREE.Mesh(
+          new THREE.BoxGeometry(0.1, 0.1, run), steel)
+        chord.position.set(side * halfW, 2.42 + level, pivot + run / 2)
+        stowed.add(chord)
+      }
+    }
+    const bays = Math.max(2, Math.round(run / LADDER_BAY))
+    for (let i = 0; i < bays; i++) {
+      const rung = new THREE.Mesh(
+        new THREE.BoxGeometry(LADDER_WIDTH, 0.05, 0.05), steel)
+      rung.position.set(0, 2.42, pivot + (i + 0.5) * (run / bays))
+      stowed.add(rung)
+    }
+
+    group.add(stowed)
+    // Hidden while the deployed aerial is out, or the truck carries two of
+    // them - one lying on the roof and one in the air.
+    group.userData.stowedLadder = stowed
 
     // Lockers down each side
     for (const side of [1, -1]) {
@@ -2460,7 +2706,15 @@ export class World {
 
     this.addVehicleLamps(group, length, width, TRAFFIC_HEIGHTS[v.kind])
     this.addWheels(group, length, width, 0.58)
-    group.userData.beacons = this.addBeacons(group, 2.55, 0.7)
+    // On the CAB roof, not over the back.
+    //
+    // The cab's roof is at 2.4 and the rear body's at 2.0, and the beacons
+    // were at 2.55 over the rear - hanging half a unit clear of the vehicle
+    // in mid air. Every other emergency vehicle happened to have a flat back
+    // at about the right height, so nobody noticed the number was a guess.
+    // Both figures now come off the cab, which is where a real one puts them.
+    group.userData.beacons = this.addBeacons(
+      group, 1.35 + 2.1 / 2 + 0.11, 0.7, length * 0.33)
     return group
   }
 
@@ -2525,7 +2779,7 @@ export class World {
    * blue the other, alternating, which is what reads as a siren without any
    * sound.
    */
-  addBeacons(group, height, spread) {
+  addBeacons(group, height, spread, along = 0) {
     const beacons = []
 
     for (const [side, colour] of [[1, PALETTE.sirenRed], [-1, PALETTE.sirenBlue]]) {
@@ -2534,7 +2788,7 @@ export class World {
         emissive: new THREE.Color(colour), emissiveIntensity: 0
       })
       const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.22, 0.3), material)
-      lamp.position.set(side * spread, height, 0)
+      lamp.position.set(side * spread, height, along)
       group.add(lamp)
       beacons.push({ material, side })
     }
@@ -2892,7 +3146,8 @@ export class World {
     const car = this.game.vehicle && this.game.vehicle.mesh
     const player = car ? { x: car.position.x, z: car.position.z } : null
 
-    stepTraffic(this.lanes, this.traffic, delta, this.elapsed, player)
+    stepTraffic(this.lanes, this.traffic, delta, this.elapsed, player,
+                this.roadIncident)
 
     // One flash cycle for the whole city, so the emergency lights beat
     // together rather than each one drifting
@@ -4084,6 +4339,7 @@ export class World {
     if (palmCount > 0) this.ringOfPalms(island, palmCount, roads)
 
     this.sowFlowers(island, roads)
+    this.sowDecorations(island, roads)
   }
 
   /**
@@ -4119,6 +4375,55 @@ export class World {
         rotation: this.rand() * Math.PI * 2,
         size: this.randRange(0.7, 1.25),
         colour: this.pick(FLOWER_COLOURS)
+      })
+    }
+  }
+
+  /**
+   * Where holiday decorations can go on this island.
+   *
+   * A separate, much sparser sowing than the flowers rather than a reuse of
+   * theirs. Flowers are a field you look across; a decoration is an object
+   * you come across, and at flower density an Easter lawn is a carpet of eggs
+   * rather than a hunt.
+   *
+   * `roll` is drawn once, here, and every kind then takes the sites below its
+   * own share. That is what keeps the turkeys sparse and the eggs thick
+   * WITHOUT a second sowing per kind - and, more usefully, it means the
+   * bunnies always appear in the same places rather than moving about
+   * whenever another kind is added in front of them in the draw order.
+   */
+  sowDecorations(island, roads) {
+    const reach = islandReach(island)
+    const area = Math.PI * reach * reach
+    const sites = Math.round(area / DECOR_SITE_AREA)
+
+    for (let i = 0; i < sites; i++) {
+      const a = this.rand() * Math.PI * 2
+      const d = this.randRange(6, reach)
+      const x = island.x + Math.sin(a) * d
+      const z = island.z + Math.cos(a) * d
+
+      if (!this.isBuildable(island, roads, x, z, 1.7)) continue
+
+      this.decorSites.push({
+        x, z,
+        y: this.groundAt(x, z),
+        rotation: this.rand() * Math.PI * 2,
+        // Well over life size, and deliberately.
+        //
+        // Authored at true scale first - an egg 44cm across, a pumpkin 60 -
+        // and driving past a lawn at speed you could not tell there was
+        // anything on it. Photographed, an Easter island was a single yellow
+        // pixel on a verge. The world's own scale is the reason: a car here
+        // is 4.4 long and the buildings are ten and up, so a real egg is
+        // sub-pixel from the road, and the road is where you always are. At
+        // roughly twice size they read as decorations you can go and look at,
+        // which is the whole point of putting them out.
+        size: this.randRange(1.9, 2.5),
+        roll: this.rand(),
+        egg: this.pick(EGG_COLOURS),
+        gift: this.pick(GIFT_COLOURS)
       })
     }
   }
@@ -4182,12 +4487,41 @@ export class World {
     this.game.add(this.flowerStems)
     this.game.add(this.flowerHeads)
 
-    this.flowering = -1          // forces the first setFlowering to write
-    this.setFlowering(0)
+    this.flowerField = this.registerField(
+      'flowers', [this.flowerStems, this.flowerHeads], this.flowerInstances)
+  }
+
+  // -------------------------------------------------------------
+  // Fields that grow
+  // -------------------------------------------------------------
+  /**
+   * A set of instanced meshes that share one list of placements and one
+   * amount, and grow out of the ground together.
+   *
+   * This is the spring flower field, generalised - not a second copy of it.
+   * The holiday decorations want exactly the same behaviour and it would have
+   * been quicker to write a second version than to lift this one out, which
+   * is precisely how a codebase ends up with two implementations of the same
+   * idea that then disagree. Rule 1.
+   *
+   * Every part gets the SAME matrix, so a prop made of several pieces has to
+   * be authored with each piece already translated into place relative to the
+   * base at the origin. That is what makes a bunny four instanced meshes and
+   * not four transforms to keep in step.
+   */
+  registerField(name, parts, instances) {
+    const field = { name, parts, instances, amount: -1 }
+    for (const part of parts) {
+      part.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      part.frustumCulled = false
+    }
+    this.fields.push(field)
+    this.growField(field, 0)
+    return field
   }
 
   /**
-   * Grow the flower field to `amount`, 0 (underground) to 1 (full spring).
+   * Grow a field to `amount`, 0 (nothing there) to 1 (fully out).
    *
    * The matrices are rewritten only when the amount has actually moved.
    * Spring takes a couple of minutes to arrive and then the number sits
@@ -4195,37 +4529,519 @@ export class World {
    * rest of it - which is the difference between an instanced field being
    * free and it being the most expensive thing on the frame.
    */
-  setFlowering(amount) {
-    if (!this.flowerStems) return
+  growField(field, amount) {
+    if (!field || !field.parts.length) return
 
     const a = Math.max(0, Math.min(1, amount))
-    if (Math.abs(a - this.flowering) < 0.004) return
-    this.flowering = a
+    if (Math.abs(a - field.amount) < 0.004) return
+    field.amount = a
 
+    // Below this it is not worth drawing, and - more to the point - a field
+    // scaled to zero still costs a draw call if it is left visible.
     const visible = a > 0.02
-    this.flowerStems.visible = visible
-    this.flowerHeads.visible = visible
+    for (const part of field.parts) part.visible = visible
     if (!visible) return
 
-    const m = this._flowerMatrix || (this._flowerMatrix = new THREE.Matrix4())
-    const q = this._flowerQuat || (this._flowerQuat = new THREE.Quaternion())
-    const p = this._flowerPos || (this._flowerPos = new THREE.Vector3())
-    const s = this._flowerScale || (this._flowerScale = new THREE.Vector3())
-    const up = this._flowerUp || (this._flowerUp = new THREE.Vector3(0, 1, 0))
+    const m = this._fieldMatrix || (this._fieldMatrix = new THREE.Matrix4())
+    const q = this._fieldQuat || (this._fieldQuat = new THREE.Quaternion())
+    const p = this._fieldPos || (this._fieldPos = new THREE.Vector3())
+    const s = this._fieldScale || (this._fieldScale = new THREE.Vector3())
+    const up = this._fieldUp || (this._fieldUp = new THREE.Vector3(0, 1, 0))
 
-    for (let i = 0; i < this.flowerInstances.length; i++) {
-      const f = this.flowerInstances[i]
+    for (let i = 0; i < field.instances.length; i++) {
+      const f = field.instances[i]
       const grow = f.size * a
       p.set(f.x, f.y, f.z)
       q.setFromAxisAngle(up, f.rotation)
       s.set(grow, grow, grow)
       m.compose(p, q, s)
-      this.flowerStems.setMatrixAt(i, m)
-      this.flowerHeads.setMatrixAt(i, m)
+      for (const part of field.parts) part.setMatrixAt(i, m)
     }
 
-    this.flowerStems.instanceMatrix.needsUpdate = true
-    this.flowerHeads.instanceMatrix.needsUpdate = true
+    for (const part of field.parts) part.instanceMatrix.needsUpdate = true
+  }
+
+  /** Grow the flower field. Kept as its own name because seasons.js asks for it. */
+  setFlowering(amount) {
+    this.growField(this.flowerField, amount)
+  }
+
+  // -------------------------------------------------------------
+  // Holiday decorations
+  // -------------------------------------------------------------
+  /**
+   * A prop made of several pieces, as a set of instanced meshes.
+   *
+   * Each piece's geometry is translated into place at build time, so all of
+   * them take the same instance matrix. That is why there is no merge step
+   * and no dependency on BufferGeometryUtils: three small instanced meshes
+   * drawing the same thousand transforms cost three draw calls, and merging
+   * them would cost a per-vertex copy of the whole prop for no visible gain.
+   *
+   * `tint` names which colour off the site to use, or is left out for a prop
+   * that is always the same colour - a pumpkin is orange and a turkey is
+   * brown, and giving them a palette would be inventing variety rather than
+   * finding it.
+   */
+  decorPart(geometry, colour, count, { rough = 0.9, tint = null, sites = null } = {}) {
+    const material = new THREE.MeshStandardMaterial({
+      color: colour, roughness: rough, flatShading: true
+    })
+    const mesh = new THREE.InstancedMesh(geometry, material, count)
+
+    if (tint && sites) {
+      const c = new THREE.Color()
+      for (let i = 0; i < sites.length; i++) mesh.setColorAt(i, c.setHex(sites[i][tint]))
+      mesh.instanceColor.needsUpdate = true
+    }
+
+    this.game.add(mesh)
+    return mesh
+  }
+
+  /**
+   * Build every holiday field, once, from the sites the islands collected.
+   *
+   * Authored with the base at the origin in each case, so the field grows up
+   * out of the ground rather than swelling from its own middle - the same
+   * rule the flowers follow, and the reason a half-grown egg looks like an
+   * egg coming up rather than a small egg.
+   */
+  createDecorations() {
+    if (!this.decorSites.length) return
+
+    const take = (kind) =>
+      this.decorSites.filter(s => s.roll < DECOR_SHARE[kind])
+
+    // --- Easter eggs: an ovoid, in one of six pastel colours ---
+    const eggSites = take('eggs')
+    if (eggSites.length) {
+      const egg = new THREE.SphereGeometry(0.22, 8, 6)
+      egg.scale(1, 1.35, 1)
+      egg.translate(0, 0.3, 0)
+      this.eggField = this.registerField('eggs', [
+        this.decorPart(egg, 0xffffff, eggSites.length,
+          { rough: 0.45, tint: 'egg', sites: eggSites })
+      ], eggSites)
+    }
+
+    // --- Easter bunnies: body, head and two ears ---
+    const bunnySites = take('bunnies')
+    if (bunnySites.length) {
+      const fur = 0xf2ece2
+      const body = new THREE.SphereGeometry(0.3, 8, 6); body.translate(0, 0.3, 0)
+      const head = new THREE.SphereGeometry(0.19, 8, 6); head.translate(0, 0.6, 0.2)
+      const earL = new THREE.CapsuleGeometry(0.055, 0.26, 2, 5)
+      earL.translate(-0.09, 0.85, 0.16)
+      const earR = earL.clone(); earR.translate(0.18, 0, 0)
+      this.bunnyField = this.registerField('bunnies', [
+        this.decorPart(body, fur, bunnySites.length),
+        this.decorPart(head, fur, bunnySites.length),
+        this.decorPart(earL, fur, bunnySites.length),
+        this.decorPart(earR, fur, bunnySites.length)
+      ], bunnySites)
+    }
+
+    // --- Pumpkins: squashed, with a stem ---
+    const pumpkinSites = take('pumpkins')
+    if (pumpkinSites.length) {
+      const body = new THREE.SphereGeometry(0.32, 9, 6)
+      body.scale(1, 0.78, 1)
+      body.translate(0, 0.25, 0)
+      const stem = new THREE.CylinderGeometry(0.035, 0.055, 0.16, 5)
+      stem.translate(0, 0.52, 0)
+      this.pumpkinField = this.registerField('pumpkins', [
+        this.decorPart(body, 0xe8761f, pumpkinSites.length, { rough: 0.7 }),
+        this.decorPart(stem, 0x4f6b32, pumpkinSites.length)
+      ], pumpkinSites)
+    }
+
+    // --- Turkeys: body, head, and the fan ---
+    const turkeySites = take('turkeys')
+    if (turkeySites.length) {
+      const body = new THREE.SphereGeometry(0.28, 8, 6)
+      body.scale(1, 0.9, 1.15)
+      body.translate(0, 0.29, 0.04)
+      const head = new THREE.SphereGeometry(0.12, 7, 5)
+      head.translate(0, 0.56, 0.22)
+      // The fan is a flattened half-sphere standing up behind: a cone would
+      // read as a tail down rather than a tail up, which is the whole
+      // silhouette of the bird.
+      const fan = new THREE.SphereGeometry(0.42, 9, 6, 0, Math.PI)
+      fan.scale(1, 1, 0.12)
+      fan.rotateY(Math.PI)
+      fan.translate(0, 0.44, -0.2)
+      this.turkeyField = this.registerField('turkeys', [
+        this.decorPart(body, 0x6d4526, turkeySites.length),
+        this.decorPart(head, 0xc4462f, turkeySites.length),
+        this.decorPart(fan, 0x8c5a2e, turkeySites.length)
+      ], turkeySites)
+    }
+
+    // --- Gifts: a box and a ribbon across it ---
+    const giftSites = take('gifts')
+    if (giftSites.length) {
+      const box = new THREE.BoxGeometry(0.46, 0.4, 0.46)
+      box.translate(0, 0.2, 0)
+      // 0.21, not 0.2: the ribbon is 0.42 tall, so centring it at 0.2 puts a
+      // centimetre of it under the ground. Nobody would ever see it - and
+      // that is exactly why it is worth fixing, because "base at the origin"
+      // is the rule the whole growing field depends on and an exception that
+      // does not show is an exception that gets copied.
+      const bandX = new THREE.BoxGeometry(0.48, 0.42, 0.09)
+      bandX.translate(0, 0.21, 0)
+      const bandZ = new THREE.BoxGeometry(0.09, 0.42, 0.48)
+      bandZ.translate(0, 0.21, 0)
+      this.giftField = this.registerField('gifts', [
+        this.decorPart(box, 0xffffff, giftSites.length,
+          { rough: 0.6, tint: 'gift', sites: giftSites }),
+        this.decorPart(bandX, 0xf3e2b0, giftSites.length, { rough: 0.5 }),
+        this.decorPart(bandZ, 0xf3e2b0, giftSites.length, { rough: 0.5 })
+      ], giftSites)
+    }
+
+    // --- Christmas trees: three tiers, a star, and a trunk ---
+    const treeSites = take('trees')
+    if (treeSites.length) {
+      const trunk = new THREE.CylinderGeometry(0.11, 0.14, 0.42, 6)
+      trunk.translate(0, 0.21, 0)
+      const tiers = []
+      for (const [i, [r, h, y]] of [[0.62, 0.75, 0.38], [0.46, 0.62, 0.86],
+                                    [0.3, 0.5, 1.28]].entries()) {
+        const cone = new THREE.ConeGeometry(r, h, 7)
+        cone.translate(0, y + h / 2, 0)
+        tiers.push(cone)
+      }
+      const star = new THREE.OctahedronGeometry(0.15, 0)
+      star.translate(0, 1.86, 0)
+
+      // LIGHTS ON THE TREE. Mike: "It's too dark at night" - and it was: a
+      // dark green cone under a night sky is a silhouette, and the star alone
+      // is one bright dot on it.
+      //
+      // Spiralling down rather than ringed, because a ring per tier reads as a
+      // hoop and a spiral reads as a string that was wound on. One part per
+      // bulb: they cannot share a geometry without merging, and nine extra
+      // instanced meshes over seventy-odd trees is cheaper than the merge.
+      const treeBulbs = []
+      for (let k = 0; k < TREE_BULBS; k++) {
+        const t = k / (TREE_BULBS - 1)
+        const angle = k * 2.4
+        // Following the taper, and just proud of the foliage so the bulb sits
+        // ON the branch rather than inside it.
+        const radius = 0.62 * (1 - t * 0.62) + 0.06
+        const g = new THREE.SphereGeometry(0.075, 5, 4)
+        g.translate(Math.cos(angle) * radius, 0.55 + t * 1.15,
+                    Math.sin(angle) * radius)
+        treeBulbs.push({ geometry: g, colour: k % FESTIVE_COLOURS.length })
+      }
+
+      // The star is on the festive list, so it lights with everything else
+      // rather than being the one dark thing on a lit tree.
+      const starMat = new THREE.MeshStandardMaterial({
+        color: 0xffd75e, roughness: 0.35, flatShading: true,
+        emissive: new THREE.Color(0xffdf7a), emissiveIntensity: 0
+      })
+      this.registerNightLight(starMat, 2.2, true)
+      const starMesh = new THREE.InstancedMesh(star, starMat, treeSites.length)
+      this.game.add(starMesh)
+
+      // One material per colour, shared by every bulb of that colour, so the
+      // whole string is three entries on the festive list rather than nine.
+      const bulbMats = FESTIVE_COLOURS.map(hex => {
+        const m = new THREE.MeshStandardMaterial({
+          color: hex, roughness: 0.4, flatShading: true,
+          emissive: new THREE.Color(hex), emissiveIntensity: 0
+        })
+        this.registerNightLight(m, 2.4, true)
+        return m
+      })
+
+      const bulbMeshes = treeBulbs.map(b => {
+        const mesh = new THREE.InstancedMesh(
+          b.geometry, bulbMats[b.colour], treeSites.length)
+        this.game.add(mesh)
+        return mesh
+      })
+
+      this.treeField = this.registerField('trees', [
+        this.decorPart(trunk, 0x6b4a2a, treeSites.length),
+        // Lifted from 0x225c30. Unlit at night the old green went almost to
+        // black and the tree read as a hole in the snow.
+        ...tiers.map(t => this.decorPart(t, 0x2d7a3c, treeSites.length, { rough: 0.9 })),
+        starMesh,
+        ...bulbMeshes
+      ], treeSites)
+    }
+
+    // --- Snowmen: winter, not Christmas ---
+    //
+    // On the SEASON, deliberately. A snowman is what happens when there is
+    // snow on the ground, not what happens on the 25th, and putting it in the
+    // holiday table would mean no snowmen in January and a snowman in a green
+    // Christmas. It is driven by the same `snow` number that whitens the
+    // grass, so they appear as the world goes white and melt as it thaws -
+    // which is exactly what they should do and cost nothing extra to arrange.
+    const snowmanSites = take('snowmen')
+    if (snowmanSites.length) {
+      const base = new THREE.SphereGeometry(0.52, 8, 6); base.translate(0, 0.5, 0)
+      const middle = new THREE.SphereGeometry(0.38, 8, 6); middle.translate(0, 1.24, 0)
+      const head = new THREE.SphereGeometry(0.27, 8, 6); head.translate(0, 1.8, 0)
+      const hat = new THREE.CylinderGeometry(0.2, 0.2, 0.28, 8); hat.translate(0, 2.1, 0)
+      const brim = new THREE.CylinderGeometry(0.32, 0.32, 0.05, 8); brim.translate(0, 1.97, 0)
+      const nose = new THREE.ConeGeometry(0.06, 0.3, 5)
+      nose.rotateX(Math.PI / 2)
+      nose.translate(0, 1.82, 0.3)
+      const arms = []
+      for (const side of [1, -1]) {
+        const arm = new THREE.CylinderGeometry(0.045, 0.045, 0.8, 5)
+        arm.rotateZ(side * 1.1)
+        arm.translate(side * 0.46, 1.42, 0)
+        arms.push(arm)
+      }
+
+      const white = 0xf4f8fb
+      this.snowmanField = this.registerField('snowmen', [
+        this.decorPart(base, white, snowmanSites.length, { rough: 0.95 }),
+        this.decorPart(middle, white, snowmanSites.length, { rough: 0.95 }),
+        this.decorPart(head, white, snowmanSites.length, { rough: 0.95 }),
+        this.decorPart(hat, 0x27272c, snowmanSites.length),
+        this.decorPart(brim, 0x27272c, snowmanSites.length),
+        this.decorPart(nose, 0xe4762a, snowmanSites.length),
+        ...arms.map(a => this.decorPart(a, 0x6b4a2a, snowmanSites.length))
+      ], snowmanSites)
+    }
+
+    this.createFestiveLights()
+  }
+
+  /**
+   * Festive lights: a strand of bulbs round the eaves of every building.
+   *
+   * The bulbs are ordinary emissive materials on the night-emissive list, not
+   * a second lighting system - so they fade up at dusk with every other lit
+   * thing in the world and there is still exactly one answer to "how dark is
+   * it". What the holiday layer contributes is a MULTIPLIER on that, applied
+   * in setTimeOfDay: at Christmas the strand is at full strength, in March it
+   * is at nothing, and the geometry is scaled away with it so an unlit bulb is
+   * not a dark speck on every roofline for eleven months of the year.
+   */
+  createFestiveLights() {
+    if (!this.buildings.length) return
+
+    const strands = FESTIVE_COLOURS.map(() => [])
+    this.wreathSites = []
+
+    for (const b of this.buildings) {
+      // Round the top of the walls, just under the roof line. Following the
+      // rectangle rather than a circle matters: a ring of bulbs floating
+      // clear of the corners of a square building reads as a halo.
+      const hw = b.width / 2 + 0.12
+      const hd = b.depth / 2 + 0.12
+      const y = b.height - 0.35
+      if (y < 1) continue
+
+      // 1. ALONG THE EAVES, all the way round.
+      for (let i = 0; i < BULBS_PER_BUILDING; i++) {
+        const t = (i / BULBS_PER_BUILDING) * 4
+        const side = Math.floor(t)
+        const f = t - side
+        let x, z
+        if (side === 0) { x = -hw + f * 2 * hw; z = -hd }
+        else if (side === 1) { x = hw; z = -hd + f * 2 * hd }
+        else if (side === 2) { x = hw - f * 2 * hw; z = hd }
+        else { x = -hw; z = hd - f * 2 * hd }
+
+        // Bulbs sag a little between their fixings, which is most of what
+        // makes a string of lights look like a string rather than a row.
+        const sag = Math.sin(f * Math.PI) * 0.14
+
+        strands[i % strands.length].push({
+          x: b.x + x, y: y - sag, z: b.z + z,
+          rotation: 0, size: 1
+        })
+      }
+
+      // 2. DOWN THE FRONT, framing the windows.
+      //
+      // The eaves alone put one thin line of colour at the top of a
+      // five-storey building and left four storeys of dark wall under it -
+      // which is why Mike asked for "a lot lot lot more". A house is lit
+      // across its face, not along its gutter.
+      //
+      // The front is the face the building was rotated to present, which is
+      // the street. Every building on every island already knows which way
+      // that is; it simply was not written down until the decorations needed
+      // it, and hanging lights on all four sides instead would light the
+      // backs of terraces into gardens nobody can see.
+      const face = b.rotation || 0
+      const sf = Math.sin(face)
+      const cf = Math.cos(face)
+      const onFront = (across, height, out) => ({
+        x: b.x + across * cf + (hd + out) * sf,
+        y: height,
+        z: b.z - across * sf + (hd + out) * cf,
+        rotation: 0, size: 1
+      })
+
+      const storeys = Math.max(1, Math.floor(b.height / STOREY_HEIGHT))
+      let n = 0
+      for (let s = 0; s < storeys; s++) {
+        // Just above each row of windows, so the light reads as being hung
+        // over them rather than floating in the middle of the wall.
+        const sillY = (s + 1) * STOREY_HEIGHT - 0.55
+        if (sillY > b.height - 0.4) continue
+        const runs = Math.max(2, Math.round(b.width / 1.5))
+        for (let i = 0; i <= runs; i++) {
+          const across = -hw + (i / runs) * 2 * hw
+          const swag = Math.sin((i / runs) * Math.PI) * 0.18
+          strands[n++ % strands.length].push(onFront(across, sillY - swag, 0.12))
+        }
+      }
+
+      // 3. ROUND THE DOOR, which is the bit you drive past at eye level.
+      const doorTop = DOOR_HEIGHT + 0.15
+      const doorHalf = DOOR_WIDTH / 2 + 0.2
+      for (let i = 0; i <= DOOR_BULBS; i++) {
+        const t = i / DOOR_BULBS
+        // Up one side, across the top, down the other - an arch rather than a
+        // rectangle, because a doorway lit as an arch reads as decorated and
+        // one lit as a rectangle reads as a fire exit.
+        const angle = Math.PI * t
+        strands[n++ % strands.length].push(onFront(
+          -Math.cos(angle) * doorHalf,
+          Math.min(doorTop, Math.sin(angle) * doorTop + 0.3),
+          0.16))
+      }
+
+      // 4. A WREATH ON THE DOOR.
+      this.wreathSites.push({
+        x: b.x + (hd + 0.22) * sf,
+        y: DOOR_HEIGHT * 0.62,
+        z: b.z + (hd + 0.22) * cf,
+        rotation: face,
+        size: 1
+      })
+    }
+
+    this.festiveFields = []
+
+    strands.forEach((sites, i) => {
+      if (!sites.length) return
+      // 0.22, not the 0.085 a real bulb would be. Photographed at true size
+      // against a five-storey building they were three or four pixels of
+      // colour on a roofline you could not pick out from the window lights -
+      // the same lesson the ground decorations taught, in the same world
+      // where a car is 4.4 units long.
+      const bulb = new THREE.SphereGeometry(0.22, 6, 5)
+      const material = new THREE.MeshStandardMaterial({
+        color: FESTIVE_COLOURS[i], roughness: 0.4, flatShading: true,
+        // THE EMISSIVE COLOUR, which was the whole bug.
+        //
+        // Mike: "Christmas Decorations (the lights) should light up. They are
+        // currently just colorful balls." Exactly right, and the reason is one
+        // missing line. registerNightLight() only ensures the material HAS an
+        // emissive colour - and MeshStandardMaterial's default is black. Every
+        // other lit thing in the world sets its own emissive explicitly; these
+        // did not, so `emissiveIntensity` was faithfully scaling black by 2.6
+        // all night and the bulbs stayed unlit paint.
+        emissive: new THREE.Color(FESTIVE_COLOURS[i]),
+        emissiveIntensity: 0
+      })
+      this.registerNightLight(material, 2.6, true)
+      const mesh = new THREE.InstancedMesh(bulb, material, sites.length)
+      this.game.add(mesh)
+      // One field per colour, because the three strands hold different
+      // placements - they cannot share an instance list.
+      this.festiveFields.push(this.registerField(`festive${i}`, [mesh], sites))
+    })
+
+    this.createWreaths()
+  }
+
+  /**
+   * A wreath on every front door.
+   *
+   * A ring of foliage with a bow, hung flat against the wall - which is why
+   * the site carries the building's own facing and the geometry is authored in
+   * the XY plane: the field's growing machinery applies a rotation about Y, so
+   * a wreath authored lying down would grow into a doormat.
+   *
+   * It grows from the ground up like everything else in a field, which for a
+   * thing hung at chest height means it rises up the door as Christmas
+   * arrives. That is a small lie about how wreaths work and a much smaller one
+   * than popping into existence.
+   */
+  createWreaths() {
+    if (!this.wreathSites.length) return
+
+    const ring = new THREE.TorusGeometry(0.42, 0.12, 6, 12)
+    const berry = new THREE.SphereGeometry(0.075, 5, 4)
+    const bow = new THREE.BoxGeometry(0.34, 0.16, 0.1)
+
+    // Authored standing up and lifted onto the door. The site's y is the hook;
+    // the field scales from the site, so everything here is measured from it.
+    ring.translate(0, 0, 0)
+    bow.translate(0, -0.44, 0)
+
+    const green = new THREE.MeshStandardMaterial({
+      color: 0x2f6b34, roughness: 0.85, flatShading: true
+    })
+    const red = new THREE.MeshStandardMaterial({
+      color: 0xc22f2f, roughness: 0.6, flatShading: true
+    })
+    // The berries glow with the rest of the festive lighting rather than
+    // sitting dark next to it - same list, same dusk curve, same holiday
+    // multiplier.
+    const berryMat = new THREE.MeshStandardMaterial({
+      color: 0xd8402f, roughness: 0.4, flatShading: true,
+      emissive: new THREE.Color(0xff6a4a), emissiveIntensity: 0
+    })
+    this.registerNightLight(berryMat, 1.6, true)
+
+    const n = this.wreathSites.length
+    const parts = [
+      this.decorPart(ring, 0, n, { rough: 0.85 }),
+      this.decorPart(bow, 0, n, { rough: 0.6 })
+    ]
+    parts[0].material = green
+    parts[1].material = red
+
+    // Three berries, spaced round the ring.
+    for (const angle of [0.6, 2.5, 4.4]) {
+      const g = berry.clone()
+      g.translate(Math.cos(angle) * 0.42, Math.sin(angle) * 0.42, 0.06)
+      const mesh = new THREE.InstancedMesh(g, berryMat, n)
+      this.game.add(mesh)
+      parts.push(mesh)
+    }
+
+    this.wreathField = this.registerField('wreaths', parts, this.wreathSites)
+  }
+
+  /**
+   * Apply a holiday. `layer` comes from holidays.js via Environment, already
+   * eased - nothing here decides anything, it only paints.
+   *
+   * Note what this does NOT do: touch a single material colour, or the snow,
+   * or anything else the season owns. A holiday is a layer over the season,
+   * which is why Christmas arrives on top of winter instead of replacing it.
+   */
+  setHolidayLayer(layer) {
+    this.holiday = layer
+
+    this.growField(this.eggField, layer.eggs)
+    this.growField(this.bunnyField, layer.bunnies)
+    this.growField(this.pumpkinField, layer.pumpkins)
+    this.growField(this.turkeyField, layer.turkeys)
+    this.growField(this.giftField, layer.gifts)
+    this.growField(this.treeField, layer.trees)
+    this.growField(this.wreathField, layer.lights)
+
+    this.festiveLevel = layer.lights
+    for (const field of this.festiveFields || []) {
+      this.growField(field, layer.lights)
+    }
   }
 
   /**
@@ -4278,6 +5094,13 @@ export class World {
         x, z,
         island: island.name || island.id,
         width, depth,
+        // Which way it faces. Recorded because the Christmas decorations need
+        // a FRONT: a wreath belongs on the door and a strand of lights along
+        // the windows, and both of those are on one face of the building
+        // rather than distributed round it. Without this the only honest
+        // option is a ring of something, which is what a first pass did and
+        // it read as bunting on a roundabout.
+        rotation: rotation || 0,
         height: built
       })
     }
@@ -5448,18 +6271,130 @@ export class World {
 
     this.game.add(this.fireGroup)
 
-    // --- The ladder and the jet, which live on the player's truck ---
+    // --- The aerial and the jet, which live on the player's truck ---
+    //
+    // See the LADDER_* constants for what the photographs changed. The build
+    // below is in four parts because they move differently:
+    //
+    //   ladderYaw     the turntable, swinging
+    //   ladderPitch   the elevation
+    //   ladderArm     the four chords, SCALED in z - they really do stretch
+    //   ladderStruct  rungs and bracing, PLACED each frame at constant size
+    //   ladderTip     the basket, carried out to the end, never scaled
+    //
+    // Nested rather than composed into one matrix, because they ease at
+    // different rates: the turntable swings round, then the ladder lifts,
+    // then it telescopes out. As one rotation they could only move together.
     this.ladderGroup = new THREE.Group()
     this.ladderGroup.visible = false
+
+    this.ladderYaw = new THREE.Group()
+    this.ladderPitch = new THREE.Group()
+    this.ladderArm = new THREE.Group()
+    this.ladderStruct = new THREE.Group()
+    this.ladderTip = new THREE.Group()
+    this.ladderYaw.add(this.ladderPitch)
+    this.ladderPitch.add(this.ladderArm)
+    this.ladderPitch.add(this.ladderStruct)
+    this.ladderPitch.add(this.ladderTip)
+    this.ladderGroup.add(this.ladderYaw)
 
     const ladderMat = new THREE.MeshStandardMaterial({
       color: 0xd8d2c4, roughness: 0.6, metalness: 0.3, flatShading: true
     })
-    this.ladder = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 1), ladderMat)
-    // Authored along +Z from its base, so scaling z extends it outward
-    // rather than growing it from the middle.
-    this.ladder.geometry.translate(0, 0, 0.5)
-    this.ladderGroup.add(this.ladder)
+    const trimMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.fireBody, roughness: 0.55, metalness: 0.1, flatShading: true
+    })
+
+    // The pedestal and turntable it stands on, so it sits on something rather
+    // than sprouting out of the bodywork.
+    const pedestal = new THREE.Mesh(
+      new THREE.BoxGeometry(1.5, 0.3, 1.5), trimMat)
+    pedestal.position.y = -0.15
+    this.ladderGroup.add(pedestal)
+    const turntable = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.58, 0.66, 0.26, 12), ladderMat)
+    this.ladderYaw.add(turntable)
+
+    // FOUR chords, not two rails: this is the box truss, and its depth is
+    // most of what you see of it side-on. Authored one unit long from the
+    // base, so extension is one number.
+    const halfW = LADDER_WIDTH / 2
+    for (const side of [1, -1]) {
+      for (const [level, thick] of [[0, 0.1], [LADDER_DEPTH, 0.08]]) {
+        const chord = new THREE.Mesh(
+          new THREE.BoxGeometry(thick, thick, 1), ladderMat)
+        chord.geometry.translate(0, 0, 0.5)
+        chord.position.set(side * halfW, level, 0)
+        this.ladderArm.add(chord)
+      }
+    }
+
+    // Rungs across the bottom pair, and a diagonal each side per bay. Built
+    // once at unit length and moved into place each frame - see LADDER_BAY.
+    this.ladderRungs = []
+    this.ladderBraces = []
+    for (let i = 0; i < LADDER_MAX_BAYS; i++) {
+      const rung = new THREE.Mesh(
+        new THREE.BoxGeometry(LADDER_WIDTH, 0.05, 0.05), ladderMat)
+      rung.visible = false
+      this.ladderStruct.add(rung)
+      this.ladderRungs.push(rung)
+
+      const bay = []
+      for (const side of [1, -1]) {
+        const brace = new THREE.Mesh(
+          new THREE.BoxGeometry(0.045, 0.045, 1), ladderMat)
+        brace.visible = false
+        brace.position.x = side * halfW
+        this.ladderStruct.add(brace)
+        bay.push(brace)
+      }
+      this.ladderBraces.push(bay)
+    }
+
+    // The basket. A floor, four corner posts and a rail round the top, with
+    // the monitor on the front rail - which is where the water comes from.
+    const floor = new THREE.Mesh(
+      new THREE.BoxGeometry(BASKET_WIDTH, 0.1, BASKET_DEPTH), trimMat)
+    floor.position.set(0, LADDER_DEPTH / 2, BASKET_DEPTH / 2)
+    this.ladderTip.add(floor)
+
+    for (const sx of [1, -1]) {
+      for (const sz of [0.06, 0.94]) {
+        const post = new THREE.Mesh(
+          new THREE.BoxGeometry(0.07, BASKET_RAIL, 0.07), ladderMat)
+        post.position.set(sx * (BASKET_WIDTH / 2 - 0.06),
+                          LADDER_DEPTH / 2 + BASKET_RAIL / 2,
+                          BASKET_DEPTH * sz)
+        this.ladderTip.add(post)
+      }
+      const railSide = new THREE.Mesh(
+        new THREE.BoxGeometry(0.06, 0.06, BASKET_DEPTH), ladderMat)
+      railSide.position.set(sx * (BASKET_WIDTH / 2 - 0.06),
+                            LADDER_DEPTH / 2 + BASKET_RAIL, BASKET_DEPTH / 2)
+      this.ladderTip.add(railSide)
+    }
+    for (const sz of [0.06, 0.94]) {
+      const railEnd = new THREE.Mesh(
+        new THREE.BoxGeometry(BASKET_WIDTH, 0.06, 0.06), ladderMat)
+      railEnd.position.set(0, LADDER_DEPTH / 2 + BASKET_RAIL, BASKET_DEPTH * sz)
+      this.ladderTip.add(railEnd)
+    }
+
+    // The monitor: a stubby nozzle on the front rail. The jet is emitted from
+    // here in world space rather than parented to it, so the arc does not
+    // rotate with the basket - but this is what you see it come out of.
+    const monitor = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.075, 0.1, 0.45, 8), ladderMat)
+    monitor.rotation.x = Math.PI / 2
+    monitor.position.set(0, LADDER_DEPTH / 2 + BASKET_RAIL, BASKET_DEPTH + 0.18)
+    this.ladderTip.add(monitor)
+
+    // Where the nozzle is in the ladder's own frame, so the jet can start
+    // exactly there rather than somewhere near it.
+    this.basketNozzle = new THREE.Vector3(
+      0, LADDER_DEPTH / 2 + BASKET_RAIL, BASKET_DEPTH + 0.4)
 
     this.jetMaterial = new THREE.PointsMaterial({
       color: 0xbfe4ff, size: 0.7, sizeAttenuation: true,
@@ -5473,6 +6408,10 @@ export class World {
     this.jet = new THREE.Points(jetGeo, this.jetMaterial)
     this.jet.frustumCulled = false
     this.ladderGroup.add(this.jet)
+
+    // Where it currently is, as opposed to where it is going. Eased toward
+    // the target every frame - that easing IS the animation.
+    this.ladderNow = { yaw: 0, pitch: 0, length: 0 }
 
     this.game.add(this.ladderGroup)
   }
@@ -5533,12 +6472,34 @@ export class World {
     this.updateFireEffects(delta, fire, player)
   }
 
+  /**
+   * The ladder lying on the truck's roof: on when it is stowed, off while the
+   * aerial is run out.
+   *
+   * Asked of the mesh every time rather than held as a reference, for the
+   * reason the headlights taught: setKind() rebuilds the mesh, and a
+   * reference kept across that swap points at a truck that is no longer in
+   * the scene.
+   */
+  showStowedLadder(show) {
+    const vehicle = this.game.vehicle
+    const stowed = vehicle && vehicle.mesh && vehicle.mesh.userData
+      ? vehicle.mesh.userData.stowedLadder
+      : null
+    if (stowed) stowed.visible = show
+  }
+
   updateFireEffects(delta, fire, player) {
     if (!this.fireGroup) return
 
     this.fireGroup.visible = !!fire
     if (!fire) {
       this.ladderGroup.visible = false
+      // And the stowed one goes back on the roof. Missed on the first pass:
+      // put the fire out while parked alongside it and the truck drove away
+      // for the rest of the session with no ladder on it at all, because the
+      // only line that restored it was further down and unreachable from here.
+      this.showStowedLadder(true)
       return
     }
 
@@ -5588,32 +6549,571 @@ export class World {
     const vehicle = this.game.vehicle
     const alongside = !!(player && player.isFire && fire.playerOnStation)
     this.ladderGroup.visible = alongside
+
+    // The stowed ladder comes off the roof while the aerial is out, or the
+    // truck is carrying two of them.
+    this.showStowedLadder(!alongside)
+
     if (!alongside || !vehicle) return
 
     const from = vehicle.mesh.position
-    const dx = fire.x - from.x
-    const dz = fire.z - from.z
+
+    // REAR-MOUNTED. The turntable is at the back of the truck, not in the
+    // middle of the roof, so the whole aerial has to be based there - and
+    // "the back" is in the TRUCK's frame, which turns with it.
+    const heading = vehicle.mesh.rotation.y
+    const back = TRAFFIC_LENGTHS.fire * LADDER_MOUNT_BACK
+    const baseX = from.x - Math.sin(heading) * back
+    const baseZ = from.z - Math.cos(heading) * back
+    const foot = from.y + LADDER_MOUNT
+
+    this.ladderGroup.position.set(baseX, foot, baseZ)
+    this.ladderGroup.rotation.y = 0
+
+    const dx = fire.x - baseX
+    const dz = fire.z - baseZ
     const flat = Math.hypot(dx, dz)
-    const rise = (base + roof + 1.5) - (from.y + 1.2)
-    const reach = Math.hypot(flat, rise)
 
-    this.ladderGroup.position.set(from.x, from.y + 1.2, from.z)
-    this.ladderGroup.rotation.set(0, Math.atan2(dx, dz), 0, 'YXZ')
-    this.ladder.rotation.x = -Math.atan2(rise, flat)
-    this.ladder.scale.z = reach
+    // THE BASKET STANDS OFF THE BUILDING. It parks in the air a few metres
+    // clear and hoses in; it does not go up to the wall and touch it.
+    //
+    // How far clear is measured from the building's own footprint, because a
+    // fixed standoff from the CENTRE would put the basket inside a wide
+    // building and out in the street beside a narrow one. The mean half-extent
+    // rather than a proper ray-box intersection: the buildings are rotated,
+    // the difference is under a metre, and a metre is not visible at the
+    // distance you watch a ladder from.
+    const b = fire.building || {}
+    const halfSpan = ((b.width || 6) + (b.depth || 6)) / 4
+    const basketFlat = Math.max(1.4, flat - halfSpan - LADDER_STANDOFF)
 
-    // Water, thrown along the ladder and falling into the fire
+    const basketY = base + roof + BASKET_ABOVE_ROOF
+    const rise = basketY - foot
+    const reach = Math.hypot(basketFlat, rise)
+
+    // Turned in the WORLD rather than in the truck's frame, because the
+    // truck's frame turns with the truck: parked nose-on or side-on to the
+    // building, the ladder must still end up pointing at the building.
+    const wantYaw = Math.atan2(dx, dz)
+    const wantPitch = Math.atan2(rise, basketFlat)
+
+    const k = 1 - Math.exp(-LADDER_RATE * delta)
+    let turn = wantYaw - this.ladderNow.yaw
+    while (turn > Math.PI) turn -= Math.PI * 2
+    while (turn < -Math.PI) turn += Math.PI * 2
+    this.ladderNow.yaw += turn * k
+    this.ladderNow.pitch += (wantPitch - this.ladderNow.pitch) * k
+    // Extension eases from stowed, so arriving at a fire visibly runs the
+    // ladder out rather than having it already there.
+    this.ladderNow.length += (reach - this.ladderNow.length) * k
+
+    const length = Math.max(0.01, this.ladderNow.length)
+    this.ladderYaw.rotation.y = this.ladderNow.yaw
+    this.ladderPitch.rotation.x = -this.ladderNow.pitch
+    this.ladderArm.scale.z = length
+    this.ladderTip.position.z = length
+
+    // THE BASKET STAYS LEVEL.
+    //
+    // A real platform hangs on a levelling mechanism and is horizontal at
+    // every elevation - you can see it in all of Mike's photographs, and it
+    // has to be: people stand in it. Bolted rigidly to the tip, as this was
+    // first built, it rode up with the ladder and sat at 45 degrees, which
+    // reads as a basket about to tip its crew into the street.
+    //
+    // The tip node is a child of the pitch node, so cancelling the pitch here
+    // is the whole of the mechanism: the platform is carried out to the end
+    // of the ladder and hangs level, exactly as the real linkage does.
+    this.ladderTip.rotation.x = this.ladderNow.pitch
+
+    // Rungs and bracing, in bays of roughly constant length however far it is
+    // run out - so the lattice keeps its proportions instead of a fixed
+    // number of bays stretching into a set of long thin rectangles.
+    const bays = Math.max(2, Math.min(LADDER_MAX_BAYS,
+      Math.round(length / LADDER_BAY)))
+    const bayLength = length / bays
+    const braceLength = Math.hypot(bayLength, LADDER_DEPTH)
+    const braceTilt = Math.atan2(LADDER_DEPTH, bayLength)
+
+    for (let i = 0; i < LADDER_MAX_BAYS; i++) {
+      const on = i < bays
+      this.ladderRungs[i].visible = on
+      this.ladderBraces[i][0].visible = on
+      this.ladderBraces[i][1].visible = on
+      if (!on) continue
+
+      this.ladderRungs[i].position.z = (i + 0.5) * bayLength
+
+      // Alternating, so the bracing zigzags up the side the way a truss does
+      // rather than leaning the same way all the way out.
+      const up = i % 2 === 0
+      for (const brace of this.ladderBraces[i]) {
+        brace.position.y = LADDER_DEPTH / 2
+        brace.position.z = (i + 0.5) * bayLength
+        brace.scale.z = braceLength
+        brace.rotation.x = up ? -braceTilt : braceTilt
+      }
+    }
+
+    // THE WATER COMES OUT OF THE BASKET, which is the whole reason the basket
+    // exists. The nozzle's position is worked out in the ladder's own frame
+    // from where the tip actually is - not from where the ladder was asked to
+    // go - so the jet starts at the monitor throughout the run-out rather than
+    // arriving at the end of a ladder that has not got there yet.
+    const cp = Math.cos(this.ladderNow.pitch)
+    const sp = Math.sin(this.ladderNow.pitch)
+    const sy = Math.sin(this.ladderNow.yaw)
+    const cy = Math.cos(this.ladderNow.yaw)
+
+    // The ladder tip, and then the nozzle's offset from it. Two steps, and
+    // they are in DIFFERENT frames now that the basket is levelled: the tip
+    // is along the pitched ladder, but the monitor's offset from the tip is
+    // horizontal-and-vertical, because that is what levelling the platform
+    // means. Rotating the offset with the ladder - which is what the first
+    // version did - put the nozzle a metre out of place at full elevation and
+    // the stream appeared to start beside the basket rather than in it.
+    const tipFlat = length * cp
+    const tipY = length * sp
+    const alongFlat = tipFlat + this.basketNozzle.z
+    const nozzleY = tipY + this.basketNozzle.y
+    const nozzleX = sy * alongFlat
+    const nozzleZ = cy * alongFlat
+
+    // From the nozzle to the roof of the burning building, in the same frame.
+    const aimX = dx - nozzleX
+    const aimY = (base + roof + 0.6) - (foot + nozzleY)
+    const aimZ = dz - nozzleZ
+
+    // Held back until the ladder is most of the way out - not because the jet
+    // would be wrong, but because a basket still on its way up should not
+    // already be fighting the fire.
+    const out = reach > 0 ? this.ladderNow.length / reach : 0
+    this.jetMaterial.opacity = out > 0.8 ? 0.85 : 0
     for (let i = 0; i < JET_COUNT; i++) {
       this.jetAge[i] += delta * 1.7
       if (this.jetAge[i] > 1) this.jetAge[i] -= 1
       const t = this.jetAge[i]
       const i3 = i * 3
-      // In the ladder group's own frame: out along +Z, up and then over.
-      this.jetPositions[i3] = (Math.random() - 0.5) * 0.5 * t
-      this.jetPositions[i3 + 1] = rise * t + Math.sin(t * Math.PI) * 2.2
-      this.jetPositions[i3 + 2] = flat * t
+      const spray = (Math.random() - 0.5) * 0.7 * t
+      this.jetPositions[i3] = nozzleX + aimX * t + spray
+      // Arcing over rather than running straight: a monitor throws a stream,
+      // and a straight line between two points reads as a rod.
+      this.jetPositions[i3 + 1] = nozzleY + aimY * t + Math.sin(t * Math.PI) * 1.8
+      this.jetPositions[i3 + 2] = nozzleZ + aimZ * t + spray
     }
     this.jet.geometry.attributes.position.needsUpdate = true
+  }
+
+  // -------------------------------------------------------------
+  // The pursuit
+  // -------------------------------------------------------------
+
+  /**
+   * Turn an ordinary car into a robber, or let one go.
+   *
+   * A robber is not a new vehicle - it is a car already on the road, told to
+   * run. That is worth more than it sounds: it is already in traffic, already
+   * has a lane, already collides with everything, and when the chase ends it
+   * simply carries on with its day. Spawning a bespoke fleeing car would mean
+   * a second kind of vehicle with a second set of rules.
+   */
+  makeRobber() {
+    const candidates = (this.traffic || [])
+      .filter(v => v.drawn && !v.parking)
+      .map(v => ({ ...v, x: v.drawn.x, z: v.drawn.z, ref: v }))
+
+    const car = this.game.vehicle && this.game.vehicle.mesh
+    const player = car ? { x: car.position.x, z: car.position.z } : null
+
+    const chosen = chooseRobber(candidates, player, () => this.rand())
+    if (!chosen) return null
+
+    const v = chosen.ref
+    v.robber = true
+
+    // The paint has no emissive colour until it needs one - every other car
+    // in the world keeps a plain material, and only the one that is running
+    // gets something to flash with.
+    const body = v.mesh && v.mesh.userData.body
+    if (body) {
+      body.emissive = new THREE.Color(ROBBER_FLASH_COLOUR)
+      body.emissiveIntensity = 0
+    }
+
+    v.wasCruise = v.cruise
+    // Slightly slower than a police car at full pelt, so a chase is winnable
+    // by driving well rather than by holding the boost - and cannot be lost
+    // to something simply faster than you.
+    v.cruise = PLAYER_TOP_SPEED * ROBBER_SPEED
+    v.robberId = (this._robberId = (this._robberId || 0) + 1)
+    return v.robberId
+  }
+
+  releaseRobber(id) {
+    for (const v of this.traffic || []) {
+      if (v.robberId !== id) continue
+      v.robber = false
+      v.robberId = null
+      v.fleeFrom = null
+      if (v.wasCruise !== undefined) { v.cruise = v.wasCruise; v.wasCruise = undefined }
+      if (v.mesh && v.mesh.userData.body) {
+        v.mesh.userData.body.emissiveIntensity = 0
+      }
+    }
+  }
+
+  updatePolice(delta) {
+    if (!this.police) return
+
+    const car = this.game.vehicle && this.game.vehicle.mesh
+    const player = car
+      ? { x: car.position.x, z: car.position.z,
+          isPolice: this.game.vehicle.kind === 'police' }
+      : null
+
+    const robbers = (this.traffic || [])
+      .filter(v => v.robber && v.drawn)
+      .map(v => ({ id: v.robberId, x: v.drawn.x, z: v.drawn.z, ref: v }))
+
+    stepPolice(this.police, delta, {
+      player,
+      robbers,
+      spawn: () => this.makeRobber(),
+      release: (id) => this.releaseRobber(id),
+      rand: () => this.rand()
+    })
+
+    // Who each robber is running from, and the flash that lets you pick it
+    // out of the traffic.
+    const beat = Math.floor(this.elapsed * ROBBER_FLASH) % 2 === 0
+    for (const robber of robbers) {
+      let nearest = null
+      let best = Infinity
+
+      // The player's police car counts, and so does every patrol car - a
+      // robber that only ran from the player would drive straight past three
+      // stationary police cars, which looks like it has not noticed them.
+      const pursuers = (this.traffic || [])
+        .filter(v => v.kind === 'police' && v.drawn)
+        .map(v => ({ x: v.drawn.x, z: v.drawn.z }))
+      if (player && player.isPolice) pursuers.push(player)
+
+      for (const p of pursuers) {
+        const gap = Math.hypot(p.x - robber.x, p.z - robber.z)
+        if (gap < best) { best = gap; nearest = p }
+      }
+      robber.ref.fleeFrom = nearest
+
+      const body = robber.ref.mesh && robber.ref.mesh.userData.body
+      if (body) body.emissiveIntensity = beat ? 1.9 : 0.15
+    }
+
+    // Patrol cars converge on the nearest robber. Same callout machinery the
+    // fire engines use - they cannot END a chase, but they can be in it.
+    this.callOutPolice(robbers)
+  }
+
+  callOutPolice(robbers) {
+    const patrol = (this.traffic || []).filter(v => v.kind === 'police')
+
+    if (!robbers.length) {
+      for (const v of patrol) v.mission = null
+      this.chaseRoutes = null
+      return
+    }
+
+    // Recomputed only when the set of chases changes, not every frame: a BFS
+    // per robber per frame would be sixty of them a second for a table that
+    // is stale by a lane at most.
+    const key = robbers.map(r => r.id).join(',')
+    if (this.chaseRoutes && this.chaseRoutes.key === key &&
+        this.elapsed - this.chaseRoutes.at < CHASE_REROUTE) return
+
+    this.chaseRoutes = { key, at: this.elapsed, hops: [] }
+    for (const robber of robbers) {
+      const route = routeToPoint(this.lanes, robber.x, robber.z)
+      if (route) this.chaseRoutes.hops.push(route.hops)
+    }
+
+    patrol.forEach((v, i) => {
+      const hops = this.chaseRoutes.hops[i % Math.max(1, this.chaseRoutes.hops.length)]
+      v.mission = hops || null
+    })
+  }
+
+  // -------------------------------------------------------------
+  // The ambulance run
+  // -------------------------------------------------------------
+
+  /**
+   * Every place a crash can happen: points along the roads, each labelled
+   * with the island it is on.
+   *
+   * On the ROADS, because that is where cars crash and, more to the point,
+   * the only places an ambulance can reach. Scattering crashes across the
+   * map would put some of them on beaches and hillsides where the run could
+   * never be completed - a failure the player would read as their own.
+   *
+   * Worked out once, at build time. The road network does not move.
+   */
+  findCrashSites() {
+    const sites = []
+
+    for (let i = 0; i < this.lanes.lanes.length; i++) {
+      const lane = this.lanes.lanes[i]
+      if (lane.length < 20) continue
+
+      const at = pointAlong(lane, lane.length * 0.5)
+      // Which island it is on, by asking which one it is inside rather than
+      // which centre is nearest: the islands are different sizes, and the
+      // nearest CENTRE to a road on the edge of a big island is regularly a
+      // small island across the water.
+      let island = null
+      for (const candidate of ISLANDS) {
+        const here = getIsland(candidate.id)
+        if (inlandDistance(here, at.x - here.x, at.z - here.z) > 0) {
+          island = here
+          break
+        }
+      }
+      if (!island) continue
+
+      sites.push({
+        x: at.x, z: at.z, heading: at.heading,
+        island: island.name || island.id
+      })
+    }
+
+    return sites
+  }
+
+  /**
+   * The wreck: two cars that have met. Built once and moved, like the fire.
+   */
+  createWreck() {
+    this.wreck = new THREE.Group()
+    this.wreck.visible = false
+
+    // TWO REAL CARS, from the same builders the traffic uses.
+    //
+    // They were two plain boxes, which read as two boxes. Using the fleet's
+    // own meshes costs nothing - they are built once and moved, like the fire
+    // - and means the crash is made of the same cars you have been driving
+    // past all session, wheels, lamps and all. A sedan and an SUV rather than
+    // two sedans, because two identical cars nose to nose reads as one car
+    // reflected.
+    const sedan = this.buildTrafficVehicle({ kind: 'sedan', colour: PALETTE.carRed })
+    const suv = this.buildTrafficVehicle({ kind: 'suv', colour: PALETTE.carBlue })
+
+    // Nose to nose and skewed, which reads as a collision from a distance far
+    // better than any amount of dented geometry. Tipped slightly on their
+    // springs too - a car that has just been hit is never sitting level.
+    // Placed from CRASH_CARS, the same table the traffic simulation is given -
+    // see CRASH_SIDE_OFFSET. The picture and the physics have to agree about
+    // where the wreck is, and the only way to be sure of that is for there to
+    // be one answer rather than two that look alike.
+    this.wreckEngines = []
+    for (const [i, mesh] of [[0, sedan], [1, suv]]) {
+      const car = CRASH_CARS[i]
+      const lx = car.x + CRASH_SIDE_OFFSET
+      mesh.position.set(lx, 0, car.z)
+      mesh.rotation.set(car.roll * 0.3, car.turn, car.roll, 'YXZ')
+      this.wreck.add(mesh)
+
+      // The engine end, so the smoke comes out of the right end of the right
+      // car rather than out of the middle of the scene.
+      const nose = (car.kind === 'sedan' ? TRAFFIC_LENGTHS.sedan : TRAFFIC_LENGTHS.suv) * 0.42
+      this.wreckEngines.push(new THREE.Vector3(
+        lx + Math.sin(car.turn) * nose, 0.95, car.z + Math.cos(car.turn) * nose))
+    }
+
+    // Smoke out of both bonnets. One buffer for the pair, and deliberately
+    // NOT the fire's smoke: that column is forty-six units tall and visible
+    // from the next island, which is its job. This is a wisp off an engine
+    // that says "something happened here" from across the street and does not
+    // pretend the road is ablaze.
+    this.crashSmokeMaterial = new THREE.PointsMaterial({
+      color: 0x6f6f74, size: 0.95, sizeAttenuation: true,
+      transparent: true, opacity: 0, depthWrite: false
+    })
+    this.crashSmokePositions = new Float32Array(CRASH_SMOKE_COUNT * 3)
+    this.crashSmokeAge = new Float32Array(CRASH_SMOKE_COUNT)
+    for (let i = 0; i < CRASH_SMOKE_COUNT; i++) {
+      this.crashSmokeAge[i] = Math.random() * CRASH_SMOKE_LIFE
+    }
+    const smokeGeo = new THREE.BufferGeometry()
+    smokeGeo.setAttribute('position',
+      new THREE.BufferAttribute(this.crashSmokePositions, 3))
+    this.crashSmoke = new THREE.Points(smokeGeo, this.crashSmokeMaterial)
+    this.crashSmoke.frustumCulled = false
+    this.wreck.add(this.crashSmoke)
+
+    // Hazard lights, so it is findable in the dark as well as in the day.
+    this.wreckHazard = new THREE.MeshStandardMaterial({
+      color: 0x7a4a10, roughness: 0.5,
+      emissive: new THREE.Color(0xffa62b), emissiveIntensity: 0
+    })
+    for (const side of [1, -1]) {
+      const lamp = new THREE.Mesh(
+        new THREE.BoxGeometry(0.3, 0.2, 0.2), this.wreckHazard)
+      lamp.position.set(side * 2.1, 1.1, 0)
+      this.wreck.add(lamp)
+    }
+
+    this.game.add(this.wreck)
+  }
+
+  /** The wisp of smoke off each crashed engine. */
+  updateCrashSmoke(delta) {
+    if (!this.crashSmoke) return
+
+    const per = Math.floor(CRASH_SMOKE_COUNT / this.wreckEngines.length)
+    for (let i = 0; i < CRASH_SMOKE_COUNT; i++) {
+      this.crashSmokeAge[i] += delta
+      if (this.crashSmokeAge[i] > CRASH_SMOKE_LIFE) {
+        this.crashSmokeAge[i] -= CRASH_SMOKE_LIFE
+      }
+      const t = this.crashSmokeAge[i] / CRASH_SMOKE_LIFE
+      const engine = this.wreckEngines[Math.min(this.wreckEngines.length - 1,
+        Math.floor(i / per))]
+      // Golden angle again, so the puffs do not come out in rows.
+      const a = i * 2.399
+      const spread = 0.25 + t * 1.5
+      const i3 = i * 3
+      this.crashSmokePositions[i3] = engine.x + Math.sin(a + t * 2) * spread
+      this.crashSmokePositions[i3 + 1] = engine.y + t * CRASH_SMOKE_RISE
+      this.crashSmokePositions[i3 + 2] = engine.z + Math.cos(a + t * 2) * spread
+    }
+    this.crashSmoke.geometry.attributes.position.needsUpdate = true
+    // Thinning as it goes up is done with one opacity rather than per-point
+    // colour: the whole plume is small, and a gradient on something two
+    // metres tall is detail nobody will ever see.
+    this.crashSmokeMaterial.opacity = 0.5
+  }
+
+  updateAmbulance(delta) {
+    if (!this.ambulance) return
+
+    const car = this.game.vehicle && this.game.vehicle.mesh
+    const player = car
+      ? { x: car.position.x, z: car.position.z,
+          isAmbulance: this.game.vehicle.kind === 'ambulance' }
+      : null
+
+    stepAmbulance(this.ambulance, delta, {
+      sites: this.crashSites,
+      hospitals: this.hospitals(),
+      player,
+      ambulances: (this.traffic || [])
+        .filter(v => v.kind === 'ambulance' && v.drawn)
+        .map(v => ({ x: v.drawn.x, z: v.drawn.z })),
+      // Where everything else is, so a crash is not placed on top of a bus -
+      // see CRASH_CLEARANCE. Read every frame and used on about one of them a
+      // minute, which is the wrong way round but costs a map over fifty-odd
+      // vehicles; making it lazy would mean the game module reaching back into
+      // World for it, and that is a worse trade than the map.
+      busy: (this.traffic || []).filter(v => v.drawn)
+        .map(v => ({ x: v.drawn.x, z: v.drawn.z })),
+      rand: () => this.rand()
+    })
+
+    const job = this.ambulance.incident
+    this.wreck.visible = !!job
+
+    if (job) {
+      this.wreck.position.set(job.x, this.groundAt(job.x, job.z), job.z)
+      this.wreck.rotation.y = job.heading || 0
+      const beat = Math.floor(this.elapsed * 1.6) % 2 === 0
+      this.wreckHazard.emissiveIntensity = beat ? 2.2 : 0.1
+      this.updateCrashSmoke(delta)
+
+      // What the traffic has to get round, and where it is routed away from.
+      // The boxes come from crashBlocks(), which is also what positioned the
+      // meshes - the traffic simulation has no idea what a wreck is and should
+      // not learn, but it must not be told a different place from the one you
+      // can see.
+      this.roadIncident = {
+        x: job.x, z: job.z,
+        blocks: crashBlocks(job, {
+          sedan: { length: TRAFFIC_LENGTHS.sedan, width: TRAFFIC_WIDTHS.sedan },
+          suv: { length: TRAFFIC_LENGTHS.suv, width: TRAFFIC_WIDTHS.suv }
+        })
+      }
+    } else {
+      // THE WHOLE SCENE GOES when the run is over, not just the two cars.
+      //
+      // Mike asked for this explicitly, and it is three separate things that
+      // each had to be turned off: the wreck, the smoke off its engines, and
+      // - the one that would not have been visible at all - the obstacle the
+      // traffic has been steering round. Leaving that behind would have left
+      // an invisible crash in the road diverting the city for the rest of the
+      // session, which is the kind of bug that gets blamed on the roads.
+      this.roadIncident = null
+      if (this.crashSmokeMaterial) this.crashSmokeMaterial.opacity = 0
+      this.wreckHazard.emissiveIntensity = 0
+    }
+
+    this.callOutAmbulances(crewTarget(this.ambulance))
+  }
+
+  hospitals() {
+    if (!this._hospitals) {
+      this._hospitals = (this.stations || [])
+        .filter(s => s.kind === 'hospital')
+        .map(s => ({ x: s.x, z: s.z, island: s.island.name || s.island.id }))
+    }
+    return this._hospitals
+  }
+
+  /**
+   * Send ambulances to wherever the run currently needs them - the crash
+   * first, the hospital afterwards. Same callout machinery as the engines
+   * and the patrol cars.
+   */
+  callOutAmbulances(target) {
+    const crews = (this.traffic || []).filter(v => v.kind === 'ambulance')
+
+    if (!target) {
+      for (const v of crews) v.mission = null
+      this.ambulanceRoute = null
+      return
+    }
+
+    const key = `${Math.round(target.x)},${Math.round(target.z)}`
+    if (this.ambulanceRoute && this.ambulanceRoute.key === key) return
+
+    const route = routeToPoint(this.lanes, target.x, target.z)
+    this.ambulanceRoute = route ? { key, hops: route.hops } : null
+    if (!this.ambulanceRoute) return
+
+    const sorted = crews
+      .map(v => ({ v, hops: this.ambulanceRoute.hops[v.lane] ?? Infinity }))
+      .sort((a, b) => a.hops - b.hops)
+
+    sorted.forEach(({ v }, i) => {
+      v.mission = i < RESPONDERS ? this.ambulanceRoute.hops : null
+    })
+  }
+
+  /**
+   * The one callout on screen.
+   *
+   * Every game hands over the same shape and chooseMission() picks between
+   * them - a callout you can act on beats one you can only watch. Nothing
+   * here knows what a fire or a pursuit is, which is the point: the ambulance
+   * run will slot in as a third entry in this list and change nothing else.
+   */
+  activeMission() {
+    const kind = this.game.vehicle ? this.game.vehicle.kind : null
+    const robbers = (this.traffic || [])
+      .filter(v => v.robber && v.drawn)
+      .map(v => ({ id: v.robberId, x: v.drawn.x, z: v.drawn.z }))
+
+    return chooseMission([
+      fireHud(this.fire, kind === 'fire'),
+      policeHud(this.police, kind === 'police', robbers),
+      ambulanceHud(this.ambulance, kind === 'ambulance')
+    ])
   }
 
   // -------------------------------------------------------------
@@ -5622,7 +7122,12 @@ export class World {
   setTimeOfDay(dayFactor, nightFactor) {
     const glow = Math.pow(nightFactor, 1.4)
     for (const entry of this.nightEmissives) {
-      entry.material.emissiveIntensity = glow * entry.strength
+      // Festive lights are the same dusk curve as everything else, multiplied
+      // by how much of the holiday is up. Out of season that is zero and the
+      // bulbs are simply dark - and scaled away too, in setHolidayLayer, so
+      // they are not dark specks on every roofline all year.
+      const holiday = entry.festive ? this.festiveLevel : 1
+      entry.material.emissiveIntensity = glow * entry.strength * holiday
     }
 
     // Pools of light on the ground, fading in with the emissives
@@ -5649,6 +7154,8 @@ export class World {
     this.updateTraffic(delta)
     this.updateGarageDoors(delta)
     this.updateFire(delta)
+    this.updatePolice(delta)
+    this.updateAmbulance(delta)
 
     const env = this.game.environment
     if (!env) return

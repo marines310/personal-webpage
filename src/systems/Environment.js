@@ -3,6 +3,11 @@ import { Game } from '../core/Game.js'
 import {
   SEASON_ORDER, seasonView, seasonAt, phaseForSeason, easeView
 } from './seasons.js'
+import {
+  HOLIDAYS, holidayAt, holidayLayer, emptyLayer, easeLayer,
+  newFireworksState, stepFireworks, shellView, sparkOffset,
+  SPARKS, CLIMB_SECONDS, BURST_SECONDS
+} from './holidays.js'
 
 /**
  * Environment - sky, sun, day/night cycle and weather.
@@ -113,6 +118,14 @@ const DRIFT_HEIGHT = 40
  * coming down. Density is the count, not the opacity: half-transparent leaves
  * look like a rendering fault, so they stay solid and there are simply fewer.
  */
+/**
+ * How many shells can be in the sky at once.
+ *
+ * At the full launch rate a shell lives 3.7 seconds, so about five are up at
+ * any moment; sixteen is headroom for the buffer, not a target.
+ */
+const FIREWORK_SHELLS = 16
+
 const DRIFT_KINDS = {
   snow: { size: 0.24, fall: 3.2, flutter: 0.9, share: 1,
           colours: [0xffffff, 0xeef4ff, 0xdfeaf6] },
@@ -156,6 +169,18 @@ export class Environment {
     this.seasonTarget = seasonView(this.seasonPhase)
     this.season = seasonView(this.seasonPhase)   // a separate object, not an alias
 
+    // --- Holidays ---
+    //
+    // A LAYER over the season, on the same year phase. `holidayPick` is null
+    // when the calendar is in charge and a key when you have chosen one; it
+    // is deliberately not a "holidayLocked" boolean like the season's,
+    // because there is a real difference between "no holiday, follow the
+    // calendar" and "None, and mean it" - one of them shows you Christmas in
+    // December and the other never shows you anything.
+    this.holidayPick = null
+    this.holiday = emptyLayer()
+    this.fireworks = newFireworksState()
+
     // --- Lightning ---
     this.flash = 0
     this.nextStrike = 6
@@ -172,6 +197,7 @@ export class Environment {
     this.buildClouds()
     this.buildRain()
     this.buildDrift()
+    this.buildFireworks()
 
     // Apply once so frame zero already looks right
     this.update(0)
@@ -604,6 +630,160 @@ export class Environment {
   }
 
   // -------------------------------------------------------------
+  // The holidays
+  // -------------------------------------------------------------
+  /**
+   * The decorations, on the same clock as the season and applied after it.
+   *
+   * After, and never instead: a holiday adds props and lights and has no
+   * opinion at all about the colour of the grass. That ordering is what lets
+   * Christmas keep winter's snow, and holidays.js makes it structural by not
+   * having a key for anything a season owns.
+   */
+  updateHoliday(delta) {
+    const target = holidayLayer(this.seasonPhase, this.holidayPick)
+    easeLayer(this.holiday, target, delta)
+
+    if (this.game.world && this.game.world.setHolidayLayer) {
+      this.game.world.setHolidayLayer(this.holiday)
+    }
+
+    this.updateFireworks(delta)
+  }
+
+  /**
+   * Fireworks: one Points cloud for every shell in the sky at once.
+   *
+   * A single buffer rather than an object per shell, for the same reason the
+   * rain and the drift are single buffers - a burst is forty-two sparks, a
+   * busy sky is a dozen shells, and five hundred separate meshes appearing
+   * and disappearing every few seconds would cost more in allocation than in
+   * drawing. The draw range is moved instead, and nothing is ever created
+   * after the first frame.
+   */
+  buildFireworks() {
+    const max = FIREWORK_SHELLS * (SPARKS + 1)
+    this.fireworkPositions = new Float32Array(max * 3)
+    this.fireworkColours = new Float32Array(max * 3)
+
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position',
+      new THREE.BufferAttribute(this.fireworkPositions, 3))
+    geometry.setAttribute('color',
+      new THREE.BufferAttribute(this.fireworkColours, 3))
+    geometry.setDrawRange(0, 0)
+
+    this.fireworkMaterial = new THREE.PointsMaterial({
+      // A spark is a world-space size here, and these are a hundred-odd units
+      // away. At 1.5 - which is a sensible size for a snowflake beside the
+      // car - a burst came out about six pixels across and the sky at New
+      // Year was indistinguishable from any other night sky. Sparks are also
+      // the one thing in this world allowed to be bigger than they are: a
+      // real one is a millimetre of burning metal and reads as a bright dot
+      // only because it is a bright dot.
+      size: 2.4,
+      sizeAttenuation: true,
+      vertexColors: true,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      // Added rather than blended: sparks are light, and light on a night sky
+      // adds. Blended normally they come out as grey confetti, which is what
+      // the first version looked like.
+      blending: THREE.AdditiveBlending,
+      // And no fog, or a shell four hundred units out over the water - which
+      // is where they all are - is fogged down to nothing before it bursts.
+      fog: false
+    })
+
+    this.fireworksPoints = new THREE.Points(geometry, this.fireworkMaterial)
+    this.fireworksPoints.frustumCulled = false
+    this.game.add(this.fireworksPoints)
+  }
+
+  updateFireworks(delta) {
+    if (!this.fireworksPoints) return
+
+    const centre = this.game.vehicle && this.game.vehicle.mesh
+      ? this.game.vehicle.mesh.position
+      : { x: 0, z: 0 }
+
+    stepFireworks(this.fireworks, delta, {
+      intensity: this.holiday.fireworks,
+      night: this.nightFactor,
+      x: centre.x,
+      z: centre.z,
+      rand: Math.random
+    })
+
+    const pos = this.fireworkPositions
+    const col = this.fireworkColours
+    const c = this._fireworkColour || (this._fireworkColour = new THREE.Color())
+    let n = 0
+
+    for (const shell of this.fireworks.shells) {
+      const view = shellView(shell)
+      c.setHex(shell.colour)
+
+      if (view.phase === 'climb') {
+        // One point going up. The trail is the shell itself dimming as it
+        // rises - see shellView - rather than a queue of stored positions,
+        // which would be a second history to keep in step with nothing.
+        pos[n * 3] = shell.x
+        pos[n * 3 + 1] = view.y
+        pos[n * 3 + 2] = shell.z
+        col[n * 3] = c.r * view.brightness
+        col[n * 3 + 1] = c.g * view.brightness
+        col[n * 3 + 2] = c.b * view.brightness
+        n++
+        continue
+      }
+
+      for (let i = 0; i < SPARKS; i++) {
+        const o = sparkOffset(i, SPARKS, view.spread)
+        pos[n * 3] = shell.x + o.x
+        pos[n * 3 + 1] = view.y + o.y
+        pos[n * 3 + 2] = shell.z + o.z
+        col[n * 3] = c.r * view.fade
+        col[n * 3 + 1] = c.g * view.fade
+        col[n * 3 + 2] = c.b * view.fade
+        n++
+      }
+    }
+
+    this.fireworksPoints.geometry.setDrawRange(0, n)
+    this.fireworksPoints.geometry.attributes.position.needsUpdate = true
+    this.fireworksPoints.geometry.attributes.color.needsUpdate = true
+    this.fireworksPoints.visible = n > 0
+  }
+
+  // -------------------------------------------------------------
+  // Picking a holiday by hand
+  // -------------------------------------------------------------
+  /**
+   * Choose a holiday, or pass null to hand it back to the calendar.
+   *
+   * A chosen holiday applies in full whatever the date is, which is what
+   * picking one off a menu has to mean - the alternative is choosing
+   * Christmas in June and being shown a tenth of it.
+   */
+  setHoliday(key) {
+    if (key === null || key === 'auto') { this.holidayPick = null; return this }
+    if (!HOLIDAYS[key]) return this
+    this.holidayPick = key
+    return this
+  }
+
+  /** Which holiday is up, whether it was chosen or the calendar arrived at it. */
+  getHoliday() {
+    return this.holidayPick || holidayAt(this.seasonPhase).key
+  }
+
+  getHolidayLabel() {
+    return HOLIDAYS[this.getHoliday()].label
+  }
+
+  // -------------------------------------------------------------
   // Main update
   // -------------------------------------------------------------
   update(delta) {
@@ -618,6 +798,8 @@ export class Environment {
     this.updateWeather(delta)
     // After the weather, because settled snow depends on what is falling.
     this.updateSeason(delta)
+    // And after the season, because a holiday is a layer over one.
+    this.updateHoliday(delta)
     this.updateSky()
     this.updateLights()
     this.updateClouds(delta)
@@ -989,6 +1171,7 @@ export class Environment {
     this.timeLocked = false
     this.weatherLocked = false
     this.seasonLocked = false
+    this.holidayPick = null
     this.weatherTimer = 0
     this.weatherDuration = 20
     return this
@@ -996,7 +1179,8 @@ export class Environment {
 
   /** Is anything being held by hand? The HUD says so when it is. */
   isManual() {
-    return !!(this.timeLocked || this.weatherLocked || this.seasonLocked)
+    return !!(this.timeLocked || this.weatherLocked || this.seasonLocked ||
+              this.holidayPick)
   }
 
   /** Ease the eased values toward the target. Shared by both paths. */

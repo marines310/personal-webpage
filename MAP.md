@@ -1414,8 +1414,14 @@ arrow with it instead of leaving it pointing at nothing. The banner clears
 after a few seconds; the arrow stays for as long as the fire burns.
 
 **Driving the fire engine**, it is yours to put out. Pull up outside (within
-about sixteen units - anywhere along the frontage will do) and a ladder swings
-out and starts playing water on it. A **FIRE CONTAINMENT** bar fills while you
+about sixteen units - anywhere along the frontage will do) and the aerial goes
+to work: the turntable at the **back** of the truck swings round, the truss
+lifts, it telescopes out, and the basket at the tip parks in the air a few
+metres clear of the building and hoses in. The basket stays **level** however
+far the ladder is raised, the way a real one does on its levelling linkage.
+The water comes out of the monitor on the basket rail, not from the truck. It is a box truss - four chords, rungs
+and diagonal bracing - built from photographs of real tower ladders, and the
+ladder lying along the roof is the same object stowed. A **FIRE CONTAINMENT** bar fills while you
 are there and turns green to say you are on station; hold it for fourteen
 seconds and the fire is out. Drive off and the bar slips back, though more
 slowly than it filled, so overshooting and coming round again costs you
@@ -1426,11 +1432,18 @@ network says they are nearest - but **they cannot finish it while you are the
 one in a fire engine.** That is deliberate. If they could, the game would play
 itself while you watched.
 
-**Driving anything else**, they can, and do. You see the smoke and the
-response and there is no bar, because it is not your fire to contain. Left to
-themselves the engines take around four minutes to deal with something on the
-far side of the map; they have to drive there through the traffic like
-everybody else.
+**Driving anything else**, they can, and do - and **there is nothing on screen
+about it at all**: no banner, no arrow, no bar. You see the smoke going up
+over the rooftops and the engines going past, the way you would from a bus.
+The fire is still there and still burning; it is just not a job you have been
+given. If you want it, go and get a fire engine. Left to themselves the
+engines take around four minutes to deal with something on the far side of
+the map; they have to drive there through the traffic like everybody else.
+
+That is the same rule the pursuit follows, and it is worth stating once for
+all three callouts: **the HUD is a list of things you can do, not a list of
+things that are happening.** Anything you cannot act on stays in the world
+rather than on the screen.
 
 A fire nobody ever attends burns out on its own after seven minutes, so the
 world does not slowly fill up with them.
@@ -1439,6 +1452,159 @@ The numbers are all in `src/world/fireGame.js`: how often (`FIRE_GAP_MIN` and
 `FIRE_GAP_MAX`, both 120 - set them apart if you would rather it were
 irregular), how close counts as on station, how long you have to hold it, and
 how fast the bar slips back.
+
+---
+
+## The pursuit
+
+Every minute or two a car starts flashing and running. It ignores red lights,
+and it drives a little slower than a police car does - so it is catchable by
+driving well, and it cannot simply outrun you.
+
+**Driving the police car**, it is yours. **PURSUIT IN PROGRESS** appears with
+an arrow to it, and you end it by driving into it. Other patrol cars converge
+and join in, and none of them can finish it - if they could, the game would
+play itself. Lose it for four minutes and it gets away and says so; another
+turns up a minute or two later.
+
+**Driving anything else**, one to three chases are running somewhere in the
+world at any time. You will come across them: a flashing car going too fast
+with police behind it. They resolve on their own after a minute or two. There
+is nothing on screen for these - no banner and no arrow. They are scenery, not
+a callout, and you are not in them.
+
+The robber is not a special car. It is whichever ordinary car happened to be
+chosen, told to run, so when the chase ends it simply carries on with its day.
+Buses and service vehicles are never picked.
+
+Numbers in `src/world/policeGame.js`: how often, how much slower the robber is,
+how close counts as a bump, and how long before it gets away.
+
+---
+
+## The ambulance run
+
+Every one to three minutes there is a crash somewhere - two cars off the road,
+smoking, always on an actual road so the run is always completable. **CAR CRASH
+AT (island)** appears with an arrow and a distance, the same instrument the
+fire uses.
+
+**Driving the ambulance**, it is yours, and the run has two halves that ask
+different things of you.
+
+*Getting there* is a search: you have a direction and a distance and no route,
+and the arrow is all you get. *Getting back* is a race: you know exactly where
+you are going and the only question is whether you are quick enough. They are
+separate phases in the code for that reason - the arrow points at different
+things and the bar means different things in each.
+
+Pull up at the scene and a **LOADING PATIENT** bar fills over ten seconds.
+Unlike the fire's, it **pauses rather than slipping back** if you roll forward
+- the skill being asked for at a fire is holding station, and the skill here
+was getting to the crash, which you have already demonstrated. Punishing a
+nudge with the doors open would be punishing nothing.
+
+Loaded, the nearest hospital **to the crash** is chosen - not to you - and the
+bar becomes **TIME TO HOSPITAL**, which **drains**. A countdown that fills up
+is a countdown you read backwards. Two minutes, green while there is
+comfortable time left. Arrive and it says **PATIENT DELIVERED**; run out and it
+says **PATIENT LOST** and then quietly sets up another.
+
+**Driving anything else**, the AI crews do it - and *without* the ten-second
+load and the two-minute clock. That is the third time this project has arrived
+at the same rule: **the pressure mechanic belongs to the player.** It was
+measured, not assumed. Held to your standard, a crew reached a scene in 38
+seconds, then took until 270 seconds to accumulate ten seconds of standing
+within fourteen units of it - because an AI driver drives past rather than
+parking - and then sat 102 units from the hospital while the clock expired.
+Every background crash would have ended in PATIENT LOST. So *arriving* is the
+thing an AI can demonstrate: once a crew is at the scene its run proceeds and
+finishes off screen. You see the crash, the ambulance turning up, and the wreck
+cleared.
+
+**The crash is two real cars**, from the same builders the traffic uses, shunted
+into each other with smoke coming off both bonnets. They end up against the
+kerb the way they do in life, which leaves the driving line open - and that is
+not decoration. Laid nose to nose across the middle of the road they span the
+whole carriageway, and then nothing can get past whatever the rules say.
+
+**The traffic gets round it** three ways, in order. Cars are routed away at the
+junction before, the way you get waved down a different street at a real
+incident. Anything already committed pulls out onto the shoulder straight away
+rather than queueing first. And only if neither works does a car cross the
+centre line - one direction at a time, and only with a clear gap, because the
+unobstructed side never gives way. None of it can jam: routing away adds no
+new reason to stop, and the wreck itself is something drivers PREFER to avoid
+rather than something that can pin them.
+
+The whole scene clears when the run ends - the cars, the smoke, and the
+diversion the traffic has been making round it.
+
+A crash nobody attends clears itself after five minutes, for the same reason a
+fire burns out: otherwise the world quietly accumulates wrecks nobody dealt
+with.
+
+Numbers in `src/world/ambulanceGame.js`.
+
+---
+
+## The holidays
+
+Six of them, and the world dresses for each. They arrive on the calendar as
+the year turns, or you can pick one off the conditions panel and it eases in
+over a few seconds.
+
+| Holiday | What appears |
+|---|---|
+| Easter | eggs scattered on the verges, and bunnies |
+| Fourth of July | fireworks over the water after dark |
+| Halloween | pumpkins, and lights on the buildings |
+| Thanksgiving | turkeys - and the pumpkins stay, at about half |
+| Christmas | trees, gifts, wreaths on the doors, and red, green and gold lights across every building |
+| New Year | fireworks, and the gifts still out |
+
+**A holiday is a layer over the season, not another season.** That is the
+whole design and it is the thing not to rearrange. Christmas happens *in*
+winter and wants winter's bare trees and winter's snow; built as a season it
+would replace them, and the symptom - the snow vanishing when you put the
+decorations up - reads as a rendering fault rather than as the modelling
+mistake it is. So a holiday only describes things a season has no opinion
+about: how many eggs are on the grass, whether the fireworks are up. It never
+names a colour and never mentions snow.
+
+Which means picking Christmas in summer gives you a green Christmas, and
+picking it in winter gives you gifts, lights **and** the snow. Both are
+correct, and neither needed a special case.
+
+**Christmas gets the most of it**: about fifty bulbs a building - along the
+eaves, across the windows of every storey, and in an arch round the door - all
+of which light up after dark on the same dusk curve as the street lamps. There
+is a wreath on every front door, with berries that glow too.
+
+**Snowmen are winter's, not Christmas's.** They belong to the snow on the
+ground rather than to the calendar, so they build up as the world goes white
+and melt as it thaws. A green Christmas has none; a cold January is full of
+them.
+
+The decorations grow rather than appear - the same trick the spring flowers
+use - so they come up out of the ground over a few seconds and go back down
+the same way. They are also about twice life size, deliberately: authored at
+true scale, an Easter egg on a verge is one pixel from a moving car, and the
+road is where you always are.
+
+Fireworks only go up after dark, because a firework at noon is a grey puff.
+They burst out over the water, at a height worked out from how far away they
+are, so every one sits at about the same place up the sky whether it is close
+or distant.
+
+Dates are the real ones converted into the game's year, so the holidays turn
+up in the right seasons and the Christmas and New Year decorations overlap the
+way that week does. Everything is in `src/systems/holidays.js`: the table, the
+dates, how long each lasts, and the fireworks.
+
+---
+
+## What is *not* in this file
 
 | What | Where |
 |---|---|
@@ -1450,8 +1616,12 @@ how fast the bar slips back.
 | Camera feel, limits, free look | `src/systems/cameraPose.js` |
 | Headlights, brake lights, indicators | `src/world/vehicleLights.js` |
 | The fire callout | `src/world/fireGame.js` |
+| The pursuit | `src/world/policeGame.js` |
+| The ambulance run | `src/world/ambulanceGame.js` |
+| The callout banner and arrow | `src/world/missions.js` |
 | Day length, weather | `src/systems/Environment.js` |
 | Season colours, snow, leaves, flowers | `src/systems/seasons.js` |
+| Holiday decorations and fireworks | `src/systems/holidays.js` |
 | 3D model files | `public/models/` — see `MODELS.md` |
 | The airport and its aircraft | `src/world/islandLayout.js` → `AIRPORT_*`, `PLANE_*` |
 | Helipads and helicopters | `src/world/islandLayout.js` → `HELIPAD_*`, `HELI_*` |

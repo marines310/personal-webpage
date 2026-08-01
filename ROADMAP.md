@@ -405,12 +405,45 @@ wrong in the middle of this one.
 
 ---
 
-## Holiday moments
+## The three callouts — done, 1 August 2026
 
-Asked for 31 July. Not built - recorded here so it does not get lost.
+One mini-game per emergency vehicle, asked for 31 July. All three built, and
+all three arrived at the same rule: **the pressure mechanic belongs to the
+player.**
 
-Pick a holiday and the world dresses itself for it, the way picking a season
-already changes the ground and the trees.
+- [x] **The fire** — a building catches light every two minutes; hold station
+      outside in a fire engine and a containment bar fills. The AI engines
+      cannot finish it while you are the one in an engine
+- [x] **The pursuit** — a car runs and ignores red lights; drive the police
+      car into it. One to three background chases run as scenery when you are
+      in anything else, with nothing on screen for them
+- [x] **The ambulance run** — a crash every one to three minutes; get there,
+      ten seconds to load, two minutes to a hospital. The AI crews do it
+      without the load or the clock, because measured against the player's
+      standard every background crash ended in PATIENT LOST
+- [x] **One generic HUD** — `missions.js` holds the arrow and the arbitration:
+      a callout you can act on beats one you can only watch
+
+---
+
+## Holiday moments — done, 1 August 2026
+
+Asked for 31 July, built 1 August. Pick a holiday and the world dresses itself
+for it, the way picking a season already changes the ground and the trees —
+or leave it alone and they arrive on the calendar.
+
+- [x] **New Year and the Fourth of July** — fireworks over the water, after
+      dark only
+- [x] **Easter** — eggs on the verges, and bunnies
+- [x] **Halloween** — pumpkins, and lights on the buildings
+- [x] **Thanksgiving** — turkeys, with the pumpkins carrying over at about half
+- [x] **Christmas** — gifts, and a strand of red, green and gold bulbs round
+      every roofline
+- [x] **A holiday is a LAYER over the season**, so Christmas keeps winter's
+      snow. There is a test that drives the real seasons code to prove it
+
+The notes below were written before it was built. They turned out to be right
+on every count, which is why they are kept rather than deleted.
 
 | Holiday | What appears |
 |---|---|

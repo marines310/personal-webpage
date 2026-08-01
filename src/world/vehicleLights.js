@@ -246,3 +246,25 @@ export function turnDirection(fromHeading, toHeading) {
 export function turnAmount(headingChange) {
   return -headingChange
 }
+
+/**
+ * Which side of the vehicle a point in its own coordinates is on.
+ *
+ * -1 left, +1 right, matching the indicator's own sign.
+ *
+ * THIS EXISTS BECAUSE THE INDICATORS CAME OUT ON THE WRONG SIDES.
+ * `turnDirection` was checked against the geometry with a cross product and
+ * was right; the lamps were then hung on the vehicle by whoever wrote the
+ * builder, who assumed +X was the right-hand side because that is what it is
+ * on a screen. It is not: the nose is +Z, so right is forward x up =
+ * (0,0,1) x (0,1,0) = (-1,0,0). Every indicator in the world was on the wrong
+ * side of every vehicle, and the test could not see it because it verified
+ * which WAY to signal and never which LAMP that lit - one link of the chain
+ * checked, the next one assumed.
+ *
+ * So the answer lives here now, where a test can ask it directly, instead of
+ * being re-derived by eye at each place that hangs something on a car.
+ */
+export function sideOfVehicle(localX) {
+  return localX > 0 ? -1 : 1
+}

@@ -18,9 +18,11 @@ import {
   FIRST_FIRE, ON_STATION, CONTAIN_SECONDS, CONTAIN_DECAY, BURN_LIMIT,
   MESSAGE_TIME, MIN_FIRE_DISTANCE, RESPONDERS, FIRE_GAP_MIN, FIRE_GAP_MAX,
   MAX_CREWS,
-  newFireState, stepFire, whoIsFighting, chooseBuilding, fireHud, smokeStrength,
-  missionArrow
+  newFireState, stepFire, whoIsFighting, chooseBuilding, fireHud, smokeStrength
 } from '../src/world/fireGame.js'
+// The arrow moved to missions.js when the pursuit needed it too - one arrow,
+// not one per game.
+import { missionArrow, chooseMission } from '../src/world/missions.js'
 import {
   getLaneNetwork, routeToPoint, makeTraffic, stepTraffic,
   TRAFFIC_FLEET, getBusStops, ISLANDS, getIsland
@@ -244,6 +246,23 @@ chk('the bar is labelled FIRE CONTAINMENT',
 chk('progress is a fraction, not seconds',
     hudAsEngine.progress >= 0 && hudAsEngine.progress <= 1, `${hudAsEngine.progress}`)
 
+// Mike, 1 August: "if a user is not a firetruck, it should not see fire
+// missions in the game world". Not a quieter banner, not a greyed-out one -
+// none at all, arrow included.
+//
+// The filtering is chooseMission's job rather than fireHud's, and the split
+// is deliberate: fireHud describes the fire, chooseMission decides what is
+// worth putting on your screen. One place knows the rule and all three
+// callouts obey it. Note the fire itself is untouched - it still burns, the
+// smoke still goes up over the roof, and the AI engines still turn out. You
+// are simply not being told about a job you have no way of doing.
+chk('driving anything else, the fire is not on the HUD at all',
+    chooseMission([hudAsCar]) === null)
+chk('driving the engine, it is', chooseMission([hudAsEngine]) === hudAsEngine)
+chk('and the fire is still burning either way - it is the HUD that changed',
+    !!hudAsCar.target && hudAsCar.target.x === hudAsEngine.target.x &&
+    hudAsCar.target.z === hudAsEngine.target.z)
+
 // ---------------------------------------------------------------------------
 console.log('\n5. It ends, and another one comes along')
 
@@ -323,18 +342,18 @@ console.log('\n5c. The arrow')
 // running game against the camera's own matrix rather than derived from the
 // heading convention - which is exactly the check that was missing when
 // turnDirection came out backwards and its test agreed with it.
-const arrowState = { fire: { x: 0, z: 0 } }
+const arrowTarget = { x: 0, z: 0 }
 const deg = (a) => Math.round((a * 180) / Math.PI)
 
-chk('no fire, no arrow', !missionArrow({ fire: null }, { x: 0, z: 0, yaw: 0 }).show)
-chk('and no viewer, no arrow', !missionArrow(arrowState, null).show)
+chk('no fire, no arrow', !missionArrow(null, { x: 0, z: 0, yaw: 0 }).show)
+chk('and no viewer, no arrow', !missionArrow(arrowTarget, null).show)
 
 // Facing +Z (yaw 0). The car's nose is +Z and its right is -X, so a fire at
 // -X is to the viewer's RIGHT and must turn the glyph clockwise.
-const ahead = missionArrow({ fire: { x: 0, z: 80 } }, { x: 0, z: 0, yaw: 0 })
-const right = missionArrow({ fire: { x: -80, z: 0 } }, { x: 0, z: 0, yaw: 0 })
-const left = missionArrow({ fire: { x: 80, z: 0 } }, { x: 0, z: 0, yaw: 0 })
-const behind = missionArrow({ fire: { x: 0, z: -80 } }, { x: 0, z: 0, yaw: 0 })
+const ahead = missionArrow({ x: 0, z: 80 }, { x: 0, z: 0, yaw: 0 })
+const right = missionArrow({ x: -80, z: 0 }, { x: 0, z: 0, yaw: 0 })
+const left = missionArrow({ x: 80, z: 0 }, { x: 0, z: 0, yaw: 0 })
+const behind = missionArrow({ x: 0, z: -80 }, { x: 0, z: 0, yaw: 0 })
 
 console.log(`   ahead ${deg(ahead.angle)}, right ${deg(right.angle)}, ` +
             `left ${deg(left.angle)}, behind ${Math.abs(deg(behind.angle))}`)
@@ -345,19 +364,17 @@ chk('behind points straight down', Math.abs(deg(behind.angle)) === 180)
 
 // Turning the camera has to turn the arrow the opposite way, or it is not
 // pointing at anything - it is just decoration that happens to move.
-const turned = missionArrow({ fire: { x: 0, z: 80 } },
-                            { x: 0, z: 0, yaw: Math.PI / 2 })
+const turned = missionArrow({ x: 0, z: 80 }, { x: 0, z: 0, yaw: Math.PI / 2 })
 chk('turning the view swings the arrow the other way',
     deg(turned.angle) === 90, `${deg(turned.angle)}`)
 
 chk('it never winds past half a turn either way',
     [0, 1, 2, 3, 4, 5, 6].every(y =>
-      Math.abs(missionArrow({ fire: { x: 40, z: -70 } },
-                            { x: 0, z: 0, yaw: y }).angle) <= Math.PI + 1e-9))
+      Math.abs(missionArrow({ x: 40, z: -70 }, { x: 0, z: 0, yaw: y }).angle)
+        <= Math.PI + 1e-9))
 
 chk('the distance is the distance',
-    Math.abs(missionArrow({ fire: { x: 30, z: 40 } },
-                          { x: 0, z: 0, yaw: 0 }).distance - 50) < 1e-9)
+    Math.abs(missionArrow({ x: 30, z: 40 }, { x: 0, z: 0, yaw: 0 }).distance - 50) < 1e-9)
 
 // ---------------------------------------------------------------------------
 console.log('\n6. The smoke is what you navigate by')
@@ -414,8 +431,10 @@ console.log('\n8. A callout costs the simulation nothing')
 const layout = readFileSync(ROOT + 'src/world/islandLayout.js', 'utf8')
 chk('a callout reuses the going-home branch rather than adding one',
     /const goingHome = v\.mission \|\|/.test(layout))
+// One branch scores a route, whether the route is "to the fire" or "home".
+// A second branch would be a second set of preferences to keep in step.
 chk('and there is only one place that scores a route',
-    (layout.match(/goingHome\s*\?/g) || []).length === 1)
+    (layout.match(/goingHome\[index\]/g) || []).length === 1)
 
 const quiet = makeTraffic(network, TRAFFIC_FLEET, getBusStops())
 let moved = 0
@@ -447,19 +466,95 @@ chk('the ladder points from the truck to the fire rather than assuming',
 chk('the effects are built once, not per fire',
     /createFireEffects\(\)/.test(world))
 
+// ---------------------------------------------------------------------------
+// The aerial, from Mike's photographs of tower ladders. Four things, each of
+// which was wrong in the first version and each of which was then MEASURED in
+// the running game rather than judged from a screenshot - the numbers are in
+// the comments so the next person does not have to take it on trust.
+
+// 1. Rear-mounted. The turntable is at the BACK of the truck; it was rising
+//    out of the middle of the roof. Measured at 2.10 units behind centre on a
+//    7-unit truck, 2.05 up - which is the top of the rear bodywork.
+chk('the turntable is mounted at the back of the truck, not on the roof',
+    /LADDER_MOUNT_BACK/.test(world) &&
+    /baseX = from\.x - Math\.sin\(heading\) \* back/.test(world))
+chk('and in the TRUCK\'s frame, so it stays at the back when it turns',
+    /const heading = vehicle\.mesh\.rotation\.y/.test(world))
+
+// 2. A box truss, not a ladder: four chords, rungs across the bottom pair,
+//    and a diagonal each side per bay. Measured: 4 chords, 11 rungs and 11
+//    braced bays at 9.4 units of extension.
+chk('it is a box truss with a depth, not two rails',
+    /LADDER_DEPTH/.test(world))
+chk('the bracing is placed rather than scaled, so it cannot shear flat',
+    /this\.ladderBraces\[i\]/.test(world) && /brace\.rotation\.x =/.test(world))
+chk('and the bays stay about the same length however far it runs out',
+    /Math\.round\(length \/ LADDER_BAY\)/.test(world))
+
+// 3. The water comes out of the BASKET. Measured from the drawn buffer: the
+//    nearest droplet sits 0.12 units from the nozzle and the farthest 0.74
+//    from the burning roof - both ends, because a stream that starts in the
+//    right place and points out to sea is still wrong.
+chk('there is a basket at the tip, carried out unscaled',
+    /this\.ladderTip/.test(world) && /this\.ladderTip\.position\.z = length/.test(world))
+chk('and the jet starts at its nozzle, not at the truck',
+    /this\.basketNozzle/.test(world) &&
+    /this\.jetPositions\[i3\] = nozzleX/.test(world))
+
+// 3b. THE BASKET STAYS LEVEL. Mike again, on the first attempt: "the baskets
+//     are all level". A real platform hangs on a levelling mechanism and is
+//     horizontal at every elevation - people stand in it. Bolted rigidly to
+//     the tip it rode up with the ladder and sat at 45 degrees.
+//
+//     Measured in the running game with the ladder at 45.8 degrees: the arm
+//     tilts 45.8, the basket floor and every railing 0.00.
+chk('the basket cancels the ladder\'s pitch, so it hangs level',
+    /this\.ladderTip\.rotation\.x = this\.ladderNow\.pitch/.test(world))
+// And the consequence that is easy to miss: once the platform is levelled the
+// nozzle's offset from the tip is horizontal-and-vertical, NOT along the
+// ladder. Rotating it with the ladder leaves the stream starting beside the
+// basket instead of in it.
+chk('and the nozzle offset is added level too, not along the ladder',
+    /const alongFlat = tipFlat \+ this\.basketNozzle\.z/.test(world) &&
+    /const nozzleY = tipY \+ this\.basketNozzle\.y/.test(world))
+
+// 4. The basket stands off the building - Mike: "the basket is a bit
+//    separated from the building it's working on". Measured 7.4 units from
+//    the centre of a building whose mean half-extent is about 4.2.
+chk('the basket parks clear of the building rather than touching it',
+    /LADDER_STANDOFF/.test(world) &&
+    /flat - halfSpan - LADDER_STANDOFF/.test(world))
+chk('measured off the building\'s own footprint, not a fixed distance',
+    /\(b\.width \|\| 6\) \+ \(b\.depth \|\| 6\)/.test(world))
+chk('and above its roof, so it is not hidden behind the parapet',
+    /BASKET_ABOVE_ROOF/.test(world))
+
+// And the stowed one comes off the roof while the aerial is out, or the truck
+// carries two ladders - one lying down and one in the air.
+chk('the stowed ladder is hidden while the aerial is deployed',
+    /showStowedLadder\(!alongside\)/.test(world))
+chk('and put back when the fire is over',
+    /if \(!fire\) \{[\s\S]{0,400}showStowedLadder\(true\)/.test(world))
+chk('asked of the mesh each time, never held across a setKind',
+    /userData\.stowedLadder/.test(world))
+
 const ui = readFileSync(ROOT + 'src/ui/UI.js', 'utf8')
-chk('the HUD works nothing out for itself', /fireHud\(world\.fire/.test(ui))
+chk('the HUD works nothing out for itself', /world\.activeMission\(\)/.test(ui))
 // Aimed from the CAMERA, not the car: what "left" means on a screen is
 // decided by where the camera is looking, and an arrow aimed from the car
 // would swing about every time you looked over your shoulder.
 chk('the arrow is aimed from the camera, not the car',
-    /missionArrow\(world\.fire, \{[\s\S]{0,140}camera\.instance\.position/.test(ui))
+    /missionArrow\(target, \{[\s\S]{0,140}camera\.instance\.position/.test(ui))
 // The banner clears after five seconds and the fire burns for minutes, so
 // the panel has to stay up for the arrow or the arrow is never seen.
-chk('a burning fire keeps the panel on screen after the banner goes',
-    /const burning = !!world\.fire\.fire/.test(ui) && /\|\| burning/.test(ui))
+// The banner clears after five seconds and the fire burns for minutes, so
+// having a target to point at has to be reason enough to stay on screen.
+chk('having somewhere to point keeps the panel up after the banner goes',
+    /!!mission\.title \|\| !!mission\.target/.test(ui))
 chk('and the elements are named for callouts generally, not for fires',
     /mission-bar-fill/.test(ui) && !/fire-bar/.test(ui))
+chk('and it no longer mentions fires at all',
+    !/fireHud|world\.fire/.test(ui))
 
 const html = readFileSync(ROOT + 'index.html', 'utf8')
 for (const id of ['mission', 'mission-title', 'mission-bar', 'mission-bar-fill',

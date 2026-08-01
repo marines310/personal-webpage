@@ -189,8 +189,14 @@ const flatPlacements = [...code.matchAll(
     //   ship     - afloat. Exempt from the GROUND, not from having a right
     //              answer: see the check immediately below, which is the half
     //              this exception used to hide.
+    //   lx       - the two cars inside the crash group. This is the case the
+    //              comment above describes and the pattern cannot see: a local
+    //              offset within a group that IS placed with groundAt(). Both
+    //              its x and its z happen to be names, so it reads as a world
+    //              placement. The group's own position.set is three lines
+    //              away and does ask the ground.
     const where = `${m[1]} ${m[2]} ${m[4]}`
-    return !/\bcx\b|\bcz\b|\bbridge\.|\bpx\b|\bpz\b|\bship\b/.test(where)
+    return !/\bcx\b|\bcz\b|\bbridge\.|\bpx\b|\bpz\b|\bship\b|\blx\b/.test(where)
   })
 
 console.log(`   ${flatPlacements.length} placements still at a fixed height`)

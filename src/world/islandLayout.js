@@ -511,6 +511,68 @@ export const SWERVE_AFTER = 1.5
 export const SIDESTEP_RECOVER = 1.2
 
 /**
+ * An incident in the road - a crash, with the ambulances round it.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * Mike, driving: "when the car crash mission occurs, traffic was completely
+ * blocked". Two crashed cars sit across a lane, an ambulance parks alongside
+ * for ten seconds, and everything behind it queues for ever - because the only
+ * way past was the kerbward shoulder, and there is not enough of it.
+ *
+ * THREE THINGS HAPPEN, IN THIS ORDER
+ * ----------------------------------
+ * 1. Traffic is ROUTED AWAY at the junction before. The cheap one and the safe
+ *    one: it adds no new reason to stop, so it cannot deadlock, and it is what
+ *    happens at a real incident - you get waved down a different street. A
+ *    penalty rather than a ban, so a lane that is the only way out is still
+ *    taken.
+ * 2. Whatever is already committed goes round on the SHOULDER, as it does for
+ *    any obstruction, but without waiting SWERVE_AFTER seconds first.
+ * 3. Only if that fails does a vehicle CROSS THE CENTRE LINE - and only with a
+ *    clear gap in the oncoming traffic, and only from the blocked side.
+ *
+ * THE ORDER MATTERS MORE THAN ANY OF THE THREE
+ * --------------------------------------------
+ * Crossing the centre line was tried once before as the general swerve, and it
+ * is written up at the swerve itself: a car drifted onto the oncoming side and
+ * stopped there, where it blocked the traffic coming the other way AND was
+ * blocked by it. Nine vehicles sat in one such knot for 232 seconds of a
+ * 300-second run. So it is last, it is one-sided, and it needs a gap.
+ *
+ * One-sided is what makes it safe. The oncoming direction NEVER gives way, so
+ * it never stops, so gaps keep appearing - which is what turns "both wait for
+ * each other" into "one at a time past the obstruction". It is how a real
+ * single-lane closure works, and it is why there is no negotiation here at
+ * all: negotiation is the thing that deadlocks.
+ */
+export const INCIDENT_RADIUS = 10
+
+/**
+ * How heavily a route past the incident is marked down.
+ *
+ * Bigger than anything the ordinary wander produces (`-turn + rand()*1.6`, so
+ * about 1.6 at most) and bigger than several hops of the going-home table (10
+ * each), so an incident outweighs a few junctions of detour. Not Infinity: a
+ * lane that is the only way out of a junction must still be choosable, or the
+ * avoidance becomes a new way to be stuck - which is the thing it exists to
+ * prevent.
+ */
+export const INCIDENT_PENALTY = 42
+
+/**
+ * How much clear oncoming road a vehicle needs before it pulls out across the
+ * line, and how far over it may go.
+ *
+ * 26 units is about two seconds of closing at the fleet's cruise plus the
+ * length of the obstruction. The clamp is over half the lane rather than the
+ * 0.28 the ordinary swerve gets, because the whole point is to use the other
+ * side.
+ */
+export const ONCOMING_CLEAR = 26
+export const INCIDENT_CROSS = 0.55
+
+/**
  * How far a vehicle may be shuffled back along its own lane to break a lock.
  *
  * The last resort, and the reason a jam can never be permanent: reversing
@@ -2785,11 +2847,60 @@ export function makeTraffic(network, fleet = TRAFFIC_FLEET, stops = null,
  * something to avoid, which is what stops a bus shunting you down the road
  * when you pull out in front of it.
  */
-export function stepTraffic(network, vehicles, delta, elapsed, player = null) {
+/**
+ * Does this lane run past the incident?
+ *
+ * Sampled along the lane rather than measured to its ends: a lane that starts
+ * and finishes well clear can still run straight through the middle of the
+ * crash, and scoring only the endpoints would route traffic into it.
+ */
+function lanePastIncident(lane, incident) {
+  if (!incident) return false
+  const steps = Math.max(2, Math.min(8, Math.ceil(lane.length / 12)))
+  for (let i = 0; i <= steps; i++) {
+    const p = pointAlong(lane, (i / steps) * lane.length)
+    if (Math.hypot(p.x - incident.x, p.z - incident.z) < INCIDENT_RADIUS) return true
+  }
+  return false
+}
+
+/**
+ * Is the oncoming side clear enough to pull out into?
+ *
+ * "Oncoming" is decided by heading rather than by which lane anything is on,
+ * because the lanes either side of a street are separate objects here and
+ * nothing links them. Anything pointing back at you within ONCOMING_CLEAR
+ * ahead counts, and that is the whole check - no negotiation, because
+ * negotiation is what deadlocks.
+ */
+function oncomingClear(me, snapshot) {
+  const fx = Math.sin(me.heading)
+  const fz = Math.cos(me.heading)
+
+  for (let i = 0; i < snapshot.length; i++) {
+    const other = snapshot[i]
+    if (other.v === me.v) continue
+
+    const dx = other.x - me.x
+    const dz = other.z - me.z
+    const ahead = dx * fx + dz * fz
+    if (ahead < 0 || ahead > ONCOMING_CLEAR) continue
+    // Beside the road rather than on it - a car on a parallel street is not
+    // oncoming traffic.
+    if (Math.abs(dx * fz - dz * fx) > 7) continue
+
+    const facing = Math.cos(other.heading - me.heading)
+    if (facing < -0.5) return false
+  }
+  return true
+}
+
+export function stepTraffic(network, vehicles, delta, elapsed, player = null,
+                            incident = null) {
   const lanes = network.lanes
   if (!lanes.length) return vehicles
 
-  // Who is on each lane, in order. Rebuilt每 step because they move; with a
+  // Who is on each lane, in order. Rebuilt each step because they move; with a
   // few dozen vehicles that costs nothing and cannot go stale.
   const byLane = new Map()
   for (const v of vehicles) {
@@ -2817,6 +2928,17 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null) {
     // committed and drove through the red, and once the speed of the thing
     // was taken into account it released cars into occupied junctions.
     // Vehicles brake hard enough that the simple rule is sufficient.
+    // A fleeing car does not stop for lights. That is what makes a pursuit a
+    // pursuit: patrol cars queue at the red and lose it, and the player has
+    // to decide each junction whether to follow it through.
+    //
+    // It is not an exception to the deadlock rule - the rule is that only a
+    // red light, the vehicle in front and the collision veto may stop a
+    // vehicle, and this REMOVES a reason to stop rather than adding one. The
+    // robber still gives way to the car in front and is still vetoed out of
+    // anything it would hit, so it cannot drive through the side of a bus.
+    if (v.robber) continue
+
     const state = signalState(lane.signal, lane.signalGroup, elapsed)
     if (state === 'red' || (state === 'amber' && toEnd > 8)) heldAtRed.add(v)
   }
@@ -2854,6 +2976,12 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null) {
   // and makes the result depend on array order.
   const snapshot = vehicles.map(v => ({ v, ...trafficPosition(network, v) }))
   const indexOf = new Map(vehicles.map((v, i) => [v, i]))
+
+  // The crash itself, as something to bump into. Without this the traffic
+  // drove straight through two wrecked cars, which looked worse than the jam
+  // it was meant to be causing - and there was nothing for the avoidance
+  // above to avoid, so none of it would ever have fired.
+  const obstacles = incident && incident.blocks ? incident.blocks : null
 
   // Where everyone was, so anything that ends up overlapping can be put back
   // `sidestep` belongs in here too. Rolling back the position but keeping the
@@ -3101,7 +3229,7 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null) {
     if (v.speed > 0) {
       const step = v.speed * delta
       const crossing = v.at + step >= lane.length && lane.next.length > 0
-      const options = crossing ? orderedNext(lanes, lane, v) : [null]
+      const options = crossing ? orderedNext(lanes, lane, v, incident) : [null]
 
       // Straight ahead first, then a step to one side, then further out.
       //
@@ -3118,26 +3246,91 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null) {
       // blocked by it. Nine vehicles ended up in one such knot for 232 of the
       // 300 seconds. Positive sidestep is kerbward, the same direction the
       // lane is already offset, so a swerve can only ever use the shoulder.
-      const swerves = (v.blockedFor || 0) > SWERVE_AFTER
+      let swerves = (v.blockedFor || 0) > SWERVE_AFTER
         ? [0, v.sidestep || 0, 0.9, 1.6, 2.2]
         : [v.sidestep || 0, 0]
 
+      // At an incident the shoulder is offered straight away rather than after
+      // SWERVE_AFTER, and the oncoming side after that - see INCIDENT_RADIUS.
+      // The crossing candidates go LAST and only with a gap, so the ordinary
+      // ways past are always tried first and the other side is a last resort
+      // rather than a habit.
+      const mine = snapshot[indexOf.get(v)]
+      const atIncident = !!incident && mine &&
+        Math.hypot(mine.x - incident.x, mine.z - incident.z) <
+          INCIDENT_RADIUS + v.length
+      let mayCross = false
+
+      if (atIncident) {
+        // BOTH ways, and this was wrong the first time in a way the numbers
+        // caught: the list offered only kerbward steps, and the crash sits ON
+        // the kerb side - so every candidate made things worse, the avoiding
+        // pass could never succeed, and six vehicles were driving through the
+        // wreck at any moment with nobody ever crossing the line. That read as
+        // the crossing rule being broken when it was simply never reached.
+        //
+        // The inward steps here are inside the ordinary 0.28 clamp: they move
+        // WITHIN the lane, not onto the other side of the road. Only the two
+        // after them cross, and only with a gap.
+        swerves = [v.sidestep || 0, 0, -0.7, -1.2]
+        // The gap in the oncoming traffic is still checked, because the
+        // clamp below allows a wider inward step once there is one - but the
+        // candidates stay inside the carriageway either way. Offering the
+        // other side of the road outright measured 92 vehicle-on-vehicle
+        // overlaps against none on a clear run: cars pulled out level with
+        // each other and there was nowhere for either to go.
+        mayCross = oncomingClear(mine, snapshot)
+      }
+
+      // THE WRECK IS A PREFERENCE, NOT A WALL. This is the whole shape of the
+      // solution and it took three attempts to get here, so the failures are
+      // worth keeping.
+      //
+      // As a hard veto it was correct and unusable. Cars standing where the
+      // crash appeared were welded in place - 17,256 vehicle-frames inside a
+      // crashed car. Exempting anything already inside fixed that and was too
+      // generous: everything that stopped just short GRAZED it, counted as
+      // inside, and drove straight on through. Letting the exempt ones move
+      // only outwards fixed THAT and produced the same result by a longer
+      // route, because "outwards" is satisfied by carrying on and coming out
+      // the far side.
+      //
+      // Every one of those is the same mistake: an absolute rule about a thing
+      // sitting in the road, in a simulation whose central discipline is that
+      // only three things may stop a vehicle dead. So the wreck stops being one
+      // of them. A vehicle at an incident tries first to find a way past that
+      // MISSES the wreck - which, with the crash shunted to one side of the
+      // road, it usually can - and if it genuinely cannot, it goes anyway.
+      //
+      // The cost is that a car occasionally clips the wreck. The alternative is
+      // a city that stops, which is what Mike reported and what this is for.
       let allowed = false
 
+      // Two passes: avoiding the wreck, then ignoring it. Ordered, not
+      // combined, so "go round it" is always tried before "go through it".
+      const passes = (obstacles && atIncident) ? [obstacles, null] : [null]
+
+      for (const solid of passes) {
       for (const option of options) {
         for (const sidestep of swerves) {
           // Stay on the tarmac. Further off the lane than this and a car
-          // climbs the pavement to get past.
-          if (Math.abs(sidestep) > lane.width * 0.28) continue
+          // climbs the pavement to get past - except across the line at an
+          // incident, which is the whole point and is why it needed a gap.
+          const limit = (mayCross && sidestep < 0)
+            ? lane.width * INCIDENT_CROSS
+            : lane.width * 0.28
+          if (Math.abs(sidestep) > limit) continue
 
           const where = whereAfter(lanes, lane, v, step, option, sidestep)
-          if (blocked(where, v, snapshot)) continue
+          if (blocked(where, v, snapshot, solid)) continue
 
           onward = option
           v.sidestep = sidestep
           allowed = true
           break
         }
+        if (allowed) break
+      }
         if (allowed) break
       }
 
@@ -3170,7 +3363,7 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null) {
         }
       }
 
-      if (relocate(network, v, snapshot, byLane)) {
+      if (relocate(network, v, snapshot, byLane, incident, obstacles)) {
         v.blockedFor = 0
         v.stopped = 0
         v.sidestep = 0
@@ -3322,7 +3515,7 @@ function resolveOverlaps(network, vehicles, was) {
  * whole life turning corners, plus a little randomness so it doesn't all
  * follow the same route round the island.
  */
-function orderedNext(lanes, lane, v) {
+function orderedNext(lanes, lane, v, incident = null) {
   const dir = pointAlong(lane, lane.length).heading
 
   // A service vehicle whose shift is over heads for its station, choosing the
@@ -3340,16 +3533,45 @@ function orderedNext(lanes, lane, v) {
   const goingHome = v.mission ||
                     (v.home && v.patrol <= 0 ? v.home.station.toHome : null)
 
+  // And a robber runs AWAY from whoever is nearest behind it. Straight-line
+  // distance rather than a hops table, because fleeing does not need a route:
+  // it needs whichever way is not towards the police car, worked out afresh
+  // every junction as the chase moves.
+  const fleeFrom = v.robber ? v.fleeFrom : null
+
   const options = lane.next
     .map((index) => {
       const turn = Math.abs(angleDelta(pointAlong(lanes[index], 0).heading, dir))
       const straightish = -turn + v.rand() * 1.6
-      return {
-        index,
-        score: goingHome
-          ? -(goingHome[index] ?? 999) * 10 + v.rand()
-          : straightish
+      let score
+      if (fleeFrom) {
+        // Judged where the option ENDS, not where it starts. Every lane out of
+        // a junction starts in the same few units, so scoring the entrances
+        // scores four numbers that barely differ and the choice comes out as
+        // noise - which reads as a car dithering at every corner rather than
+        // running.
+        const out = pointAlong(lanes[index], lanes[index].length)
+        score = Math.hypot(out.x - fleeFrom.x, out.z - fleeFrom.z) + v.rand() * 8
+      } else if (goingHome) {
+        score = -(goingHome[index] ?? 999) * 10 + v.rand()
+      } else {
+        score = straightish
       }
+
+      // Routed away from the incident - AFTER the draw, never instead of it.
+      //
+      // That is the whole reason this is a subtraction on the finished score
+      // rather than a branch: every branch above draws exactly one v.rand(),
+      // and a fourth branch, or an early return, would move somebody's draw
+      // and re-shuffle every route in the city. Moving one draw is what cost
+      // a red light when the indicators were first built. With no incident
+      // the penalty is zero and the scores are bit-identical to a run with
+      // none of this code in it.
+      if (incident && lanePastIncident(lanes[index], incident)) {
+        score -= INCIDENT_PENALTY
+      }
+
+      return { index, score }
     })
     .sort((a, b) => b.score - a.score)
     .map((o) => o.index)
@@ -3397,7 +3619,8 @@ function lawfulWait(v) {
   return false
 }
 
-function relocate(network, v, snapshot, byLane) {
+function relocate(network, v, snapshot, byLane, incident = null,
+                  obstacles = null) {
   const lanes = network.lanes
 
   // Where everyone is NOW, not where they were at the start of the step.
@@ -3433,8 +3656,16 @@ function relocate(network, v, snapshot, byLane) {
     }
     if (queueAhead) continue
 
+    // Never put a rescued vehicle down at the incident. It is the one place
+    // in the city guaranteed to be blocked, so dropping a car there trips the
+    // valve again within the minute - and a car materialising inside the
+    // wreck is the worst-looking bug this whole feature could have.
+    if (incident &&
+        Math.hypot(pointAlong(lane, at).x - incident.x,
+                   pointAlong(lane, at).z - incident.z) < INCIDENT_RADIUS) continue
+
     const where = pointAlong(lane, at)
-    if (blocked(where, v, live)) continue
+    if (blocked(where, v, live, obstacles)) continue
 
     v.lane = index
     v.at = at
@@ -3446,11 +3677,20 @@ function relocate(network, v, snapshot, byLane) {
 }
 
 /** Would a vehicle at `where` be inside any of the others? */
-function blocked(where, v, snapshot) {
+function blocked(where, v, snapshot, obstacles = null) {
   const box = vehicleBox(where, v)
   for (let i = 0; i < snapshot.length; i++) {
     if (snapshot[i].v === v) continue
     if (boxesOverlap(box, vehicleBox(snapshot[i], snapshot[i].v))) return true
+  }
+  // Things in the road that are not vehicles - at present, the crash. Kept as
+  // a separate list rather than pushed into the snapshot: the snapshot is
+  // indexed alongside `vehicles` in several places, and an extra entry in it
+  // would quietly shift all of them.
+  if (obstacles) {
+    for (let i = 0; i < obstacles.length; i++) {
+      if (boxesOverlap(box, vehicleBox(obstacles[i], obstacles[i]))) return true
+    }
   }
   return false
 }

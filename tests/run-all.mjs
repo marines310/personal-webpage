@@ -32,7 +32,11 @@ const SUITES = [
   'camera.mjs',        // free look, the saved view, reversing, occlusion
   'vehiclelights.mjs', // headlights, brake lights and indicators, on every kind
   'fire.mjs',          // the fire callout: who may fight it, and getting there
+  'police.mjs',        // the pursuit: the robber, the bump, the background chases
+  'ambulance.mjs',     // the crash: loading the patient, and the run against the clock
+  'incident.mjs',      // and the traffic getting past the crash rather than jamming
   'seasons.mjs',       // the year: colour, snow, leaves and flowers
+  'holidays.mjs',      // decorations layered OVER the season, and fireworks
   'zebra.mjs',         // crossing bars run along the road, side by side
   'traffic.mjs',       // lanes, right of way, and thirty vehicles on them
   'monorail.mjs',      // the loop, its piers and stations, and the trains

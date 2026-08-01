@@ -100,12 +100,14 @@ src/systems/               Camera, Inputs, Physics, Assets, Environment,
                            test can run them: seasons.js (the year),
                            cameraPose.js (where the camera sits) and
                            world/vehicleLights.js (what the lamps are doing)
-                           and world/fireGame.js (the fire callout).
+                           world/fireGame.js (the fire callout),
+                           world/policeGame.js (the pursuit) and
+                           world/missions.js (what they share).
 
 map-editor.html            The whole editor: one file, Vite entry, imports
                            the real modules from src/world/.
 
-tests/                     36 suites, ~1210 checks. `npm test`.
+tests/                     37 suites, ~1300 checks. `npm test`.
 MAP.md                     How to edit the world. Written for Mike.
 DEPLOY.md                  How to publish. Written for Mike.
 ROADMAP.md                 Longer-term wishlist.
@@ -250,7 +252,7 @@ than a measurement or a reference, that is the moment to stop and ask.
 ## Testing
 
 ```bash
-npm test          # all 36 suites, ~1210 checks
+npm test          # all 37 suites, ~1300 checks
 ```
 
 There's no framework. Each file in `tests/` is a plain script that prints
@@ -1548,7 +1550,474 @@ HTTP, and checks every asset the published site requests actually returns
       never considered by the per-panel version. Unconditional, and safe:
       there is nothing in this game you type into.
 
-**Still open after 31 July:**
+43. **The pursuit.** Done 1 August. A car flashes and runs; drive the police
+    car into it and it is over. `src/world/policeGame.js`,
+    `tests/police.mjs`, 59 checks.
+
+    Same asymmetry as the fire, deliberately. Driving the police car, only
+    YOU can catch it - patrol cars converge and fill the mirror with blue
+    lights and none of them can end it. Driving anything else, one to three
+    chases run in the background and resolve on their own, off screen, the
+    way a city does.
+
+    - **A robber is a car already on the road, told to run** - not a new
+      vehicle. It is already in traffic, already has a lane, already collides
+      with everything, and when the chase ends it carries on with its day. A
+      bespoke fleeing car would have been a second kind of vehicle with a
+      second set of rules.
+    - **It is slower than a police car on purpose.** `ROBBER_SPEED` 0.92 of
+      the player's 18, so 16.6 against 18 - closing at 1.4 units a second,
+      which reels it in over a long street and gives it back on a missed
+      corner. Faster than the traffic's own 15, or it would not be running
+      from anything. `PLAYER_TOP_SPEED` is a second copy of Vehicle's
+      `maxForwardSpeed`, so the test reads both files and compares them.
+    - **It runs red lights**, which is what makes a pursuit a pursuit: the
+      patrol cars queue at the red and lose it, and you have to decide at
+      each junction whether to follow. That is not an exception to the
+      deadlock rule - it REMOVES a reason to stop rather than adding one, and
+      the robber still gives way to the car in front and is still vetoed out
+      of anything it would hit.
+    - **It flees by where each way out GOES, not where it starts.** Every
+      lane out of a junction begins within a few units of the others, so
+      scoring the entrances scores four numbers that barely differ and the
+      choice comes out as noise - a car dithering at every corner rather than
+      running.
+    - **Every scoring branch draws exactly one `v.rand()`**, so a chase
+      cannot shift anybody else's sequence. Traffic with nothing happening is
+      bit-identical again: min 97, median 704, max 2448, 37 relocations.
+
+    **The HUD is now generic.** `missions.js` holds the arrow and
+    `chooseMission()`, and every game hands over the same eight-field shape.
+    UI.js asks World for one mission and draws it - it no longer mentions
+    fires or pursuits at all, which is what will let the ambulance run arrive
+    without touching it. The arbitration is one rule: **a callout you can act
+    on beats one you can only watch**, whatever order they arrived in.
+    Without it a fire that started first would sit on screen mid-pursuit.
+
+    Two things worth knowing rather than guessing:
+
+    - **A background chase has to time out.** The AI cannot catch a robber -
+      that is the rule that makes your version a game - so a background chase
+      that never ended would run all session and the world would slowly fill
+      with flashing cars. `BACKGROUND_MIN_LIFE`/`MAX_LIFE` are the arrest
+      nobody sees.
+    - **A background chase gets nothing on screen** - no banner and no arrow.
+      An arrow to the nearest one was built on 1 August and taken out again
+      the same day at Mike's request. Worth recording so nobody adds it back
+      reasoning from first principles: pointing the HUD at something you have
+      no part in turns it into a list of everything happening in the world,
+      which is the opposite of a callout. A background chase is scenery you
+      may drive past and notice. If you want to be in one, get in the police
+      car.
+
+44. **Six things Mike found while driving, and CHASE MODE.** Fixed 1 August.
+
+    - **The indicators were on the wrong sides of every vehicle.** This is the
+      one worth reading. `turnDirection` had been checked against the geometry
+      with a cross product and was right; the lamps were then hung on the car
+      by assuming +X is the right-hand side, because that is what it is on a
+      screen. It is not - the nose is +Z, so right is `forward x up` =
+      (0,0,1) x (0,1,0) = **(-1,0,0)**. The suite passed throughout, because
+      it verified which WAY to signal and never which LAMP that lit. One link
+      of the chain checked and the next one assumed. `sideOfVehicle()` answers
+      it now, in the pure module, where a test can ask it directly.
+    - **The player's emergency lights never flashed.** `updateTraffic` drove
+      the AI's beacons and nothing drove the player's - so driving a police
+      car, an ambulance or a fire engine yourself was the one way to have a
+      silent roof, which is exactly the vehicle you would pick to see them.
+    - **The fire engine's beacons floated.** They were at 2.55 over the rear
+      body, whose roof is at 2.0 - half a unit clear, in mid air. Every other
+      emergency vehicle happened to have a flat back at about the right
+      height, so nobody noticed the number was a guess. Both figures come off
+      the cab now, which is where a real one puts them.
+    - **Large vehicles could get wedged with no way out**, and **respawning
+      dropped you on the plaza furniture**. These are the same problem - the
+      car is somewhere it cannot drive out of - so there is now one
+      `recoverToRoad()`, used by both. It puts the car on the nearest lane,
+      pointing along it, dropped in from a little above so it lands rather
+      than being placed inside the surface. Being stuck is judged on three
+      things together: you are ASKING to move, you are NOT moving, and it has
+      been true for three seconds. Deliberately not "speed is low" - a car
+      stopped at a junction with no throttle is not stuck, and teleporting it
+      would be alarming.
+    - **The ladder was one pole.** It is a real ladder now - two rails and
+      sixteen rungs on a turntable - and it animates: the turntable swings
+      round, the ladder lifts, then it telescopes out, three nested groups
+      easing at their own rate so they cannot only move together. The jet
+      holds off until it is most of the way out, or the truck appears to hose
+      the building through its own bodywork.
+    - **CHASE MODE** stays on screen for as long as a pursuit is on. The
+      banner clears after five seconds and a chase runs for minutes; without
+      it the screen went quiet and nothing was left saying you were in one.
+
+45. **The ambulance run**, the third of the three callouts. 1 August.
+    `src/world/ambulanceGame.js`, no THREE, 58 checks in `tests/ambulance.mjs`.
+    A crash every one to three minutes; get there, load the patient, get them
+    to a hospital inside two minutes.
+
+    **The rule this project keeps arriving at, for the third time: the
+    pressure mechanic belongs to the player.** The fire's bar decays only for
+    you; only your police car can end a pursuit; only your run to hospital is
+    against a clock. It was found by measuring here as well, not by design.
+    Held to the player's standard an AI crew reached the scene in 38 seconds,
+    then took until **270 seconds** to accumulate ten seconds of standing
+    within fourteen units of it - because an AI driver drives past rather than
+    parking - and then sat **102 units** from the hospital as the clock ran
+    out. Every background crash would have ended in PATIENT LOST. So
+    *arriving* is the thing an AI can demonstrate, and once a crew is at the
+    scene the rest of its run proceeds on its own timings
+    (`CREW_LOAD_SECONDS`, `CREW_RUN_SECONDS`) and finishes off screen.
+
+    Three decisions worth not re-deriving:
+
+    - **The run is two phases, not one "on a job" flag.** Getting there is a
+      search - a direction and a distance and no route. Getting back is a
+      race - you know exactly where you are going. The arrow points at
+      different things and the bar means different things in each, so they
+      are separate.
+    - **The loading bar pauses rather than decaying**, unlike the fire's. The
+      fire's decays because holding station IS the skill being asked for.
+      Here the skill was getting to the crash and it has already been
+      demonstrated; punishing a nudge forward with the doors open would be
+      punishing nothing.
+    - **The transport bar drains.** A countdown that fills up is a countdown
+      you read backwards.
+
+    Crash sites come from the lanes, so a run is always completable - scatter
+    them over the map and some land on beaches where the player would read
+    the impossible run as their own failure. The island label is the one the
+    road is *inside*, not the nearest centre: for a road on the edge of a big
+    island the nearest centre is regularly a small island across water.
+
+    **And the test-harness mistake this suite made for the fourth time in one
+    session:** reading a timer immediately after `run(state, N)` steps *past*
+    a phase transition. The clock has been counting down since the transition
+    happened somewhere in the middle of those N seconds, so the reading is
+    always short and it always looks like the product code is wrong. Step one
+    frame at a time up to the transition and read THERE. A phase change is an
+    event, not a state you can arrive at late and still ask when it happened.
+
+46. **Holiday moments.** 1 August. `src/systems/holidays.js`, no THREE, 70
+    checks in `tests/holidays.mjs`. Easter eggs and bunnies, Fourth of July
+    and New Year fireworks, Halloween pumpkins, Thanksgiving turkeys,
+    Christmas gifts and lights - on the calendar, or picked off the
+    conditions panel.
+
+    **A HOLIDAY IS A LAYER OVER THE SEASON, NEVER A SEASON.** The roadmap
+    said so and it is worth restating with the reason, because the obvious
+    build is extra rows in the SEASONS table and it fails immediately:
+    Christmas happens IN winter and wants winter's bare trees and winter's
+    snow. As a season it would replace them, and the bug would present as
+    "the snow disappears when you put the decorations up" - a symptom that
+    reads as a rendering fault and gets hunted for in the wrong file.
+
+    So `HOLIDAY_KEYS` and `SEASON_ROLES` are disjoint sets, a test asserts
+    that they are, and a second test drives the real seasons code through
+    winter-plus-Christmas to prove the snow survives it. The structural
+    version of the rule, rather than a comment asking nicely.
+
+    Worth not re-deriving:
+
+    - **The dates are the real ones**, `(date - 20 March) / 365`, not
+      eyeballed into roughly the right season. Guessed at, Christmas and New
+      Year came out 0.07 of a year apart with a gap between their windows, so
+      the gifts were packed away before the fireworks started. They are 0.019
+      apart in fact, which is inside one window, and the overlap is the point.
+    - **Amounts, not flags.** Everything is 0..1 and eases, so decorations
+      grow up out of the ground like the spring flowers do. A field that is
+      either there or not there pops, and the eye reads a pop as a glitch.
+    - **`growField()` is the flower field, generalised** - not a second copy
+      of it. It was quicker to write a second version, which is exactly how a
+      codebase ends up with two implementations that later disagree. Rule 1.
+      `seasons.mjs` had one assertion that named `this.flowering`; it now
+      names `field.amount`, same check.
+    - **Festive bulbs are three strands, one per colour.** An InstancedMesh
+      has one material and it is the material that carries `emissive`, so a
+      single strand with per-instance colours washes out to one colour at
+      night - which is when a string of lights is the whole point.
+    - **They ride on `registerNightLight`** with a `festive` flag, not a
+      second emissive system, so there is exactly one answer to "how dark is
+      it" and the bulbs cannot drift onto their own dusk curve.
+
+    **Three things that were only found by photographing them**, all the same
+    mistake in different clothes - authoring at real-world scale in a world
+    where a car is 4.4 units long and you are always on the road:
+
+    - **The decorations were invisible.** A 44cm egg on a verge is a single
+      pixel from a moving car. They are roughly twice life size now; measured
+      through the real camera rather than judged by eye, the nearest egg is
+      37 pixels across and a pumpkin 57.
+    - **The fireworks were invisible.** Burst height was a fixed 42-78 units
+      whatever the distance, so a near shell burst 40 degrees up - and the
+      chase camera has about 30 degrees of sky above the crosshair, so the
+      near half of every display was off the top of the frame. Height is now
+      derived from the launch distance, holding every burst at about 19
+      degrees. Ten photographs of a sky containing five shells had caught
+      none of them.
+    - **A burst was made of visible squares.** Points have no shape, so a
+      point big enough to see is a big square. Twice the sparks at half the
+      size is the same light and reads as a spray.
+
+    And one measurement mistake worth recording, because it wasted three
+    runs: `camera.project()` reads `matrixWorldInverse`, which the RENDERER
+    refreshes - `updateMatrixWorld()` does not. Projecting without refreshing
+    it reported every shell as beyond the far plane while they were plainly
+    170 units away. A point BEHIND the camera also comes back with `w`
+    negative and projects to nonsense, which is what the wild coordinates
+    were; `z < 1` is the real in-front test.
+
+47. **A callout that is not yours is not shown at all.** 1 August, at Mike's
+    asking: *"if a user is not a firetruck, it should not see fire missions
+    in the game world"*.
+
+    This is the second half of a rule whose first half had been in the code
+    since the pursuit was built. `chooseMission()` said "a callout you can act
+    on beats one you can only watch", which sounds complete and is not: with
+    nothing of yours running it fell through to `live[0]`, so driving a bus
+    put FIRE AT ABOUT and an arrow on screen for a building you had no way of
+    helping. One character of the fix - `|| live[0]` became `|| null`.
+
+    Mike has now asked for this twice, once per game (*"no arrows for cops and
+    robbers if I am not a police car"*, then the fire), which is what makes it
+    a principle rather than two requests: **the HUD is a list of things you
+    can DO, not a list of things that are happening.** A world event you
+    cannot act on belongs in the world, and it is already there - the smoke
+    still goes up, the wreck is still in the road, the patrol cars still go
+    past with their lights on. You find them by looking out of the window.
+
+    It lives in `chooseMission()` and nowhere else. `policeGame.js` had grown
+    its own paragraph about hiding background chases; three games each
+    enforcing the same rule is three chances to disagree about it. The games
+    describe their callout, `chooseMission` decides what is worth your screen.
+
+    **What the module test could not see**, and the browser did: hidden is not
+    cleared. Driving a bus past the fire the panel was correctly hidden and
+    still read `FIRE AT ABOUT · 300m` behind it. The arrow was already cleared
+    explicitly for exactly this reason; the banner, the bar and the distance
+    now are too. Verified by reading the real DOM in five vehicles - sedan,
+    bus, fire, police, ambulance - against one fire that burned throughout.
+
+48. **The aerial, rebuilt from photographs.** 1 August. Mike sent five
+    pictures of tower ladders and pointed at three things. All three were
+    wrong, and all three are the sort of thing you only get right by looking
+    at the real object rather than by reasoning about it.
+
+    - **It is REAR-MOUNTED.** The turntable sits at the back of the truck and
+      the ladder lies forward over the cab when stowed. Ours rose out of the
+      middle of the roof, which is where you would put it if you had never
+      seen one. Now based at `LADDER_MOUNT_BACK` of the truck's length behind
+      centre, in the TRUCK's frame so it stays at the back through a turn -
+      measured at 2.10 units back on a 7-unit truck, 2.05 up, which is the top
+      of the rear bodywork.
+    - **It is a BOX TRUSS, not a ladder.** Four chords, rungs across the
+      bottom pair, a diagonal each side per bay. That lattice is the whole
+      silhouette against the sky and two rails could never read as it.
+    - **The water comes out of the BASKET.** There is a platform at the tip
+      with a monitor on its front rail, and the jet starts there. It used to
+      run up the ladder from the truck.
+
+    And a fourth Mike stated outright: **the basket stands off the building**.
+    It parks a few metres clear and hoses in. The standoff is measured from
+    the building's own footprint, not a fixed distance from its centre - a
+    fixed one puts the basket inside a wide building and out in the street
+    beside a narrow one.
+
+    Two things worth not re-deriving:
+
+    - **The bracing is placed, not scaled.** Diagonals inside a node scaled
+      12x in z SHEAR: a brace authored at 45 degrees comes out at 5, which is
+      indistinguishable from the chords it is meant to be bracing. So the
+      chords - which genuinely stretch - are scaled, and the rungs and braces
+      are positioned each frame in bays of roughly constant length. The basket
+      is on a third node that is moved rather than scaled, or it would be
+      stretched twelve times its own depth.
+    - **The stowed ladder has to be hidden while the aerial is out**, and put
+      back afterwards. The "afterwards" is easy to miss: the only line that
+      restored it was below the no-fire early return, so putting a fire out
+      while parked alongside left the truck with no ladder at all for the rest
+      of the session.
+
+    **Everything above was measured in the running game, not judged from a
+    screenshot** - and one measurement caught the probe rather than the code:
+    waited twenty seconds of wall time, the aerial was still on its way up at
+    44 degrees where it was heading for 50, because the page renders about a
+    frame a second here and the tick delta is clamped. Driving `updateFire()`
+    directly settled it. Final numbers: 4 chords, 11 rungs, 11 braced bays at
+    9.4 units of extension, basket 7.4 from the building centre and 1.6 above
+    its roof, nearest droplet 0.12 from the nozzle and farthest 0.74 from the
+    burning roof. Both ends of the stream, because one that starts in the
+    right place and points out to sea is still wrong.
+
+49. **The basket has to stay LEVEL.** 1 August, Mike on the first attempt:
+    *"the baskets are all level"*. He was right and it is obvious once said -
+    a real platform hangs on a levelling mechanism and is horizontal at every
+    elevation, because people stand in it. Ours was bolted rigidly to the tip
+    and rode up with the ladder, sitting at 45 degrees like a basket about to
+    tip its crew into the street.
+
+    The fix is one line - the tip node is a child of the pitch node, so
+    cancelling the pitch there IS the mechanism. What is worth recording is
+    the consequence that comes with it: once the platform is levelled, the
+    nozzle's offset from the tip is horizontal-and-vertical, **not along the
+    ladder**. The original maths rotated that offset with the ladder, which at
+    full elevation put the stream starting beside the basket rather than in
+    it. Two frames, and the levelling moves the boundary between them.
+
+    **How it should have been caught the first time.** The maths for a rigidly
+    bolted basket was perfectly self-consistent and every number checked out -
+    it was simply describing the wrong object, which is the failure mode this
+    project keeps meeting. The check that settles it does not look at the code
+    at all: take the platform floor's own world quaternion, push (0,1,0)
+    through it, and ask whether it points at the sky. With the ladder at 45.8
+    degrees the arm tilts 45.8 and the floor and every railing tilt 0.00. The
+    monitor reads 90 and is meant to - it is a cylinder laid on its side to
+    point forward, and a first version of the probe that averaged it in
+    reported a "90 degree worst part of the basket" that looked like a fault
+    and was the nozzle doing its job.
+
+50. **The crash scene, and traffic getting past it.** 1 August, three things
+    Mike asked for together.
+
+    **The wreck is two real cars.** They were two plain boxes; they are now
+    built by the same builders the traffic uses - a sedan and an SUV, wheels
+    and lamps and all - with a wisp of smoke off each bonnet. Its own smoke,
+    not the fire's: that column rises 46 units and is meant to be seen from
+    the next island.
+
+    **The whole scene goes when the run ends**, which is three separate things
+    and only two of them are visible: the wreck, the smoke, and the OBSTACLE
+    the traffic has been steering round. Leaving that behind would have left
+    an invisible crash diverting the city for the rest of the session.
+
+    **And the jam.** Mike: *"traffic was completely blocked"*. What follows is
+    four attempts, because the failures are the useful part.
+
+    - **The wreck as a hard obstacle.** Correct and unusable: cars standing
+      where the crash appeared were welded in place - 17,256 vehicle-frames
+      inside a crashed car, six that never moved again.
+    - **Exempting anything already inside.** Too generous. Everything that
+      stops just short GRAZES it, counts as inside, and drives straight on
+      through: 2,222 vehicle-frames of ghosting in the last twenty seconds.
+    - **Letting the exempt ones move only outwards.** Same result by a longer
+      route - "outwards" is satisfied by carrying on and coming out the far
+      side.
+    - **What it is now: a PREFERENCE, not a wall.** A vehicle at an incident
+      first tries a way past that misses the wreck; if there genuinely is
+      none, it goes anyway. Every absolute version was the same mistake - a
+      fourth thing allowed to stop a vehicle dead, in a simulation whose
+      central discipline is that only three may.
+
+    Three things do the work, in this order: traffic is **routed away** at the
+    junction before (a penalty on the score, so it cannot deadlock and a lane
+    that is the only way out is still taken); whatever is committed **goes
+    round** without waiting SWERVE_AFTER; and only then may it **cross the
+    line**, one-sidedly and with a gap. One-sided is what makes it safe - the
+    unobstructed direction never yields, so gaps keep appearing, which turns
+    "both wait for each other" into "one at a time".
+
+    **The measurement that unlocked all of it** was not about rules at all:
+    the two cars were laid nose to nose ACROSS the lane, which on a seven-unit
+    road spans the entire carriageway. No rule about giving way could do
+    anything, because there was no gap to use. The wreck is shunted to one
+    side now (`CRASH_SIDE_OFFSET`) and angled as a shunt rather than a
+    T-bone - and the check that says whether there is room had to be fixed
+    too, because it measured half-WIDTHS. A car turned across the road
+    presents its length: at half a radian a 4.4-long sedan reaches 1.9 units
+    across, twice what the arithmetic claimed. It passed a check while sitting
+    on the middle of the lane.
+
+    **Determinism held throughout**, and it was checked after every step: with
+    no incident the simulation is bit-identical - min 97, median 704, max
+    2448, 37 relocations. The avoidance is a subtraction applied AFTER the
+    random draw for exactly that reason; a fourth branch in `orderedNext`
+    would move somebody's draw and re-shuffle every route in the city.
+
+    `tests/incident.mjs` runs the fleet for two minutes with a lane shut.
+    Measured: median distance 317 against 303 on a clear run, longest anything
+    stood still 36s against 35s, no extra collisions, no relocation spike.
+
+    **What is honestly not fixed:** about two or three cars clip the wreck at
+    any moment. Every position across a road is somebody's driving line - move
+    the wreck off one lane and it lands on the next - so a crash in the road
+    is always in somebody's way. It can be absolute and the city stops, or a
+    preference and some cars clip it. The test threshold is set to catch a
+    return to the old behaviour rather than to bless the number.
+
+51. **Christmas, properly.** 1 August, four things Mike asked for.
+
+    **The lights were never lit, and the cause is worth remembering.** His
+    words: *"they are currently just colorful balls"* - exactly right.
+    `registerNightLight()` only guarantees a material HAS an emissive colour,
+    and `MeshStandardMaterial`'s default emissive is BLACK. Every other lit
+    thing in the world sets its own emissive explicitly; the bulbs did not. So
+    `emissiveIntensity` was faithfully scaling black by 2.6 all night. One
+    missing line, and nothing about it looked wrong in the code - the strength
+    was right, the flag was right, the dusk curve was right. The lesson is the
+    check: the question is not "is the intensity set" but "is intensity times
+    the emissive COLOUR a non-black thing", which is what being lit means.
+    Measured after the fix: five festive materials, all with a real emissive
+    colour, litness 1.48 to 2.6.
+
+    **A lot more of them.** 16 bulbs a building became **50** - eaves the
+    whole way round, a strand across each storey's windows down the front, and
+    an arch round the door. 4,491 bulbs over 89 buildings. The front is the
+    face the building was rotated to present, which meant recording
+    `rotation` in the buildings registry: it was always known and simply never
+    written down. Lighting all four sides instead would light the backs of
+    terraces into gardens nobody can see.
+
+    **A wreath on every front door** - a ring, a bow, and three berries that
+    are on the festive list so they glow with everything else rather than
+    being the one dark thing on a lit house.
+
+    **Christmas trees** are a holiday prop (`trees`, 0.45 share, star on the
+    festive list). **Snowmen are NOT.** They hang off the season's `snow`
+    number, which is the whole point: a snowman is what happens when there is
+    snow on the ground, not what happens on the 25th. In the holiday table
+    there would be no snowmen in January and a snowman at a green Christmas.
+    Verified in the running game - plain winter has snowmen and no
+    decorations; summer has neither.
+
+52. **The stuck valve never fired, and the reason is this project's oldest
+    lesson in a new place.** 1 August. Mike got the ambulance wedged on a
+    verge for the second time and asked why the recovery built for exactly
+    that case was not rescuing it.
+
+    `updateStuck()` asked `Math.abs(this.currentSpeed) > STUCK_SPEED`.
+    `currentSpeed` is the bicycle model's **intended** speed: touch the
+    throttle and it ramps to cruise whether or not the vehicle is going
+    anywhere. So a vehicle wedged nose-up on a kerb reported a confident five
+    units a second while its body sat perfectly still - `moving` was true, the
+    timer reset every frame, and the valve could not fire however long you sat
+    there.
+
+    **Ask the geometry where the object ended up, never a proxy for it.** The
+    body's own translation between frames is the geometry; `currentSpeed` is a
+    proxy, and a proxy that disagrees with reality *precisely when something
+    has gone wrong* is worse than having none - it reports healthiest at the
+    moment of failure.
+
+    Driven in the browser with the model claiming 5 and the body pinned:
+    rescued at 3.0 seconds. A vehicle held still with NO throttle is still
+    left alone, which is the property that stops this teleporting people out
+    of queues.
+
+    One thing the probe caught about itself, worth recording: the first
+    version left `currentSpeed` at zero, so the OLD code would have passed it
+    too and it proved nothing. A regression test for a bug has to reproduce
+    the bug. The second version also measured nothing because `updateStuck()`
+    bails out while the garage picker is up - correct in the game, and it
+    reported the timer at zero as though the valve were dead.
+
+53. **Lights on the Christmas trees.** Same day. A dark green cone under a
+    night sky is a silhouette, and the star alone was one bright dot on it.
+    Eleven bulbs wound down each tree in a spiral rather than a ring per tier
+    - a ring reads as a hoop, a spiral reads as a string that was wound on -
+    sharing three materials on the festive list. The foliage was lifted from
+    `0x225c30` to `0x2d7a3c` as well, because unlit at night the old green
+    went almost to black and the tree read as a hole in the snow.
+
+**Still open after 1 August:**
 
 - **Make the airport drivable.** No causeway to it, so it is something you fly
   past. The site is already constrained to sit within `AIRPORT_MAX_SPAN` of

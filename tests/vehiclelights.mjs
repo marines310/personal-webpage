@@ -20,7 +20,8 @@ import {
   LAMP_ROLES, BLINK_HZ, SIGNAL_HOLD, STEER_TO_INDICATE, INDICATE_HOLD,
   STALK_CANCEL_TURN, SIGNAL_TURN,
   blinkOn, gloomLevel, headlightLevel, lampBrightness,
-  steerIndicator, resolveIndicator, stalkCancels, turnDirection, turnAmount
+  steerIndicator, resolveIndicator, stalkCancels, turnDirection, turnAmount,
+  sideOfVehicle
 } from '../src/world/vehicleLights.js'
 import {
   getLaneNetwork, makeTraffic, stepTraffic, pointAlong,
@@ -200,6 +201,40 @@ chk('it wraps across the seam rather than going the long way round',
     turnDirection(2.9, -2.9) === -1, `${turnDirection(2.9, -2.9)}`)
 
 // ---------------------------------------------------------------------------
+console.log('\n5b. Which side of the car a lamp is on')
+
+// THE BUG THIS EXISTS FOR. turnDirection was checked against the geometry
+// with a cross product and was right. The lamps were then hung on the vehicle
+// by whoever wrote the builder, who assumed +X was the right-hand side -
+// because that is what it is on a screen. It is not: the nose is +Z, so right
+// is forward x up = (0,0,1) x (0,1,0) = (-1,0,0). Every indicator in the
+// world was on the wrong side of every vehicle, and this suite passed,
+// because it verified which WAY to signal and never which LAMP that lit.
+//
+// One link of the chain checked; the next one assumed. So the answer is a
+// function now, and this is the test of it.
+chk('+X is the car\'s LEFT, because its nose is +Z', sideOfVehicle(1) === -1)
+chk('and -X is its right', sideOfVehicle(-1) === 1)
+
+// Said again from the vectors, so it cannot be "confirmed" by copying the
+// same mistake into the test: right = forward x up.
+const fwd = [0, 0, 1], up = [0, 1, 0]
+const rightVec = [
+  fwd[1] * up[2] - fwd[2] * up[1],
+  fwd[2] * up[0] - fwd[0] * up[2],
+  fwd[0] * up[1] - fwd[1] * up[0]
+]
+console.log(`   forward x up = (${rightVec.join(', ')}), so right is ${rightVec[0] < 0 ? '-X' : '+X'}`)
+chk('the cross product agrees that right is -X', rightVec[0] < 0)
+chk('and sideOfVehicle agrees with the cross product',
+    sideOfVehicle(rightVec[0]) === 1)
+
+// The builder must ASK rather than assume.
+const worldSrc = readFileSync(ROOT + 'src/world/World.js', 'utf8')
+chk('the lamp builder asks which side an X is on',
+    /sideOfVehicle\(side\) < 0 \? left : right/.test(worldSrc))
+
+// ---------------------------------------------------------------------------
 console.log('\n6. The traffic signals turns it actually takes')
 
 // The real question: does a lit indicator ever disagree with what the vehicle
@@ -356,6 +391,68 @@ chk('and its own wheels are used rather than four more added on top',
 chk('every vehicle the player drives gets a beam, not just the sedan',
     /this\.addBeam\(group\)/.test(vehicle))
 chk('the signed speed still drives the reverse camera', /getSignedSpeed/.test(vehicle))
+
+// Driving a police car, an ambulance or a fire engine yourself was the one
+// way to have a silent roof - updateTraffic flashed the AI's beacons and
+// nothing flashed the player's. Which is exactly the vehicle you would pick
+// in order to see them.
+chk('the player\'s emergency lights flash too',
+    /this\.mesh\.userData\.beacons/.test(vehicle) && /SIREN_RATE/.test(vehicle))
+chk('on the same beat as every other one in the city',
+    /\(\(beacon\.side === 1\) === beat\)/.test(vehicle))
+chk('and they survive a change of vehicle',
+    /outer\.userData\.beacons = inner\.userData\.beacons/.test(vehicle))
+
+// The fire engine's beacons hung half a unit clear of it in mid air: they
+// were at 2.55 over the rear body, whose roof is at 2.0. Every other
+// emergency vehicle happened to have a flat back at about the right height,
+// so nobody noticed the number was a guess.
+chk('the fire engine\'s beacons are measured off its cab roof',
+    /1\.35 \+ 2\.1 \/ 2 \+ 0\.11/.test(worldSrc))
+chk('and sit on the cab rather than over the back',
+    /0\.7, length \* 0\.33\)/.test(worldSrc))
+
+// Getting unstuck, and getting back from the sea, are the same problem: the
+// car is somewhere it cannot drive out of. Two recoveries would be two places
+// to get it wrong, and the fixed spawn point was already getting it wrong -
+// respawning always dropped the car on the hub plaza, on top of the furniture.
+chk('there is one recovery, not two',
+    /recoverToRoad\(near\)/.test(vehicle) &&
+    (vehicle.match(/setTranslation\(\{ x, y, z \}/g) || []).length === 1)
+chk('respawning uses it', /respawn\(\)[\s\S]{0,300}this\.recoverToRoad\(/.test(vehicle))
+chk('and so does being wedged', /updateStuck\(delta\)/.test(vehicle))
+
+// STUCK IS MEASURED FROM THE BODY, NOT FROM currentSpeed.
+//
+// Mike got the ambulance wedged on a verge twice, and this is why the valve
+// built to rescue it never fired. `currentSpeed` is the bicycle model's
+// INTENDED speed: touch the throttle and it ramps to cruise whether or not the
+// vehicle is going anywhere, so a wedged ambulance reported five units a
+// second while its body sat perfectly still. `moving` was true, the timer
+// reset every frame, and nothing ever happened.
+//
+// The project's oldest lesson in a new place: ask the geometry where the thing
+// ended up, never a proxy for it. Driven in the browser afterwards with the
+// model claiming 5 and the body pinned - rescued at 3.0 seconds, and a car
+// held still with NO throttle was left alone, which is the property that stops
+// this teleporting people out of queues.
+chk('being stuck is judged on distance actually covered',
+    /this\.body\.translation\(\)[\s\S]{0,600}Math\.hypot\(now\.x - from\.x/.test(vehicle))
+chk('and not on the speed the model thinks it is doing',
+    !/const moving = Math\.abs\(this\.currentSpeed\) > STUCK_SPEED/.test(vehicle))
+chk('the throttle is still required, so a queue is never teleported',
+    /const asking = Math\.abs\(inputs\.getInput\(\)\.forward\) > 0\.1/.test(vehicle))
+chk('and the reference moves with the rescue, or it reads as stuck again',
+    /recoverToRoad\(\)[\s\S]{0,400}this\._stuckFrom = \{ x: put\.x/.test(vehicle))
+// Deliberately not "speed is low": a car stopped at a junction with no
+// throttle is not stuck, it is stopped, and teleporting it would be alarming.
+chk('being stuck needs you to be ASKING to move and not moving',
+    /const asking = Math\.abs\(inputs\.getInput\(\)\.forward\) > 0\.1/.test(vehicle) &&
+    /if \(!asking \|\| moving\)/.test(vehicle))
+chk('and to have been true for long enough not to be a red light',
+    /this\.stuckFor >= STUCK_SECONDS/.test(vehicle))
+chk('a recovered car is dropped in rather than placed inside the road',
+    /RECOVER_DROP/.test(vehicle))
 
 // ---------------------------------------------------------------------------
 console.log('\n9. The indicator keys')

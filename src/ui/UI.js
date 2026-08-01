@@ -1,6 +1,6 @@
 import { Game } from '../core/Game.js'
 import { getMapExtent, islandOutline } from '../world/islandLayout.js'
-import { fireHud, missionArrow } from '../world/fireGame.js'
+import { missionArrow, formatDistance } from '../world/missions.js'
 
 /**
  * Give the keyboard back to the car after you touch a panel.
@@ -168,6 +168,17 @@ export class UI {
       })
     }
 
+    // The holidays. Note what these do NOT do: touch the season. Picking
+    // Christmas leaves the season exactly where it was, which is the whole
+    // design - a holiday is a layer over the year rather than another season,
+    // so choosing Christmas in winter gives you decorations AND the snow.
+    for (const button of this.condPanel.querySelectorAll('#cond-holidays button')) {
+      button.addEventListener('click', () => {
+        env().setHoliday(button.dataset.holiday)
+        this.markWeatherButtons()
+      })
+    }
+
     document.getElementById('cond-auto').addEventListener('click', () => {
       env().resumeAuto()
       this.markWeatherButtons()
@@ -201,6 +212,13 @@ export class UI {
     for (const button of this.condPanel.querySelectorAll('#cond-seasons button')) {
       button.classList.toggle('on', !!env.seasonLocked && button.dataset.season === season)
     }
+
+    // Lit only when it was CHOSEN. A holiday the calendar arrived at on its
+    // own is not a setting you made, and lighting the button would make the
+    // panel claim you had.
+    for (const button of this.condPanel.querySelectorAll('#cond-holidays button')) {
+      button.classList.toggle('on', button.dataset.holiday === env.holidayPick)
+    }
   }
 
   setupMinimap() {
@@ -219,46 +237,56 @@ export class UI {
     this.updateMission()
   }
 
-  /**
-   * The callout banner and its progress bar.
-   *
-   * Everything shown here is decided in fireGame.js and handed over as one
-   * object by `fireHud()`. This method works nothing out - it has no idea
-   * what a fire is, which is what will let the police and ambulance games
-   * use the same three elements without any of them growing a special case.
-   */
-  updateMission() {
-    const world = this.game.world
-    if (!this.missionEl || !world || !world.fire) return
+  /** Clock, weather and season readout. */
+  updateConditions() {
+    const env = this.game.environment
+    if (!env || !this.clockEl) return
 
-    const vehicle = this.game.vehicle
-    const hud = fireHud(world.fire, !!(vehicle && vehicle.kind === 'fire'))
+    this.clockEl.textContent = env.getClock()
 
-    // The arrow counts as a reason to be on screen, and it is the only one
-    // that outlives the banner: the banner clears after five seconds and the
-    // fire burns for minutes. Leaving it out of this hid the arrow for all
-    // but the first five seconds of every fire - which is the entire time you
-    // would actually be using it.
-    const burning = !!world.fire.fire
-    const showing = !!hud.message || hud.showBar || burning
-
-    this.missionEl.classList.toggle('hidden', !showing)
-    if (!showing) return
-
-    if (this.missionTitle.textContent !== (hud.message || '')) {
-      this.missionTitle.textContent = hud.message || ''
+    const weather = env.getWeatherLabel()
+    if (this.weatherEl.textContent !== weather) {
+      this.weatherEl.textContent = weather
     }
-    this.missionTitle.style.display = hud.message ? '' : 'none'
 
-    this.updateMissionArrow()
+    if (this.seasonEl) {
+      const season = env.getSeasonLabel ? env.getSeasonLabel() : ''
+      // The holiday joins the season rather than replacing it, on screen for
+      // the same reason it does in the code: it is winter AND Christmas.
+      const holiday = env.getHoliday && env.getHoliday() !== 'none'
+        ? ` · ${env.getHolidayLabel()}`
+        : ''
+      const text = season + holiday
+      if (this.seasonEl.textContent !== text) this.seasonEl.textContent = text
+    }
 
-    this.missionBar.classList.toggle('hidden', !hud.showBar)
-    if (hud.showBar) {
-      if (this.missionBarLabel.textContent !== hud.barLabel) {
-        this.missionBarLabel.textContent = hud.barLabel
-      }
-      this.missionFill.style.width = `${Math.round(hud.progress * 100)}%`
-      this.missionEl.classList.toggle('on-station', hud.onStation)
+    // Icon reflects weather first, falling back to sun/moon
+    const icons = {
+      Clear: env.isNight() ? '\u263d' : '\u2600',
+      Breezy: '\u2634',
+      Cloudy: '\u2601',
+      Showers: '\u2614',
+      Storm: '\u26a1',
+      Snowing: '\u2744'
+    }
+    const icon = icons[weather] || (env.isNight() ? '\u263d' : '\u2600')
+    if (this.skyIconEl.textContent !== icon) {
+      this.skyIconEl.textContent = icon
+    }
+
+    // A quiet "held" under the readout while anything is set by hand, so a
+    // stopped clock reads as deliberate rather than as a bug.
+    if (this.conditionsEl) {
+      this.conditionsEl.classList.toggle('manual', env.isManual())
+    }
+
+    // While the panel is open and the clock is still running, the slider
+    // follows it. Not while you're dragging - that would fight you.
+    if (this.condPanel && !this.condPanel.classList.contains('hidden') &&
+        !env.timeLocked && document.activeElement !== this.hourSlider) {
+      const minutes = Math.round(env.getHours() * 60)
+      this.hourSlider.value = String(minutes)
+      this.hourValue.textContent = formatMinutes(minutes)
     }
   }
 
@@ -282,51 +310,51 @@ export class UI {
     this.cameraEl.classList.toggle('is-default', cam.isDefault() && settled)
   }
 
-  /** Clock + weather readout. */
-  updateConditions() {
-    const env = this.game.environment
-    if (!env || !this.clockEl) return
+  /**
+   * The callout banner, its arrow and its bar.
+   *
+   * This method knows nothing about fires or pursuits. World hands it one
+   * mission - already chosen between the games by chooseMission() - and it
+   * draws whatever is in it. That is what lets the ambulance run arrive
+   * without touching a line of this.
+   */
+  updateMission() {
+    const world = this.game.world
+    if (!this.missionEl || !world || !world.activeMission) return
 
-    this.clockEl.textContent = env.getClock()
+    const mission = world.activeMission()
+    const showing = !!mission && (!!mission.title || !!mission.target || mission.showBar)
 
-    const weather = env.getWeatherLabel()
-    if (this.weatherEl.textContent !== weather) {
-      this.weatherEl.textContent = weather
+    this.missionEl.classList.toggle('hidden', !showing)
+    if (!showing) {
+      // Cleared explicitly, not just hidden by its parent. It looked right
+      // either way - all of this is inside #mission, so hiding the panel hides
+      // it - but leaving the arrow's own state saying "visible, 270 metres"
+      // and the banner still reading FIRE AT ABOUT is a bug waiting for the
+      // day either one moves out of the panel. Measured, not imagined: with
+      // the fire hidden because you are driving a bus, the panel's text still
+      // said FIRE AT ABOUT · 300m behind it.
+      this.updateMissionArrow(null)
+      this.missionTitle.textContent = ''
+      this.missionBar.classList.add('hidden')
+      this.missionEl.classList.remove('on-station')
+      return
     }
 
-    if (this.seasonEl) {
-      const season = env.getSeasonLabel ? env.getSeasonLabel() : ''
-      if (this.seasonEl.textContent !== season) this.seasonEl.textContent = season
-    }
+    const title = mission.title || ''
+    if (this.missionTitle.textContent !== title) this.missionTitle.textContent = title
+    this.missionTitle.style.display = title ? '' : 'none'
 
-    // Icon reflects weather first, falling back to sun/moon
-    const icons = {
-      Clear: env.isNight() ? '☽' : '☀',
-      Breezy: '☴',
-      Cloudy: '☁',
-      Showers: '☔',
-      Storm: '⚡',
-      Snowing: '❄'
-    }
-    const icon = icons[weather] || (env.isNight() ? '☽' : '☀')
-    if (this.skyIconEl.textContent !== icon) {
-      this.skyIconEl.textContent = icon
-    }
+    this.updateMissionArrow(mission.target)
 
-    // A quiet "held" under the readout while anything is set by hand, so a
-    // stopped clock reads as deliberate rather than as a bug.
-    if (this.conditionsEl) {
-      this.conditionsEl.classList.toggle('manual', env.isManual())
+    this.missionBar.classList.toggle('hidden', !mission.showBar)
+    if (mission.showBar) {
+      if (this.missionBarLabel.textContent !== mission.barLabel) {
+        this.missionBarLabel.textContent = mission.barLabel
+      }
+      this.missionFill.style.width = `${Math.round(mission.progress * 100)}%`
     }
-
-    // While the panel is open and the clock is still running, the slider
-    // follows it. Not while you're dragging - that would fight you.
-    if (this.condPanel && !this.condPanel.classList.contains('hidden') &&
-        !env.timeLocked && document.activeElement !== this.hourSlider) {
-      const minutes = Math.round(env.getHours() * 60)
-      this.hourSlider.value = String(minutes)
-      this.hourValue.textContent = formatMinutes(minutes)
-    }
+    this.missionEl.classList.toggle('on-station', !!mission.good)
   }
 
   /**
@@ -341,13 +369,12 @@ export class UI {
    * thing done to it here is the -90 degrees that turns a glyph which points
    * right at rest into one that points up.
    */
-  updateMissionArrow() {
+  updateMissionArrow(target) {
     if (!this.missionArrow) return
 
-    const world = this.game.world
     const camera = this.game.camera
-    const arrow = (world && camera)
-      ? missionArrow(world.fire, {
+    const arrow = camera
+      ? missionArrow(target, {
           x: camera.instance.position.x,
           z: camera.instance.position.z,
           yaw: camera.yaw
@@ -355,18 +382,18 @@ export class UI {
       : { show: false }
 
     this.missionArrow.classList.toggle('hidden', !arrow.show)
-    if (!arrow.show) return
+    if (!arrow.show) {
+      // The distance goes too, for the same reason the banner does: hidden is
+      // not the same as cleared, and "300m" is a claim about something you are
+      // no longer being shown.
+      this.missionArrowDistance.textContent = ''
+      return
+    }
 
     const degrees = (arrow.angle * 180) / Math.PI - 90
     this.missionArrowPoint.style.transform = `rotate(${degrees.toFixed(1)}deg)`
 
-    // Rounded to something you can read at a glance while driving: whole
-    // metres up close, and tens once it is far enough away that the last
-    // digit would be a blur of changing numbers.
-    const d = arrow.distance
-    const shown = d < 100 ? `${Math.round(d)}m`
-                : d < 1000 ? `${Math.round(d / 10) * 10}m`
-                : `${(d / 1000).toFixed(1)}km`
+    const shown = formatDistance(arrow.distance)
     if (this.missionArrowDistance.textContent !== shown) {
       this.missionArrowDistance.textContent = shown
     }

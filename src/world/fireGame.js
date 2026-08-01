@@ -255,45 +255,21 @@ export function stepFire(state, delta, ctx) {
 export function fireHud(state, playerIsFire) {
   const fire = state.fire
   return {
-    message: state.message,
+    // The shape chooseMission() expects, so the HUD never learns what a fire
+    // is - and the pursuit and the ambulance run can hand it the same thing.
+    active: !!fire || !!state.message,
+    mine: !!playerIsFire,
+    title: state.message,
+    target: fire ? { x: fire.x, z: fire.z } : null,
     showBar: !!(fire && playerIsFire),
     barLabel: 'FIRE CONTAINMENT',
     progress: fire ? fire.contained / CONTAIN_SECONDS : 0,
+    good: !!(fire && fire.playerOnStation),
+
+    // Kept under their old names too, because the fire's own test reads them
+    // and they say something the generic names do not.
+    message: state.message,
     onStation: !!(fire && fire.playerOnStation)
-  }
-}
-
-/**
- * Where to point the arrow, and how far away the fire is.
- *
- * `viewer` is { x, z, yaw } - the CAMERA's position and facing, not the car's.
- * The arrow is drawn on the screen, and what "left" means on a screen is
- * decided by where the camera is looking. Pointing it relative to the car
- * would swing it about every time you looked over your shoulder, while the
- * world stayed still.
- *
- * `angle` comes back in SCREEN terms: 0 is straight up the screen, and it
- * grows CLOCKWISE, because that is what a CSS rotation does and the only
- * consumer is a CSS rotation. Headings in this world grow anticlockwise (the
- * car's nose is +Z, so its right is -X - see turnDirection in
- * vehicleLights.js), so the sign is flipped exactly once, here, rather than
- * being flipped in the renderer where nobody would find it.
- */
-export function missionArrow(state, viewer) {
-  const fire = state && state.fire
-  if (!fire || !viewer) return { show: false, angle: 0, distance: 0 }
-
-  const dx = fire.x - viewer.x
-  const dz = fire.z - viewer.z
-
-  let relative = Math.atan2(dx, dz) - (viewer.yaw || 0)
-  while (relative > Math.PI) relative -= Math.PI * 2
-  while (relative < -Math.PI) relative += Math.PI * 2
-
-  return {
-    show: true,
-    angle: -relative,
-    distance: Math.hypot(dx, dz)
   }
 }
 
