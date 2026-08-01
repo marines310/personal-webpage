@@ -16,6 +16,7 @@ export class UI {
     this.speedValue = document.querySelector('#speedometer .speed-value')
     this.clockEl = document.getElementById('cond-clock')
     this.weatherEl = document.getElementById('cond-weather')
+    this.seasonEl = document.getElementById('cond-season')
     this.skyIconEl = document.getElementById('cond-sky-icon')
 
     this.conditionsEl = document.getElementById('conditions')
@@ -24,12 +25,56 @@ export class UI {
     this.hourSlider = document.getElementById('cond-hour')
     this.hourValue = document.getElementById('cond-hour-value')
 
+    this.cameraEl = document.getElementById('camera-box')
+    this.camPanel = document.getElementById('cam-panel')
+    this.camToggle = document.getElementById('cam-toggle')
+    this.camState = document.getElementById('cam-state')
+
     // Cached once - the map doesn't change at runtime
     this.mapExtent = getMapExtent()
 
     // Initialize minimap
     this.setupMinimap()
     this.setupConditions()
+    this.setupCamera()
+  }
+
+  /**
+   * The camera box.
+   *
+   * Every button here calls the same method the keyboard shortcut calls, so
+   * there is nothing the panel can do that a key cannot and no second idea of
+   * what "save" means. The panel exists because the shortcuts are not
+   * discoverable, not because it does anything extra.
+   */
+  setupCamera() {
+    if (!this.camToggle || !this.camPanel) return
+
+    const cam = () => this.game.camera
+
+    this.camToggle.addEventListener('click', () => {
+      const open = this.camPanel.classList.toggle('hidden') === false
+      this.camToggle.setAttribute('aria-expanded', open ? 'true' : 'false')
+    })
+
+    document.getElementById('cam-save').addEventListener('click', () => {
+      if (cam()) cam().savePose()
+    })
+
+    document.getElementById('cam-recentre').addEventListener('click', () => {
+      if (cam()) cam().snapBehind()
+    })
+
+    document.getElementById('cam-default').addEventListener('click', () => {
+      if (cam()) { cam().resetPose(); cam().snapBehind() }
+    })
+
+    // Same reason as the conditions box: driving keys must not reach a button
+    // you clicked a moment ago, or tapping space to brake would re-press it.
+    // The camera keys matter here too - Q and E would otherwise arrive twice.
+    for (const event of ['keydown', 'keyup']) {
+      this.cameraEl.addEventListener(event, (e) => e.stopPropagation())
+    }
   }
 
   /**
@@ -77,6 +122,16 @@ export class UI {
       })
     }
 
+    // Same shape as the weather buttons, and for the same reason: setSeason
+    // moves the calendar to where that season starts, which is a place the
+    // calendar would have reached on its own.
+    for (const button of this.condPanel.querySelectorAll('#cond-seasons button')) {
+      button.addEventListener('click', () => {
+        env().setSeason(button.dataset.season)
+        this.markWeatherButtons()
+      })
+    }
+
     document.getElementById('cond-auto').addEventListener('click', () => {
       env().resumeAuto()
       this.markWeatherButtons()
@@ -109,6 +164,11 @@ export class UI {
       const mine = env.weatherLocked && button.dataset.weather === env.weather
       button.classList.toggle('on', mine)
     }
+
+    const season = env.getSeason ? env.getSeason() : null
+    for (const button of this.condPanel.querySelectorAll('#cond-seasons button')) {
+      button.classList.toggle('on', !!env.seasonLocked && button.dataset.season === season)
+    }
   }
 
   setupMinimap() {
@@ -123,6 +183,27 @@ export class UI {
     this.updateMinimap()
     this.updateSpeedometer()
     this.updateConditions()
+    this.updateCamera()
+  }
+
+  /**
+   * What the camera box says about itself.
+   *
+   * Three states, and they are the three the camera actually has: the shipped
+   * view, a view you saved, and a view you are looking through that is not
+   * either. Only the last one gives you something worth pressing, so only the
+   * last one is highlighted.
+   */
+  updateCamera() {
+    const cam = this.game.camera
+    if (!cam || !this.camState || !cam.isPoseSaved) return
+
+    const settled = cam.isPoseSaved()
+    const label = !settled ? 'unsaved' : (cam.isDefault() ? 'default' : 'saved')
+    if (this.camState.textContent !== label) this.camState.textContent = label
+
+    this.cameraEl.classList.toggle('unsaved', !settled)
+    this.cameraEl.classList.toggle('is-default', cam.isDefault() && settled)
   }
 
   /** Clock + weather readout. */
@@ -137,13 +218,19 @@ export class UI {
       this.weatherEl.textContent = weather
     }
 
+    if (this.seasonEl) {
+      const season = env.getSeasonLabel ? env.getSeasonLabel() : ''
+      if (this.seasonEl.textContent !== season) this.seasonEl.textContent = season
+    }
+
     // Icon reflects weather first, falling back to sun/moon
     const icons = {
       Clear: env.isNight() ? '☽' : '☀',
       Breezy: '☴',
       Cloudy: '☁',
       Showers: '☔',
-      Storm: '⚡'
+      Storm: '⚡',
+      Snowing: '❄'
     }
     const icon = icons[weather] || (env.isNight() ? '☽' : '☀')
     if (this.skyIconEl.textContent !== icon) {

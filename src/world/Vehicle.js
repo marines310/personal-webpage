@@ -1,6 +1,17 @@
 import * as THREE from 'three'
 import { Game } from '../core/Game.js'
-import { FALL_LIMIT, spawnPoint, groundSlope } from './islandLayout.js'
+import {
+  FALL_LIMIT, spawnPoint, groundSlope,
+  TRAFFIC_LENGTHS, TRAFFIC_WIDTHS
+} from './islandLayout.js'
+import {
+  lampBrightness, blinkOn, gloomLevel,
+  steerIndicator, resolveIndicator, stalkCancels, turnAmount
+} from './vehicleLights.js'
+// World imports Vehicle nowhere, so this is not a cycle - and taking the
+// height from the same table the traffic uses is the point: the sedan you
+// drive is the sedan on the road.
+import { TRAFFIC_HEIGHTS } from './World.js'
 
 /**
  * How big the car is, and everything that follows from it.
@@ -17,6 +28,33 @@ import { FALL_LIMIT, spawnPoint, groundSlope } from './islandLayout.js'
 // Exactly a sedan - TRAFFIC_LENGTHS.sedan and TRAFFIC_WIDTHS.sedan in
 // islandLayout.js. The car you drive is one of the cars on the road, so the
 // only defensible size for it is the size of one of them.
+/**
+ * The footprint of each kind, taken from the traffic's own table.
+ *
+ * Not a second list. TRAFFIC_LENGTHS and TRAFFIC_WIDTHS are what the AI
+ * vehicles are drawn and collided with, and the player's sedan was deliberately
+ * settled at exactly those numbers (item 17) on the grounds that the car you
+ * drive should be one of the cars on the road. Picking any other kind should
+ * not change that.
+ */
+export function vehicleSize(kind) {
+  return {
+    length: TRAFFIC_LENGTHS[kind] ?? CAR_LENGTH,
+    width: TRAFFIC_WIDTHS[kind] ?? CAR_WIDTH
+  }
+}
+
+/**
+ * How much of a vehicle's length sits between its axles.
+ *
+ * Taken from the car as it was tuned - a 3.08 wheelbase in a 4.4 body - so the
+ * sedan is unchanged to the last decimal and everything else is that same
+ * proportion of its own length. A bus comes out at 7.7 against 3.08, so it
+ * turns in roughly two and a half times the space, which is what an eleven
+ * unit vehicle should do.
+ */
+export const WHEELBASE_RATIO = (1.4 * 2.2) / (2 * 2.2)
+
 export const CAR_SCALE = 2.2
 export const CAR_LENGTH = 2 * CAR_SCALE       // 4.4, a sedan
 export const CAR_WIDTH = 1.9
@@ -49,8 +87,16 @@ const SPAWN = spawnPoint()
  * naturally traces wider arcs the faster it goes.
  */
 export class Vehicle {
-  constructor() {
+  /**
+   * @param {string} kind - which of the vehicles on the road this is. Every
+   *   one of them handles identically for now, deliberately: only the body and
+   *   the collider change. A fire engine turning like a sedan is a little odd
+   *   and it is what was asked for, and it keeps this change to the geometry
+   *   rather than the driving model.
+   */
+  constructor(kind = 'sedan') {
     this.game = Game.getInstance()
+    this.kind = kind
 
     // -----------------------------------------------------------------
     // HANDLING TUNING
@@ -88,7 +134,13 @@ export class Vehicle {
       steerRate: 3.2,                // how fast the wheels turn to full lock
       steerReturnRate: 5.0,          // how fast they recentre when released
       highSpeedSteerReduction: 0.82, // fraction of lock removed at top speed
-      wheelbase: 1.4 * CAR_SCALE,     // front axle to rear axle - sets arc size
+      // Front axle to rear axle - what sets the size of the arc. Derived from
+      // the body's LENGTH rather than written down, so it follows whatever is
+      // being driven: turn radius is wheelbase / tan(lock), so a bus on a
+      // sedan's wheelbase pivots about a point inside itself and swings its
+      // back end through whatever it is passing. That is the same mistake item
+      // 16 fixed when the car grew - scaling the body without the wheelbase.
+      wheelbase: WHEELBASE_RATIO * CAR_LENGTH,
 
       // --- Grip ---
       lateralGrip: 0.92,   // 1 = on rails, 0 = ice. Controls sideways slide.
@@ -100,6 +152,13 @@ export class Vehicle {
     this.currentSteering = 0  // signed radians: + left, - right
     this.isGrounded = true
 
+    // Indicators: -1 left, 0 off, +1 right. `stalk` is the manual latch,
+    // `indicator` is the answer after the steering has had its say.
+    this.indicator = 0
+    this.stalk = 0
+    this.stalkTurned = 0
+    this.indicateState = { side: 0, held: 0 }
+
     // Scratch vectors, reused each frame to avoid garbage
     this._forwardDir = new THREE.Vector3()
     this._planarVel = new THREE.Vector3()
@@ -107,21 +166,168 @@ export class Vehicle {
     this._quat = new THREE.Quaternion()
     this._euler = new THREE.Euler(0, 0, 0, 'YXZ')
 
-    // Create visual mesh
+    // The body, and the collider that matches it.
+    //
+    // These two have to agree - see item 17, where the drawn car came out 2.57
+    // wide against a 1.9 collider and measured shorter than every AI vehicle
+    // while looking bigger than all of them. So both come from the SAME pair of
+    // numbers, and for anything but the default sedan those numbers are the
+    // ones the traffic already uses for that kind.
+    this.size = vehicleSize(kind)
+    this.params.wheelbase = WHEELBASE_RATIO * this.size.length
+
     this.mesh = this.createMesh()
     this.game.add(this.mesh)
 
-    // Create physics body at the same spawn point as the mesh
     this.body = this.game.physics.createVehicleChassis(
       { x: SPAWN.x, y: SPAWN.y, z: SPAWN.z },
-      { width: CAR_WIDTH, height: CAR_HEIGHT, length: CAR_LENGTH }
+      { width: this.size.width, height: CAR_HEIGHT, length: this.size.length }
     )
 
     // Wheel visuals (simple cylinders)
     this.wheels = this.createWheels()
   }
 
+  /**
+   * Change what the player is driving, keeping where they are.
+   *
+   * The mesh AND the collider are rebuilt together, because they have to agree
+   * - that is item 17, and swapping one without the other would recreate
+   * exactly the bug it fixed. The old body is removed rather than abandoned:
+   * Rapier fixes a collider's size when it is made, so a discarded one would
+   * sit there as an invisible obstacle in the shape of whatever you were
+   * driving before.
+   *
+   * Handling is untouched. Every kind drives identically for now, which is
+   * what was asked for and keeps this to geometry.
+   */
+  setKind(kind) {
+    if (kind === this.kind) return
+
+    const at = this.body ? this.body.translation() : { x: 0, y: 2, z: 0 }
+    const heading = this.heading || 0
+
+    if (this.mesh) this.game.remove(this.mesh)
+    if (this.body) this.game.physics.removeBody(this.body)
+
+    this.kind = kind
+    this.size = vehicleSize(kind)
+
+    // The arc grows with the body. Everything else about the handling is
+    // deliberately identical between kinds - only the thing that is a
+    // consequence of SIZE changes with size.
+    this.params.wheelbase = WHEELBASE_RATIO * this.size.length
+
+    this.mesh = this.createMesh()
+    this.game.add(this.mesh)
+
+    this.body = this.game.physics.createVehicleChassis(
+      { x: at.x, y: at.y, z: at.z },
+      { width: this.size.width, height: CAR_HEIGHT, length: this.size.length }
+    )
+
+    // Put it back facing the way it was. `this.heading` was stored and
+    // restored here before and did nothing, because nothing ever wrote it and
+    // nothing ever read it back into the body - so changing vehicle in the
+    // garage quietly swung the car round to face north, whichever way it had
+    // been parked. The rotation is a quaternion about Y; the heading is the
+    // same fact in one number.
+    this.heading = heading
+    this.body.setRotation(
+      { x: 0, y: Math.sin(heading / 2), z: 0, w: Math.cos(heading / 2) }, true)
+
+    this.wheels = this.createWheels()
+  }
+
+  /**
+   * Which way the vehicle is pointing, from the body itself.
+   *
+   * Read from the rotation rather than tracked alongside it, so it cannot
+   * drift out of step with where the car actually is - the same reason the
+   * camera reads it rather than being told.
+   */
+  getHeading() {
+    if (!this.body) return 0
+    const r = this.body.rotation()
+    this._quat.set(r.x, r.y, r.z, r.w)
+    this._forwardDir.set(0, 0, 1).applyQuaternion(this._quat)
+    return Math.atan2(this._forwardDir.x, this._forwardDir.z)
+  }
+
   createMesh() {
+    // Anything but the default sedan is built by the SAME code that builds the
+    // traffic, rather than a second copy of it here. The car you drive is one
+    // of the cars on the road - that was already true of its size (item 17)
+    // and now it is true of its shape, its lamps and its wheels.
+    const world = this.game.world
+    let group = null
+
+    if (this.kind !== 'sedan' && world && world.buildTrafficVehicle) {
+      const inner = world.buildTrafficVehicle({
+        kind: this.kind,
+        colour: null,
+        rand: () => 0.5
+      })
+      if (inner) group = this.wrapTrafficMesh(inner)
+    }
+
+    if (!group) group = this.createDefaultMesh()
+
+    // Every vehicle the player drives gets a beam, whichever builder made it.
+    // Before, only the built-in sedan had one, so choosing anything else out
+    // of the garage meant driving at night with nothing lighting the road.
+    this.addBeam(group)
+    return group
+  }
+
+  /**
+   * The one spotlight the player's vehicle carries.
+   *
+   * Only the player's. A hundred shadow-casting spotlights would cost a
+   * hundred times what this does and nobody would see the difference from a
+   * street away - so the traffic has lamps that GLOW and the car you sit in
+   * also LIGHTS things. That asymmetry is deliberate, and it is the only one
+   * left between the player's vehicle and the fleet.
+   */
+  addBeam(group) {
+    const beam = new THREE.SpotLight(0xfff0d0, 0, 38, Math.PI / 6.5, 0.45, 1.3)
+    beam.position.set(0, 0.35 * CAR_SCALE, this.size.length / 2)
+    beam.target.position.set(0, -0.5, 10)
+    group.add(beam)
+    group.add(beam.target)
+    group.userData.beam = beam
+    return beam
+  }
+
+  /**
+   * Put a traffic-built mesh where the physics body actually is.
+   *
+   * The two builders use different origins, and nothing said so. A traffic
+   * mesh is built standing on the ground - its wheels are at y=0 and its body
+   * is above that - because the traffic is drawn by setting the mesh to the
+   * ground height. The player's mesh is set to the CHASSIS CENTRE, which is
+   * half the car's height up.
+   *
+   * So every vehicle out of the garage but the sedan was drawn half a car too
+   * high: measured at 0.47 units for a saloon and 0.65 for the bus, hovering
+   * over the road. Wrapping the mesh in a group that carries the offset fixes
+   * it once, here, rather than making every caller remember - and it is the
+   * same class of mistake as the boats floating above the sea.
+   */
+  wrapTrafficMesh(inner) {
+    const outer = new THREE.Group()
+    inner.position.y = -CAR_HEIGHT / 2
+    outer.add(inner)
+
+    // Carried up to the outer group so nothing downstream has to know the
+    // mesh is nested. Ask the mesh what its lamps and wheels are; never hold
+    // a reference to the last vehicle's.
+    outer.userData.lights = inner.userData.lights
+    outer.userData.wheels = inner.userData.wheels
+    return outer
+  }
+
+  createDefaultMesh() {
     const group = new THREE.Group()
 
     // If a car.glb has been added to public/models/, use it instead of
@@ -188,78 +394,118 @@ export class Vehicle {
     return group
   }
 
-  /** Headlight blocks plus a real spotlight pointing down the road. */
+  /**
+   * The lamps for the built-in car, plus a real spotlight down the road.
+   *
+   * The lamps themselves come from World's one builder rather than being
+   * made here - two sets of headlights built in two places at two sizes is
+   * how the player's car ended up unlit in the first place. What IS special
+   * to the player is the beam: a hundred spotlights would cost a hundred
+   * shadow-casting lights for no gain, so only the car you sit in gets one.
+   *
+   * `-CAR_HEIGHT / 2` is where the ground is, in this mesh's coordinates.
+   * This group is built around the chassis centre; the traffic's are built
+   * standing on the ground.
+   */
   addHeadlights(group) {
-    // Emissive rather than basic, so the lamps visibly switch on at dusk
-    const lampMat = new THREE.MeshStandardMaterial({
-      color: 0xb9c6cc,
-      emissive: new THREE.Color(0xfff2cc),
-      emissiveIntensity: 0
-    })
-    this.headlightMaterial = lampMat
-
-    for (const side of [-1, 1]) {
-      // Positioned as a fraction of the BODY WIDTH, not of CAR_SCALE.
-      //
-      // CAR_SCALE is a length scale. When the car was narrowed to fix its
-      // proportions the body came in and the lamps didn't, so they hung over
-      // the sides by 0.155 units - clearly visible from behind. Fractions of
-      // the width can't come apart from it: 0.3w out plus half of 0.22w is
-      // 0.41w, comfortably inside the 0.5w edge.
-      const lamp = new THREE.Mesh(
-        new THREE.BoxGeometry(CAR_WIDTH * 0.22, 0.1 * CAR_SCALE, 0.06), lampMat)
-      lamp.position.set(CAR_WIDTH * 0.3 * side, 0.02, CAR_LENGTH / 2 + 0.02)
-      group.add(lamp)
+    const world = this.game.world
+    if (world && world.addVehicleLamps) {
+      world.addVehicleLamps(group, this.size.length, this.size.width,
+                            TRAFFIC_HEIGHTS.sedan, -CAR_HEIGHT / 2)
     }
-
-    // Rear lamps
-    const tailMat = new THREE.MeshStandardMaterial({
-      color: 0x6b2230,
-      emissive: new THREE.Color(0xff2a2a),
-      emissiveIntensity: 0
-    })
-    this.taillightMaterial = tailMat
-
-    for (const side of [-1, 1]) {
-      const tail = new THREE.Mesh(
-        new THREE.BoxGeometry(CAR_WIDTH * 0.2, 0.09 * CAR_SCALE, 0.06), tailMat)
-      tail.position.set(CAR_WIDTH * 0.3 * side, 0.05, -CAR_LENGTH / 2 - 0.02)
-      group.add(tail)
-    }
-
-    // One spotlight is plenty - two doubles the cost for no visible gain
-    const beam = new THREE.SpotLight(0xfff0d0, 0, 38, Math.PI / 6.5, 0.45, 1.3)
-    beam.position.set(0, 0.35 * CAR_SCALE, CAR_LENGTH / 2)
-    beam.target.position.set(0, -0.5, 10)
-    group.add(beam)
-    group.add(beam.target)
-    this.headlightBeam = beam
   }
 
   /**
    * Headlights come on as it gets dark, and brighten in heavy weather.
    * Brake lights respond to the spacebar.
    */
-  updateLights() {
+  /**
+   * Every lamp, from the same function the hundred cars on the road use.
+   *
+   * The lamps are read off THE MESH each frame rather than held in fields.
+   * That is the actual fix for the bug Mike found: `setKind()` throws the old
+   * mesh away and builds a new one, and the old code went on driving
+   * `this.headlightMaterial` - the sedan's, from before the swap - so every
+   * vehicle out of the garage but the sedan drove around unlit while the
+   * code carefully lit a mesh that was no longer in the scene. A reference
+   * you re-read cannot go stale.
+   */
+  updateLights(delta = 0) {
+    const lights = this.mesh && this.mesh.userData.lights
+    const beam = this.mesh && this.mesh.userData.beam
     const env = this.game.environment
-    if (!env) return
+    if (!env || !lights) return
 
-    // Dark enough to want lights: night, or heavy cloud/rain
-    const gloom = Math.max(
-      env.nightFactor,
-      env.current ? env.current.cloud * 0.55 + env.current.rain * 0.35 : 0
-    )
-    const on = THREE.MathUtils.clamp((gloom - 0.25) / 0.35, 0, 1)
+    const input = this.game.inputs ? this.game.inputs.getInput() : null
+    const level = lampBrightness({
+      gloom: gloomLevel(env),
+      braking: input ? input.brake : false,
+      stopped: false,
+      indicate: this.indicator,
+      blink: blinkOn(this.game.world ? this.game.world.elapsed : 0)
+    })
 
-    if (this.headlightMaterial) this.headlightMaterial.emissiveIntensity = on * 1.8
-    if (this.headlightBeam) this.headlightBeam.intensity = on * 34
+    lights.head.emissiveIntensity = level.head
+    lights.tail.emissiveIntensity = level.tail
+    lights.left.emissiveIntensity = level.left
+    lights.right.emissiveIntensity = level.right
+    if (beam) beam.intensity = level.beam * 34
+  }
 
-    if (this.taillightMaterial) {
-      const braking = this.game.inputs
-        ? this.game.inputs.getInput().brake
-        : false
-      this.taillightMaterial.emissiveIntensity = braking ? 3.2 : on * 1.1
+  /**
+   * Which way the player is indicating.
+   *
+   * Two sources, one answer. The stalk wins while it is latched, because
+   * signalling before a junction means signalling while the wheel is still
+   * straight and a steering-driven indicator would sit there dark. Otherwise
+   * the steering drives it, with enough hysteresis that holding a lane
+   * between the lines doesn't set it flickering.
+   *
+   * The stalk self-cancels the way a real one does: not when the steering
+   * next passes through centre - that happens between the two halves of a
+   * lane change - but once the car has actually swung round far enough in the
+   * direction it was signalling.
+   */
+  updateIndicators(delta) {
+    const inputs = this.game.inputs
+    if (!inputs) return
+
+    // How far the car has swung since the last frame, accumulated.
+    //
+    // NOT the difference between the current heading and the heading when the
+    // stalk was set. That difference is wrapped into -PI..PI, so it cannot
+    // describe more than half a turn and its SIGN flips once you pass 180
+    // degrees: measured, a car that had swung 213 degrees to the right
+    // reported -2.56 radians, which reads as a left turn and never cancelled
+    // a right indicator. Adding up the small per-frame deltas has neither
+    // problem.
+    const heading = this.heading || 0
+    let step = heading - (this._lastHeading === undefined ? heading : this._lastHeading)
+    while (step > Math.PI) step -= Math.PI * 2
+    while (step < -Math.PI) step += Math.PI * 2
+    this._lastHeading = heading
+    // Accumulated in the INDICATOR's sign, not the heading's. Turning right
+    // decreases the heading here (see turnDirection), and the two conventions
+    // meet in exactly one place: turnAmount.
+    if (this.stalk) this.stalkTurned += turnAmount(step)
+
+    if (inputs.consumeIndicator) {
+      const pressed = inputs.consumeIndicator()
+      // Pressing the side you are already signalling cancels it, like
+      // knocking the stalk back to centre.
+      if (pressed) {
+        this.stalk = this.stalk === pressed ? 0 : pressed
+        this.stalkTurned = 0
+      }
     }
+
+    // Headings grow clockwise and the indicator's +1 is right, so the two
+    // already agree in sign; there is deliberately no flip here.
+    if (this.stalk && stalkCancels(this.stalk, this.stalkTurned)) this.stalk = 0
+
+    const steering = inputs.getInput().steering
+    const automatic = steerIndicator(this.indicateState, steering, delta)
+    this.indicator = resolveIndicator(this.stalk, automatic)
   }
 
   /**
@@ -291,6 +537,12 @@ export class Vehicle {
   }
 
   createWheels() {
+    // A traffic-built body arrived with wheels the right size for it. Use
+    // those rather than adding four sedan-sized ones on top: a bus used to
+    // get eleven-metre bodywork and a saloon's wheels, sunk into the road
+    // underneath it because they were positioned for a different origin too.
+    if (this.mesh && this.mesh.userData.wheels) return this.mesh.userData.wheels
+
     // A loaded model may already have its own wheels - use those
     if (this.modelWheels) return this.modelWheels
 
@@ -362,6 +614,12 @@ export class Vehicle {
 
   prePhysicsUpdate(delta) {
     if (!this.body || delta <= 0) return
+
+    // Held while the picker is open or the vehicle is rolling out of the
+    // garage. One flag, asked in one place - rather than a second input path
+    // that has to be kept in step with the real one.
+    const selector = this.game.vehicleSelector
+    if (selector && selector.isBusy()) return
 
     const p = this.params
     const { forward, steering, boost, brake } = this.game.inputs.getInput()
@@ -529,7 +787,12 @@ export class Vehicle {
       }
     }
 
-    this.updateLights()
+    // Kept live from the body, so `setKind` has something true to restore and
+    // the indicator stalk has something true to cancel against.
+    this.heading = this.getHeading()
+
+    this.updateIndicators(delta)
+    this.updateLights(delta)
 
     // Drove off the edge of an island - put the car back on the hub
     if (position.y < FALL_LIMIT) {
@@ -541,7 +804,19 @@ export class Vehicle {
     return this.mesh.position.clone()
   }
 
+  /**
+   * Speed with its sign: positive forward, negative in reverse.
+   *
+   * The camera needs the direction as well as the rate - it turns round to
+   * look over the boot when you reverse - and `currentSpeed` already carries
+   * both. Exposed rather than copied, and getSpeed() now derives from it, so
+   * there is one answer to how fast the car is going and one to which way.
+   */
+  getSignedSpeed() {
+    return this.currentSpeed
+  }
+
   getSpeed() {
-    return Math.abs(this.currentSpeed)
+    return Math.abs(this.getSignedSpeed())
   }
 }

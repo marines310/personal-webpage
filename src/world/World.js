@@ -51,6 +51,8 @@ import {
   getAirport,
   getAirGraph,
   getHelipads,
+  getPlayerGarage,
+  GARAGE_HEIGHT,
   makeHelicopters,
   stepHelicopters,
   helicopterPosition,
@@ -120,6 +122,8 @@ export const GROUND_SINK = 0.7
  * give them the same vertices, or leave a real gap.
  */
 export const GRASS_ABOVE_SAND = 0.3
+import { mixHex, SNOW_COLOUR, SNOW_TAKE } from '../systems/seasons.js'
+import { lampBrightness, blinkOn, gloomLevel } from './vehicleLights.js'
 import { insetPolygon, insetPolygonRadial, polygonCentroid, rayDistanceToBoundary } from './shapes.js'
 import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
 
@@ -290,6 +294,23 @@ export const PALETTE = {
   signPink: 0xff5fa2
 }
 
+/**
+ * Spring flowers.
+ *
+ * Sown as clumps rather than singly: one accepted ground sample carries
+ * several flowers, so the field looks dense for a fraction of the sampling
+ * cost. Every one of those samples runs isBuildable(), which walks every road
+ * on the island, and that is the expensive part - not the geometry.
+ */
+export const FLOWERS_PER_CLUMP = 3
+export const FLOWER_COLOURS = [
+  0xff6f9c,   // pink - the one already in the palette
+  0xffd75e,   // buttercup
+  0xf4f0e6,   // white
+  0xb98cf0,   // lilac
+  0xff9a4d    // marigold
+]
+
 export class World {
   constructor() {
     this.game = Game.getInstance()
@@ -302,6 +323,8 @@ export class World {
     this.layout = { islands: ISLANDS, bridges: getBridges() }
 
     this.nightEmissives = []  // materials that light up after dark
+    this.seasonals = []       // materials that change colour with the year
+    this.flowerSites = []     // where spring flowers come up, filled while building
     this.swayables = []       // foliage that moves in the wind
     this.trafficLights = []   // signal heads, grouped by junction
     this.lightPools = []      // the patch of lit ground under a lamp
@@ -345,6 +368,7 @@ export class World {
     this.createAirport()
     this.createPlanes()
     this.createHelicopters()
+    this.createPlayerGarage()
     this.createBusStops()
     this.createStations()
     this.createTraffic()
@@ -468,6 +492,50 @@ export class World {
     return material
   }
 
+  /**
+   * Materials that change colour with the year.
+   *
+   * The same shape as registerNightLight, and for the same reason: the season
+   * is one number arriving once a frame, and it should touch a list rather
+   * than go looking for meshes.
+   *
+   * The material's own colour is captured HERE, at registration, and every
+   * later tint is computed from that captured value. Tinting in place would
+   * compound - a material nudged 40% toward white every frame is white within
+   * a second, and the bug would look like the season being far too strong
+   * rather than like the season being applied twice.
+   *
+   * `strength` scales how much of the season this particular material takes.
+   * The palms are registered at a fraction, because SKILLS and BLOG are meant
+   * to stay jungle and a coconut palm in full autumn orange is not a jungle.
+   */
+  registerSeasonal(material, role, strength = 1) {
+    this.seasonals.push({ material, role, strength, base: material.color.getHex() })
+    return material
+  }
+
+  /**
+   * Apply a season. `view` comes from seasons.js via Environment, already
+   * eased - nothing here decides anything, it only paints.
+   */
+  setSeason(view) {
+    for (const entry of this.seasonals) {
+      const [colour, amount] = view[entry.role] || [0, 0]
+
+      // Two steps, in this order: what the season has done to the thing
+      // itself, and then what is lying on top of it. Winter's own tint is
+      // dormant grass and bare branches; the white is snow, and it arrives
+      // and melts on its own clock. That is why picking SNOWING in July
+      // still whitens the ground - `snow` is one number and it reaches the
+      // world through this one line whatever put it there.
+      const seasonal = mixHex(entry.base, colour, amount * entry.strength)
+      const lying = view.snow * (SNOW_TAKE[entry.role] || 0) * entry.strength
+
+      entry.material.color.setHex(mixHex(seasonal, SNOW_COLOUR, lying))
+    }
+    this.setFlowering(view.flowers)
+  }
+
   // -------------------------------------------------------------
   // Sea
   // -------------------------------------------------------------
@@ -586,6 +654,11 @@ export class World {
 
       this.decorateIsland(island, roads)
     }
+
+    // Built once, after every island, from the sites each island collected.
+    // Two instanced meshes for the whole world rather than a mesh per
+    // flower - there are thousands of them and they all move together.
+    this.createFlowers()
   }
 
   /**
@@ -622,6 +695,7 @@ export class World {
       color: PALETTE.sand, roughness: 1, metalness: 0, flatShading: true
     }, height, shared)
     sandTop.receiveShadow = true
+    this.registerSeasonal(sandTop.material, 'ground')
     this.game.add(sandTop)
 
     // --- Grass cap, inset so the sand reads as a beach ---
@@ -638,6 +712,12 @@ export class World {
         color: PALETTE.grass, roughness: 0.95, metalness: 0, flatShading: true
       }, height)
       grass.receiveShadow = true
+      // The one that matters. In winter this IS the snow on the ground -
+      // there is no white mesh laid over the grass, deliberately: a second
+      // surface a few centimetres above a first one is item 29's trap, and
+      // the grass has already shown through the tarmac three times for
+      // exactly that reason. Colouring the ground cannot z-fight with it.
+      this.registerSeasonal(grass.material, 'grass')
       this.game.add(grass)
     }
 
@@ -649,6 +729,10 @@ export class World {
     walls.position.set(cx, 0, cz)
     walls.castShadow = true
     walls.receiveShadow = true
+    // A fraction of the ground tint. Snow does not lie on a cliff face the
+    // way it lies on a lawn, and a white wall dropping into the sea reads as
+    // a bug rather than as winter.
+    this.registerSeasonal(walls.material, 'ground', 0.3)
     this.game.add(walls)
 
     // --- Wet sand band at the waterline ---
@@ -1852,6 +1936,11 @@ export class World {
 
     for (const v of this.traffic) {
       v.mesh = this.buildTrafficVehicle(v)
+      // A fixed offset into the blink cycle, per vehicle. Without it every
+      // indicator in the city flashes on the same beat, which reads as one
+      // mechanism rather than a hundred cars. Purely cosmetic, so it lives
+      // here rather than in the simulation.
+      v.blinkPhase = this.rand()
       const at = trafficPosition(this.lanes, v)
       const ground = this.groundAt(at.x, at.z)
       v.mesh.position.set(at.x, ground, at.z)
@@ -1893,14 +1982,34 @@ export class World {
     // the bodywork, on every vehicle in the fleet.
     const track = width / 2 - thickness / 2
 
+    // Each wheel hangs off a pivot, and the four are recorded on the group.
+    //
+    // The traffic never turns or spins its wheels, so on its own this looks
+    // like ceremony - but the car the PLAYER drives is built by this same
+    // code now, and the player's wheels steer and roll. Building them here
+    // means a bus you drive turns bus-sized wheels, rather than having a
+    // second set of sedan-sized ones added on top of them: which is what used
+    // to happen, four spare wheels sunk into the road under the chassis.
+    //
+    // Front pair first, so indices 0 and 1 are the ones that steer.
+    const wheels = []
     for (const along of [length * 0.31, -length * 0.31]) {
       for (const side of [1, -1]) {
+        const pivot = new THREE.Group()
+        pivot.position.set(side * track, radius, along)
+
         const wheel = new THREE.Mesh(geometry, tyre)
         wheel.rotation.z = Math.PI / 2
-        wheel.position.set(side * track, radius, along)
-        group.add(wheel)
+        wheel.castShadow = true
+
+        pivot.add(wheel)
+        group.add(pivot)
+        wheels.push({ pivot, wheel, baseRotationY: 0 })
       }
     }
+
+    group.userData.wheels = wheels
+    return wheels
   }
 
   /**
@@ -1963,7 +2072,7 @@ export class World {
       }
     }
 
-    this.addLampsAndTail(group, length, width)
+    this.addVehicleLamps(group, length, width, TRAFFIC_HEIGHTS[v.kind])
     this.addWheels(group, length, width)
     return group
   }
@@ -2036,7 +2145,7 @@ export class World {
     head.position.set(0, 1.4, -length * 0.19 + length * 0.25)
     group.add(head)
 
-    this.addLampsAndTail(group, length, width)
+    this.addVehicleLamps(group, length, width, TRAFFIC_HEIGHTS[v.kind])
     this.addWheels(group, length, width, 0.52)
     return group
   }
@@ -2098,36 +2207,91 @@ export class World {
       group.add(rail)
     }
 
-    this.addLampsAndTail(group, length, width)
+    this.addVehicleLamps(group, length, width, TRAFFIC_HEIGHTS[v.kind])
     this.addWheels(group, length, width, 0.5)
     return group
   }
 
-  /** Headlights that glow at night, and brake lights that come on. */
-  addLampsAndTail(group, length, width) {
+  /**
+   * Every lamp a vehicle has: two headlights, two tail lights, and an amber
+   * indicator at each of the four corners.
+   *
+   * ONE builder, for the traffic and for the car you drive. The player's car
+   * used to have a second set of lamps of its own, built somewhere else at a
+   * different size, and the moment `setKind()` started rebuilding the mesh
+   * from this builder the two came apart - see the note at the top of
+   * vehicleLights.js. Anything with a body and wheels comes through here now.
+   *
+   * The materials are handed back on `group.userData.lights` rather than kept
+   * by the caller, because the caller does not survive a change of vehicle
+   * and the mesh does. Ask the mesh what its lamps are, and a stale reference
+   * is not something you can hold.
+   *
+   * Note what is NOT here any more: `registerNightLight(head)`. The lamps are
+   * driven by lampBrightness() every frame now, and leaving them on the
+   * night-emissive list as well would have two systems writing one
+   * `emissiveIntensity` - with whichever ran last winning, which is a bug
+   * that only shows up at dusk.
+   */
+  addVehicleLamps(group, length, width, height = 1.8, baseY = 0) {
+    // Lamp height follows the BODY, not a constant. At a fixed 0.78 the bus's
+    // headlights sat in its wheel arches and the fire engine's were halfway
+    // down its bumper: every fitting in this project that came adrift came
+    // adrift because it was positioned from a number that then changed.
+    //
+    // `baseY` is where the ground is in the caller's coordinates. The traffic
+    // builds its meshes standing on zero and passes nothing; the player's
+    // default car is built around its own centre and passes the offset. That
+    // one number is the difference between two origin conventions, stated
+    // once instead of being quietly assumed at each end.
+    const lampY = baseY + Math.max(0.5, height * 0.42)
+    const scale = Math.min(1.5, Math.max(0.85, width / 1.9))
+
     const head = new THREE.MeshStandardMaterial({
       color: 0xfff6e0, roughness: 0.3,
       emissive: new THREE.Color(0xfff2cf), emissiveIntensity: 0
     })
-    this.registerNightLight(head, 1.4)
-
-    for (const side of [1, -1]) {
-      const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.1), head)
-      lamp.position.set(side * width * 0.3, 0.78, length / 2 + 0.02)
-      group.add(lamp)
-    }
-
-    // Kept on the vehicle so updateTraffic can brighten them under braking
-    const tailMat = new THREE.MeshStandardMaterial({
+    const tail = new THREE.MeshStandardMaterial({
       color: 0x6b2620, roughness: 0.5,
       emissive: new THREE.Color(PALETTE.brakeLight), emissiveIntensity: 0.15
     })
+    // One amber material per SIDE, not one for the whole vehicle: the front
+    // and rear indicator on the same side always agree, and the two sides
+    // never do.
+    const amber = () => new THREE.MeshStandardMaterial({
+      color: 0x7a4a10, roughness: 0.5,
+      emissive: new THREE.Color(0xffa62b), emissiveIntensity: 0
+    })
+    const left = amber()
+    const right = amber()
+
+    const nose = length / 2 + 0.02
+    const tailZ = -length / 2 - 0.02
+
     for (const side of [1, -1]) {
-      const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.18, 0.1), tailMat)
-      lamp.position.set(side * width * 0.3, 0.78, -length / 2 - 0.02)
+      const lamp = new THREE.Mesh(
+        new THREE.BoxGeometry(0.4 * scale, 0.2, 0.1), head)
+      lamp.position.set(side * width * 0.3, lampY, nose)
       group.add(lamp)
+
+      const rear = new THREE.Mesh(
+        new THREE.BoxGeometry(0.35 * scale, 0.18, 0.1), tail)
+      rear.position.set(side * width * 0.3, lampY, tailZ)
+      group.add(rear)
+
+      // Indicators outboard of the main lamps, at all four corners, because
+      // an indicator you cannot see from behind is not an indicator.
+      const material = side === 1 ? right : left
+      for (const z of [nose, tailZ]) {
+        const blinker = new THREE.Mesh(
+          new THREE.BoxGeometry(0.16 * scale, 0.15, 0.09), material)
+        blinker.position.set(side * width * 0.44, lampY, z)
+        group.add(blinker)
+      }
     }
-    group.userData.tail = tailMat
+
+    group.userData.lights = { head, tail, left, right }
+    return group.userData.lights
   }
 
   /**
@@ -2189,7 +2353,7 @@ export class World {
     screen.position.set(0, 1.44, length * 0.19)
     group.add(screen)
 
-    this.addLampsAndTail(group, length, width)
+    this.addVehicleLamps(group, length, width, TRAFFIC_HEIGHTS[v.kind])
     this.addWheels(group, length, width)
 
     group.userData.beacons = this.addBeacons(group, 1.82, 0.55)
@@ -2225,7 +2389,7 @@ export class World {
     stripe.position.set(0, 1.1, -length * 0.05)
     group.add(stripe)
 
-    this.addLampsAndTail(group, length, width)
+    this.addVehicleLamps(group, length, width, TRAFFIC_HEIGHTS[v.kind])
     this.addWheels(group, length, width, 0.5)
     group.userData.beacons = this.addBeacons(group, 2.4, 0.6)
     return group
@@ -2272,7 +2436,7 @@ export class World {
       group.add(locker)
     }
 
-    this.addLampsAndTail(group, length, width)
+    this.addVehicleLamps(group, length, width, TRAFFIC_HEIGHTS[v.kind])
     this.addWheels(group, length, width, 0.58)
     group.userData.beacons = this.addBeacons(group, 2.55, 0.7)
     return group
@@ -2329,7 +2493,7 @@ export class World {
     door.position.set(-(width / 2 + 0.02), 1.4, length * 0.22)
     group.add(door)
 
-    this.addLampsAndTail(group, length, width)
+    this.addVehicleLamps(group, length, width, TRAFFIC_HEIGHTS.bus)
     this.addWheels(group, length, width, 0.52)
     return group
   }
@@ -2712,6 +2876,12 @@ export class World {
     // together rather than each one drifting
     const beat = Math.floor(this.elapsed * SIREN_RATE) % 2 === 0
 
+    // How dark it is, worked out once for the whole fleet rather than a
+    // hundred times. Weather as well as night: the traffic used to light up
+    // at dusk only, so a storm at two in the afternoon left every car on the
+    // road dark while the player's headlights were on.
+    const gloom = gloomLevel(this.game.environment)
+
     for (const v of this.traffic) {
       const at = trafficPosition(this.lanes, v)
 
@@ -2771,9 +2941,24 @@ export class World {
           ground + TRAFFIC_HEIGHTS[v.kind] / 2, v.drawn.z, v.heading)
       }
 
-      // Brake lights, which is most of what makes traffic look like traffic
-      const tail = v.mesh.userData.tail
-      if (tail) tail.emissiveIntensity = v.speed < 0.5 ? 1.5 : v.why === 'cruise' ? 0.15 : 0.7
+      // Every lamp on the vehicle, from the same function the player's car
+      // uses. Brake lights are most of what makes traffic look like traffic;
+      // the indicators are the rest of it, and they show the turn the
+      // simulation has actually committed to rather than a guess at it.
+      const lights = v.mesh.userData.lights
+      if (lights) {
+        const level = lampBrightness({
+          gloom,
+          braking: v.speed >= 0.5 && v.why !== 'cruise',
+          stopped: v.speed < 0.5,
+          indicate: v.signal || 0,
+          blink: blinkOn(this.elapsed, v.blinkPhase || 0)
+        })
+        lights.head.emissiveIntensity = level.head
+        lights.tail.emissiveIntensity = level.tail
+        lights.left.emissiveIntensity = level.left
+        lights.right.emissiveIntensity = level.right
+      }
 
       if (v.mesh.userData.beacons) {
         for (const beacon of v.mesh.userData.beacons) {
@@ -3003,6 +3188,113 @@ export class World {
       crate.castShadow = true
       this.game.add(crate)
     }
+  }
+
+  /**
+   * The player's garage, on the hub.
+   *
+   * Where it stands is decided in islandLayout.js - clear of the fountain, off
+   * the roads, facing the way out - so a test can check it. This draws it.
+   */
+  createPlayerGarage() {
+    const garage = getPlayerGarage()
+    this.playerGarage = garage
+    if (!garage) return
+
+    const ground = this.groundAt(garage.x, garage.z)
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.wallCream, roughness: 0.85, flatShading: true
+    })
+    const trimMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.roofDark, roughness: 0.8, flatShading: true
+    })
+    const doorMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.beamDark, roughness: 0.6, metalness: 0.3, flatShading: true
+    })
+
+    const fx = Math.sin(garage.heading)
+    const fz = Math.cos(garage.heading)
+    const sx = Math.cos(garage.heading)
+    const sz = -Math.sin(garage.heading)
+
+    // Three walls and a roof. The front is left open except for the piers
+    // either side of the door, the same way a fire station's front is built.
+    const back = new THREE.Mesh(
+      new THREE.BoxGeometry(garage.width, GARAGE_HEIGHT, 0.6), wallMat)
+    back.position.set(garage.x - fx * garage.depth / 2,
+                      ground + GARAGE_HEIGHT / 2,
+                      garage.z - fz * garage.depth / 2)
+    back.rotation.y = garage.heading
+    back.castShadow = true
+    this.game.add(back)
+
+    for (const side of [1, -1]) {
+      const wall = new THREE.Mesh(
+        new THREE.BoxGeometry(0.6, GARAGE_HEIGHT, garage.depth), wallMat)
+      wall.position.set(garage.x + sx * (garage.width / 2) * side,
+                        ground + GARAGE_HEIGHT / 2,
+                        garage.z + sz * (garage.width / 2) * side)
+      wall.rotation.y = garage.heading
+      wall.castShadow = true
+      this.game.add(wall)
+    }
+
+    // The piers either side of the opening. Their width follows from the door
+    // width, so the opening is what the layout says it is.
+    const pier = (garage.width - garage.doorWidth) / 2
+    for (const side of [1, -1]) {
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(pier, GARAGE_HEIGHT, 0.6), wallMat)
+      post.position.set(
+        garage.x + fx * garage.depth / 2 + sx * (garage.doorWidth / 2 + pier / 2) * side,
+        ground + GARAGE_HEIGHT / 2,
+        garage.z + fz * garage.depth / 2 + sz * (garage.doorWidth / 2 + pier / 2) * side)
+      post.rotation.y = garage.heading
+      post.castShadow = true
+      this.game.add(post)
+    }
+
+    // Lintel over the opening, and a roof.
+    const lintel = new THREE.Mesh(
+      new THREE.BoxGeometry(garage.doorWidth + 0.4, 1.4, 0.6), doorMat)
+    lintel.position.set(garage.x + fx * garage.depth / 2,
+                        ground + GARAGE_HEIGHT - 0.7,
+                        garage.z + fz * garage.depth / 2)
+    lintel.rotation.y = garage.heading
+    this.game.add(lintel)
+
+    const roof = new THREE.Mesh(
+      new THREE.BoxGeometry(garage.width + 1, 0.7, garage.depth + 1), trimMat)
+    roof.position.set(garage.x, ground + GARAGE_HEIGHT + 0.35, garage.z)
+    roof.rotation.y = garage.heading
+    roof.castShadow = true
+    this.game.add(roof)
+
+    // Solid, but only the walls - you have to be able to drive out of the
+    // front. Three boxes rather than one, for exactly that reason.
+    this.game.physics.createStaticBoxAt(
+      garage.x - fx * garage.depth / 2, ground + GARAGE_HEIGHT / 2,
+      garage.z - fz * garage.depth / 2,
+      garage.width, GARAGE_HEIGHT, 0.6, garage.heading)
+
+    for (const side of [1, -1]) {
+      this.game.physics.createStaticBoxAt(
+        garage.x + sx * (garage.width / 2) * side, ground + GARAGE_HEIGHT / 2,
+        garage.z + sz * (garage.width / 2) * side,
+        0.6, GARAGE_HEIGHT, garage.depth, garage.heading)
+    }
+
+    // An apron in front, so the way out reads as a driveway rather than grass.
+    const apron = new THREE.Mesh(
+      new THREE.BoxGeometry(garage.doorWidth + 4, 0.2,
+        Math.hypot(garage.apron.x - garage.x, garage.apron.z - garage.z)),
+      new THREE.MeshStandardMaterial({
+        color: PALETTE.concrete, roughness: 0.95, flatShading: true
+      }))
+    apron.position.set((garage.x + garage.apron.x) / 2, ground + 0.1,
+                       (garage.z + garage.apron.z) / 2)
+    apron.rotation.y = garage.heading
+    this.game.add(apron)
   }
 
   // -------------------------------------------------------------
@@ -3768,6 +4060,150 @@ export class World {
 
     const palmCount = island.palms !== undefined ? island.palms : 8
     if (palmCount > 0) this.ringOfPalms(island, palmCount, roads)
+
+    this.sowFlowers(island, roads)
+  }
+
+  /**
+   * Where spring flowers will come up on this island.
+   *
+   * Nothing is built here - only positions are collected, and createFlowers()
+   * turns the lot into two instanced meshes at the end of the build. That
+   * matters for load time: this is the last thing that runs per island and it
+   * is by far the cheapest way to add several thousand objects to the world.
+   *
+   * Sampled AFTER everything else on the island, so isBuildable() already
+   * knows about every road, every hand-placed building and every monorail
+   * pier - flowers grow in the gaps that are left, which is what flowers do.
+   */
+  sowFlowers(island, roads) {
+    const reach = islandReach(island)
+    const area = Math.PI * reach * reach
+    const sites = Math.round(area / 70)
+
+    for (let i = 0; i < sites; i++) {
+      const a = this.rand() * Math.PI * 2
+      const d = this.randRange(6, reach)
+      const x = island.x + Math.sin(a) * d
+      const z = island.z + Math.cos(a) * d
+
+      // 0.9 rather than the default 1.5: a flower is allowed closer to the
+      // kerb than a tree is, and the verge is where they look best.
+      if (!this.isBuildable(island, roads, x, z, 0.9)) continue
+
+      this.flowerSites.push({
+        x, z,
+        y: this.groundAt(x, z),
+        rotation: this.rand() * Math.PI * 2,
+        size: this.randRange(0.7, 1.25),
+        colour: this.pick(FLOWER_COLOURS)
+      })
+    }
+  }
+
+  /**
+   * The spring flower field: a clump of stems and heads at every sown site.
+   *
+   * They do not appear and disappear - they GROW. The whole field is scaled
+   * from zero at its base by the season's flower amount, so through spring
+   * they push up out of the ground and through summer they die back down
+   * into it. That is also why they cost nothing out of season: an instanced
+   * mesh that is not visible is not drawn.
+   */
+  createFlowers() {
+    const count = this.flowerSites.length * FLOWERS_PER_CLUMP
+    if (!count) return
+
+    // Authored with the base at the origin, so scaling grows them out of the
+    // ground rather than shrinking them toward their own middle.
+    const stemGeo = new THREE.CylinderGeometry(0.028, 0.045, 1, 4)
+    stemGeo.translate(0, 0.5, 0)
+    const headGeo = new THREE.IcosahedronGeometry(0.17, 0)
+    headGeo.translate(0, 1.06, 0)
+
+    const stemMat = new THREE.MeshStandardMaterial({
+      color: 0x4f8f3e, roughness: 0.95, flatShading: true
+    })
+    const headMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff, roughness: 0.8, flatShading: true
+    })
+
+    this.flowerStems = new THREE.InstancedMesh(stemGeo, stemMat, count)
+    this.flowerHeads = new THREE.InstancedMesh(headGeo, headMat, count)
+    this.flowerStems.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    this.flowerHeads.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    this.flowerStems.frustumCulled = false
+    this.flowerHeads.frustumCulled = false
+
+    // Each sown site becomes a small clump, so the field reads as dense
+    // without sampling the ground thousands more times.
+    this.flowerInstances = []
+    const colour = new THREE.Color()
+    let n = 0
+    for (const site of this.flowerSites) {
+      for (let j = 0; j < FLOWERS_PER_CLUMP; j++) {
+        const a = this.rand() * Math.PI * 2
+        const d = this.randRange(0, 0.55)
+        const x = site.x + Math.sin(a) * d
+        const z = site.z + Math.cos(a) * d
+        this.flowerInstances.push({
+          x, y: this.groundAt(x, z), z,
+          rotation: site.rotation + this.rand(),
+          size: site.size * this.randRange(0.75, 1.15)
+        })
+        this.flowerHeads.setColorAt(n, colour.setHex(site.colour))
+        n++
+      }
+    }
+    this.flowerHeads.instanceColor.needsUpdate = true
+
+    this.game.add(this.flowerStems)
+    this.game.add(this.flowerHeads)
+
+    this.flowering = -1          // forces the first setFlowering to write
+    this.setFlowering(0)
+  }
+
+  /**
+   * Grow the flower field to `amount`, 0 (underground) to 1 (full spring).
+   *
+   * The matrices are rewritten only when the amount has actually moved.
+   * Spring takes a couple of minutes to arrive and then the number sits
+   * still, so this writes for a few seconds a year and costs nothing for the
+   * rest of it - which is the difference between an instanced field being
+   * free and it being the most expensive thing on the frame.
+   */
+  setFlowering(amount) {
+    if (!this.flowerStems) return
+
+    const a = Math.max(0, Math.min(1, amount))
+    if (Math.abs(a - this.flowering) < 0.004) return
+    this.flowering = a
+
+    const visible = a > 0.02
+    this.flowerStems.visible = visible
+    this.flowerHeads.visible = visible
+    if (!visible) return
+
+    const m = this._flowerMatrix || (this._flowerMatrix = new THREE.Matrix4())
+    const q = this._flowerQuat || (this._flowerQuat = new THREE.Quaternion())
+    const p = this._flowerPos || (this._flowerPos = new THREE.Vector3())
+    const s = this._flowerScale || (this._flowerScale = new THREE.Vector3())
+    const up = this._flowerUp || (this._flowerUp = new THREE.Vector3(0, 1, 0))
+
+    for (let i = 0; i < this.flowerInstances.length; i++) {
+      const f = this.flowerInstances[i]
+      const grow = f.size * a
+      p.set(f.x, f.y, f.z)
+      q.setFromAxisAngle(up, f.rotation)
+      s.set(grow, grow, grow)
+      m.compose(p, q, s)
+      this.flowerStems.setMatrixAt(i, m)
+      this.flowerHeads.setMatrixAt(i, m)
+    }
+
+    this.flowerStems.instanceMatrix.needsUpdate = true
+    this.flowerHeads.instanceMatrix.needsUpdate = true
   }
 
   /**
@@ -3964,6 +4400,7 @@ export class World {
     )
     shrub.position.y = 0.85
     group.add(shrub)
+    this.registerSeasonal(shrub.material, 'foliage', 0.8)
     this.swayables.push({ object: shrub, phase: this.rand() * Math.PI * 2, scale: 0.3 })
 
     group.position.set(x, this.groundAt(x, z), z)
@@ -4004,6 +4441,8 @@ export class World {
     canopy.position.y = 3.1
     canopy.castShadow = true
     group.add(canopy)
+    // Street trees are the deciduous ones, so they take the season in full.
+    this.registerSeasonal(canopy.material, 'foliage')
     this.swayables.push({ object: canopy, phase: this.rand() * Math.PI * 2, scale: 0.4 })
 
     group.position.set(x, this.groundAt(x, z), z)
@@ -4362,6 +4801,9 @@ export class World {
     )
     roof.position.y = height + 0.15
     roof.castShadow = true
+    // Snow lies on roofs, and this is the only place in the world that makes
+    // one - so every building in every town gets it from one line.
+    this.registerSeasonal(roof.material, 'roof')
     group.add(roof)
 
     // One shared window material per building, so switching the lights
@@ -4663,6 +5105,12 @@ export class World {
       side: THREE.DoubleSide
     })
 
+    // A quarter of the season, no more. Palms are evergreen, and SKILLS and
+    // BLOG are meant to stay jungle whatever month it is - a fully autumnal
+    // coconut palm is not a jungle. They pick up a dusting in winter and a
+    // touch of new green in spring, which is as much as a palm ever does.
+    this.registerSeasonal(frondMat, 'foliage', 0.25)
+
     const frondCount = 7 + Math.floor(this.rand() * 3)
     for (let i = 0; i < frondCount; i++) {
       const a = (i / frondCount) * Math.PI * 2 + this.rand() * 0.25
@@ -4703,6 +5151,7 @@ export class World {
       color: this.rand() < 0.5 ? PALETTE.bush : PALETTE.grassDark,
       roughness: 0.95, flatShading: true
     })
+    this.registerSeasonal(mat, 'foliage', 0.85)
 
     const lumps = 2 + Math.floor(this.rand() * 3)
     for (let i = 0; i < lumps; i++) {

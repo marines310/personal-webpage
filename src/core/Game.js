@@ -7,6 +7,7 @@ import { Camera } from '../systems/Camera.js'
 import { Assets } from '../systems/Assets.js'
 import { Environment } from '../systems/Environment.js'
 import { World } from '../world/World.js'
+import { VehicleSelector } from '../ui/VehicleSelector.js'
 import { Vehicle } from '../world/Vehicle.js'
 import { ZoneManager } from '../world/ZoneManager.js'
 import { MODEL_MANIFEST } from '../world/modelManifest.js'
@@ -97,6 +98,10 @@ export class Game {
 
     // 7. Create vehicle
     this.vehicle = new Vehicle()
+
+    // The picker. Shown once the world exists, with the vehicle parked in the
+    // garage - see VehicleSelector, where the preview IS the vehicle.
+    this.vehicleSelector = new VehicleSelector()
     this.updateLoadingProgress(92)
 
     // 8. Create zone manager
@@ -110,9 +115,10 @@ export class Game {
     // Set up tick events in order (like Bruno's architecture)
     this.setupTickEvents()
 
-    // Hide loading screen
+    // Hide loading screen, then ask what they want to drive.
     setTimeout(() => {
       document.getElementById('loading').classList.add('hidden')
+      this.vehicleSelector.show()
     }, 500)
 
     this.isReady = true
@@ -126,6 +132,7 @@ export class Game {
     // Order matters! Lower numbers run first
     // 0-10: Input & pre-physics
     this.ticker.on('tick', (delta) => this.inputs.update(delta), 0)
+    this.ticker.on('tick', (delta) => this.vehicleSelector.update(delta), 0)
     this.ticker.on('tick', (delta) => this.vehicle.prePhysicsUpdate(delta), 1)
 
     // 10-20: Physics

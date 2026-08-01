@@ -1,5 +1,8 @@
 import * as THREE from 'three'
 import { Game } from '../core/Game.js'
+import {
+  SEASON_ORDER, seasonView, seasonAt, phaseForSeason, easeView
+} from './seasons.js'
 
 /**
  * Environment - sky, sun, day/night cycle and weather.
@@ -18,6 +21,17 @@ import { Game } from '../core/Game.js'
  * -------
  * A small state machine picks a new condition every 45-90 seconds and
  * eases into it over several seconds, so nothing ever snaps.
+ *
+ * SEASONS
+ * -------
+ * One season per day, so the year is four days long and turns while you
+ * watch. The maths is in seasons.js, which has no THREE in it and can
+ * therefore be run by a test; this file only turns the numbers into light,
+ * particles and a call to World.setSeason().
+ *
+ * Two things follow the season rather than the weather: what colour the world
+ * is, and whether rain falls as snow. The second is a substitution in the
+ * chain, not a second chain - `showers` in winter IS `snowing`.
  */
 
 // ---------------------------------------------------------------
@@ -38,27 +52,73 @@ export const SKY = {
   moon: 0x9fb6ff
 }
 
+/**
+ * `flake` is how much of the falling precipitation is snow rather than rain.
+ * It rides along with `rain` instead of replacing it so that there is one
+ * precipitation amount and one particle budget: `rain * (1 - flake)` streaks
+ * down as water and `rain * flake` drifts down as snow. Halfway between the
+ * two - which is what you get for a few seconds while it eases - is sleet,
+ * and sleet is a real thing rather than a glitch.
+ */
 export const WEATHER_TYPES = {
-  clear:  { label: 'Clear',   cloud: 0.06, rain: 0.0, wind: 0.15, fogMul: 1.0, lightMul: 1.0,  lightning: false },
-  breezy: { label: 'Breezy',  cloud: 0.22, rain: 0.0, wind: 0.65, fogMul: 1.1, lightMul: 0.97, lightning: false },
-  cloudy: { label: 'Cloudy',  cloud: 0.62, rain: 0.0, wind: 0.35, fogMul: 1.4, lightMul: 0.72, lightning: false },
-  showers:{ label: 'Showers', cloud: 0.78, rain: 0.5, wind: 0.5,  fogMul: 1.9, lightMul: 0.58, lightning: false },
-  storm:  { label: 'Storm',   cloud: 1.0,  rain: 1.0, wind: 1.0,  fogMul: 2.7, lightMul: 0.4,  lightning: true }
+  clear:  { label: 'Clear',   cloud: 0.06, rain: 0.0, wind: 0.15, fogMul: 1.0, lightMul: 1.0,  flake: 0, lightning: false },
+  breezy: { label: 'Breezy',  cloud: 0.22, rain: 0.0, wind: 0.65, fogMul: 1.1, lightMul: 0.97, flake: 0, lightning: false },
+  cloudy: { label: 'Cloudy',  cloud: 0.62, rain: 0.0, wind: 0.35, fogMul: 1.4, lightMul: 0.72, flake: 0, lightning: false },
+  showers:{ label: 'Showers', cloud: 0.78, rain: 0.5, wind: 0.5,  fogMul: 1.9, lightMul: 0.58, flake: 0, lightning: false },
+  storm:  { label: 'Storm',   cloud: 1.0,  rain: 1.0, wind: 1.0,  fogMul: 2.7, lightMul: 0.4,  flake: 0, lightning: true },
+
+  // Snow. Thicker than showers to look at because falling snow hides distance
+  // far better than rain does, but gentler on the light - an overcast snowy
+  // day is bright, not dark, which is why lightMul is above showers'.
+  snowing:{ label: 'Snowing', cloud: 0.82, rain: 0.62, wind: 0.3, fogMul: 2.3, lightMul: 0.78, flake: 1, lightning: false }
 }
 
 // Which conditions can follow which - keeps sequences plausible
 // (you never jump straight from clear skies to a thunderstorm)
+//
+// `snowing` is NOT reachable from here. It is what `showers` and `storm`
+// become when it is cold enough - see chill() - so the chain stays one chain
+// and the season decides what falls out of the cloud. Adding a second, winter
+// chain would be two lists to keep in step, which is rule 1.
 const WEATHER_CHAIN = {
   clear:   ['breezy', 'breezy', 'cloudy', 'clear'],
   breezy:  ['clear', 'cloudy', 'clear', 'showers'],
   cloudy:  ['breezy', 'showers', 'clear', 'showers'],
   showers: ['cloudy', 'storm', 'breezy', 'cloudy'],
-  storm:   ['showers', 'showers', 'cloudy']
+  storm:   ['showers', 'showers', 'cloudy'],
+  snowing: ['cloudy', 'breezy', 'cloudy', 'showers']
 }
+
+/** What a wet condition turns into when the season is cold. */
+export const COLD_FORM = { showers: 'snowing', storm: 'snowing' }
 
 const RAIN_COUNT = 4200
 const RAIN_AREA = 90      // box around the camera that rain occupies
 const RAIN_HEIGHT = 55
+
+// Snowflakes and falling leaves are the same field of drifting specks with
+// different weight, size and colour, so they are one system. They can be,
+// because the season that drops leaves and the season that drops snow are
+// different seasons - a fact the tests check rather than assume.
+const DRIFT_COUNT = 3000
+const DRIFT_AREA = 80
+const DRIFT_HEIGHT = 40
+
+/**
+ * `share` is what fraction of the field this kind puts up at full strength.
+ *
+ * Snow fills the air; leaves do not. Leaves at the same density as snow read
+ * as confetti - which is exactly what the first pass looked like - because
+ * there is no wind-blown sheet of falling leaves in nature, only the odd one
+ * coming down. Density is the count, not the opacity: half-transparent leaves
+ * look like a rendering fault, so they stay solid and there are simply fewer.
+ */
+const DRIFT_KINDS = {
+  snow: { size: 0.24, fall: 3.2, flutter: 0.9, share: 1,
+          colours: [0xffffff, 0xeef4ff, 0xdfeaf6] },
+  leaf: { size: 0.40, fall: 2.2, flutter: 1.8, share: 0.16,
+          colours: [0xd2762c, 0xc2452c, 0xd9a03a, 0x9c6b2f] }
+}
 
 export class Environment {
   constructor() {
@@ -84,6 +144,18 @@ export class Environment {
     this.windAngle = Math.random() * Math.PI * 2
     this.windVector = new THREE.Vector3(1, 0, 0)
 
+    // --- Seasons ---
+    //
+    // One season per day. Starting at the top of summer is not arbitrary:
+    // summer applies no tint at all, so frame zero of a new session looks
+    // exactly like the world did before seasons existed, and anything that
+    // has gone wrong with them is visibly a change rather than the default.
+    this.yearLength = this.dayLength * SEASON_ORDER.length
+    this.seasonPhase = phaseForSeason('summer')
+    this.seasonLocked = false
+    this.seasonTarget = seasonView(this.seasonPhase)
+    this.season = seasonView(this.seasonPhase)   // a separate object, not an alias
+
     // --- Lightning ---
     this.flash = 0
     this.nextStrike = 6
@@ -99,6 +171,7 @@ export class Environment {
     this.buildStars()
     this.buildClouds()
     this.buildRain()
+    this.buildDrift()
 
     // Apply once so frame zero already looks right
     this.update(0)
@@ -375,6 +448,162 @@ export class Environment {
   }
 
   // -------------------------------------------------------------
+  // Snow and falling leaves
+  //
+  // One field of drifting specks, following the camera the way the rain
+  // does. Which of the two it is showing is decided by whichever of the two
+  // amounts is larger, and they are never both up at once because leaves are
+  // an autumn thing and snow is a winter thing.
+  //
+  // Colours are per-vertex and are rewritten only when the kind changes -
+  // once or twice a year - rather than every frame.
+  // -------------------------------------------------------------
+  buildDrift() {
+    this.driftPositions = new Float32Array(DRIFT_COUNT * 3)
+    this.driftColours = new Float32Array(DRIFT_COUNT * 3)
+    this.driftSpeeds = new Float32Array(DRIFT_COUNT)
+    this.driftPhase = new Float32Array(DRIFT_COUNT)
+    this.driftPick = new Uint8Array(DRIFT_COUNT)   // which colour of the kind
+
+    for (let i = 0; i < DRIFT_COUNT; i++) {
+      this.driftPositions[i * 3] = (Math.random() - 0.5) * DRIFT_AREA
+      this.driftPositions[i * 3 + 1] = Math.random() * DRIFT_HEIGHT
+      this.driftPositions[i * 3 + 2] = (Math.random() - 0.5) * DRIFT_AREA
+      this.driftSpeeds[i] = 0.6 + Math.random() * 0.8    // a multiplier on the kind's fall
+      this.driftPhase[i] = Math.random() * Math.PI * 2
+      this.driftPick[i] = Math.floor(Math.random() * 3)
+    }
+
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(this.driftPositions, 3))
+    geometry.setAttribute('color', new THREE.BufferAttribute(this.driftColours, 3))
+    geometry.setDrawRange(0, 0)
+
+    this.driftMaterial = new THREE.PointsMaterial({
+      size: DRIFT_KINDS.snow.size,
+      sizeAttenuation: true,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      fog: true
+    })
+
+    this.drift = new THREE.Points(geometry, this.driftMaterial)
+    this.drift.frustumCulled = false
+    this.driftKind = null
+    this.setDriftKind('snow')
+    this.game.add(this.drift)
+  }
+
+  setDriftKind(kind) {
+    if (this.driftKind === kind) return
+    this.driftKind = kind
+
+    const spec = DRIFT_KINDS[kind]
+    const colours = spec.colours.map(hex => new THREE.Color(hex))
+    for (let i = 0; i < DRIFT_COUNT; i++) {
+      const c = colours[this.driftPick[i] % colours.length]
+      this.driftColours[i * 3] = c.r
+      this.driftColours[i * 3 + 1] = c.g
+      this.driftColours[i * 3 + 2] = c.b
+    }
+    this.driftMaterial.size = spec.size
+    this.drift.geometry.attributes.color.needsUpdate = true
+  }
+
+  updateDrift(delta) {
+    // Snow falls when the weather says so; leaves fall because it is autumn,
+    // whatever the weather is doing.
+    const snowing = this.current.rain * this.current.flake
+    const leafing = this.season.leaves
+
+    const amount = Math.max(snowing, leafing)
+    // Solid once there is anything at all - see the note on DRIFT_KINDS.
+    this.driftMaterial.opacity = Math.min(0.92, amount * 6)
+    this.drift.visible = amount > 0.02
+
+    if (!this.drift.visible) {
+      this.drift.geometry.setDrawRange(0, 0)
+      return
+    }
+
+    this.setDriftKind(snowing >= leafing ? 'snow' : 'leaf')
+    const spec = DRIFT_KINDS[this.driftKind]
+
+    const active = Math.floor(DRIFT_COUNT * Math.min(1, amount) * spec.share)
+    const centre = this.game.vehicle
+      ? this.game.vehicle.mesh.position
+      : new THREE.Vector3()
+
+    // Everything light is blown about far more than rain is
+    const windX = this.windVector.x * 9
+    const windZ = this.windVector.z * 9
+    const half = DRIFT_AREA / 2
+    this._driftTime = (this._driftTime || 0) + delta
+
+    for (let i = 0; i < active; i++) {
+      const i3 = i * 3
+      const t = this._driftTime + this.driftPhase[i]
+      const flutter = spec.flutter
+
+      let x = this.driftPositions[i3] +
+              (windX + Math.sin(t * 1.7) * flutter) * delta
+      let y = this.driftPositions[i3 + 1] - spec.fall * this.driftSpeeds[i] * delta
+      let z = this.driftPositions[i3 + 2] +
+              (windZ + Math.cos(t * 1.3) * flutter) * delta
+
+      // Recycled at the ground rather than well below it: unlike a raindrop,
+      // a flake is big enough to see landing, and settling at -12 would have
+      // them vanish into the road a dozen units under your wheels.
+      if (y < -3) {
+        y = DRIFT_HEIGHT
+        x = (Math.random() - 0.5) * DRIFT_AREA
+        z = (Math.random() - 0.5) * DRIFT_AREA
+      }
+      if (x > half) x -= DRIFT_AREA
+      if (x < -half) x += DRIFT_AREA
+      if (z > half) z -= DRIFT_AREA
+      if (z < -half) z += DRIFT_AREA
+
+      this.driftPositions[i3] = x
+      this.driftPositions[i3 + 1] = y
+      this.driftPositions[i3 + 2] = z
+    }
+
+    // Drawn about the car, like the rain. The buffer holds offsets so the
+    // field wraps in its own frame; the mesh carries the world position.
+    this.drift.position.set(centre.x, centre.y, centre.z)
+    this.drift.geometry.setDrawRange(0, active)
+    this.drift.geometry.attributes.position.needsUpdate = true
+  }
+
+  // -------------------------------------------------------------
+  // The year
+  // -------------------------------------------------------------
+  updateSeason(delta) {
+    if (!this.paused && !this.seasonLocked) {
+      this.seasonPhase = (this.seasonPhase + delta / this.yearLength) % 1
+    }
+
+    this.seasonTarget = seasonView(this.seasonPhase)
+
+    // Settled snow answers to the weather as well as to the calendar, so a
+    // flurry in a mild season dusts the ground and then melts off it again.
+    // Folded into the TARGET rather than added to the eased value afterwards,
+    // so there is still exactly one thing easing snow and it settles and
+    // melts at the rates seasons.js gives it - whichever brought the snow.
+    const fromWeather = this.current.rain * this.current.flake * 0.7
+    this.seasonTarget.snow = Math.max(this.seasonTarget.snow, fromWeather)
+
+    easeView(this.season, this.seasonTarget, delta)
+
+    if (this.game.world && this.game.world.setSeason) {
+      this.game.world.setSeason(this.season)
+    }
+  }
+
+  // -------------------------------------------------------------
   // Main update
   // -------------------------------------------------------------
   update(delta) {
@@ -387,10 +616,13 @@ export class Environment {
 
     this.updateSun()
     this.updateWeather(delta)
+    // After the weather, because settled snow depends on what is falling.
+    this.updateSeason(delta)
     this.updateSky()
     this.updateLights()
     this.updateClouds(delta)
     this.updateRain(delta)
+    this.updateDrift(delta)
 
     // Let the rest of the game react to the time of day
     if (this.game.world && this.game.world.setTimeOfDay) {
@@ -432,7 +664,7 @@ export class Environment {
       this.weatherDuration = 45 + Math.random() * 45
 
       const options = WEATHER_CHAIN[this.weather] || ['clear']
-      this.weather = options[Math.floor(Math.random() * options.length)]
+      this.weather = this.chill(options[Math.floor(Math.random() * options.length)])
       this.target = WEATHER_TYPES[this.weather]
     }
 
@@ -448,6 +680,22 @@ export class Environment {
     )
 
     this.updateLightning(delta)
+  }
+
+  /**
+   * What a condition becomes at this point in the year.
+   *
+   * Wet conditions turn to snow when it is cold enough, and nothing else is
+   * touched. Deep winter (chill 1) always converts; late autumn (chill 0.15)
+   * converts about one time in seven, which is what a first snowfall looks
+   * like. Everything you can pick by hand stays exactly what you picked -
+   * this only ever runs on the chain's choice.
+   */
+  chill(key) {
+    const cold = this.season ? this.season.chill : 0
+    const colder = COLD_FORM[key]
+    if (!colder || cold <= 0) return key
+    return Math.random() < cold ? colder : key
   }
 
   updateLightning(delta) {
@@ -576,7 +824,8 @@ export class Environment {
   }
 
   updateRain(delta) {
-    const amount = this.current.rain
+    // Only the liquid share. The rest is falling as snow, in updateDrift.
+    const amount = this.current.rain * (1 - this.current.flake)
 
     this.rainMaterial.opacity = amount * 0.55
     this.rain.visible = amount > 0.02
@@ -666,6 +915,16 @@ export class Environment {
     return this.current.label || 'Clear'
   }
 
+  /** Which season it is now - the name the HUD shows. */
+  getSeasonLabel() {
+    return (this.season && this.season.label) || 'Summer'
+  }
+
+  /** Which season the calendar is in, as a key. */
+  getSeason() {
+    return seasonAt(this.seasonPhase).name
+  }
+
   // -------------------------------------------------------------
   // Manual control
   //
@@ -707,10 +966,29 @@ export class Environment {
     return this
   }
 
-  /** Hand both back to the automatic cycle. */
+  /**
+   * Pick a season. One of the keys of SEASONS.
+   *
+   * Moves the calendar to the START of that season, where it is purely
+   * itself rather than partway into the next - and then holds it. As with
+   * the clock and the weather, this is the same value the calendar would
+   * have reached on its own, so everything downstream sees a season it
+   * cannot tell you chose. The look eases in over a few seconds because the
+   * easing is on the far side of the phase, not on the setting of it.
+   */
+  setSeason(key) {
+    const phase = phaseForSeason(key)
+    if (phase === null) return this
+    this.seasonPhase = phase
+    this.seasonLocked = true
+    return this
+  }
+
+  /** Hand all three back to the automatic cycle. */
   resumeAuto() {
     this.timeLocked = false
     this.weatherLocked = false
+    this.seasonLocked = false
     this.weatherTimer = 0
     this.weatherDuration = 20
     return this
@@ -718,13 +996,13 @@ export class Environment {
 
   /** Is anything being held by hand? The HUD says so when it is. */
   isManual() {
-    return !!(this.timeLocked || this.weatherLocked)
+    return !!(this.timeLocked || this.weatherLocked || this.seasonLocked)
   }
 
   /** Ease the eased values toward the target. Shared by both paths. */
   easeWeather(delta) {
     const k = 1 - Math.exp(-delta * 0.13)
-    for (const key of ['cloud', 'rain', 'wind', 'fogMul', 'lightMul']) {
+    for (const key of ['cloud', 'rain', 'wind', 'fogMul', 'lightMul', 'flake']) {
       this.current[key] += (this.target[key] - this.current[key]) * k
     }
     this.current.label = this.target.label

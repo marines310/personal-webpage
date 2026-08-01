@@ -29,11 +29,15 @@ const SUITES = [
   'worldsanity.mjs',   // World.js read statically: it can't be run here
   'lights.mjs',        // the traffic light cycle: never two greens at once
   'conditions.mjs',    // setting the time and weather by hand
+  'camera.mjs',        // free look, the saved view, reversing, occlusion
+  'vehiclelights.mjs', // headlights, brake lights and indicators, on every kind
+  'seasons.mjs',       // the year: colour, snow, leaves and flowers
   'zebra.mjs',         // crossing bars run along the road, side by side
   'traffic.mjs',       // lanes, right of way, and thirty vehicles on them
   'monorail.mjs',      // the loop, its piers and stations, and the trains
   'ports.mjs',         // quays, shipping lanes, and the fleet at sea
   'airport.mjs',       // the platform at sea, and the aircraft flying to it
+  'garage.mjs',        // the player's garage, and getting out of it
   'helicopters.mjs',   // rooftop and ground pads, and clearance above them
   'stations.mjs',      // fire, police and hospital: bays, doors, coming and going
   'windows.mjs',       // the windows in the building models, read from the models

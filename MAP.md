@@ -1265,6 +1265,141 @@ counts landings, pads used and double-bookings.
 
 ---
 
+## Seasons
+
+Four of them, one per day, so a year takes four days of playing. The conditions
+box top-left has a **Season** row under the weather - pick one and the world
+turns over the next few seconds. "Back to the automatic cycle" hands it back,
+along with the clock and the weather.
+
+**Spring** puts flowers up all over the grass and freshens the green.
+**Summer** is the world exactly as it was before seasons existed - every tint
+is zero, deliberately, so nothing about the map you already have has changed.
+**Autumn** turns the street trees orange, straws the grass, and drops leaves.
+**Winter** kills the colour back to a dormant grey-green, bares the branches
+and lays snow on the lawns, the roofs and the sand.
+
+### Snow
+
+There is a new weather, **Snowing**, and you can pick it at any time of year.
+It is not a separate weather cycle: showers and storms simply *become* snow
+when it is cold enough - always in winter, occasionally in late autumn. The
+season decides what falls out of the cloud, and there is one list of weather
+rather than a summer one and a winter one.
+
+Snow that has settled is a different thing from snow that is falling. Pick
+Snowing in July and the ground goes white over about a minute, then melts off
+more slowly once it stops - which is why a five-second flurry does not
+whitewash an island.
+
+**There is no snow layer.** The ground goes white by being *coloured* white,
+not by having a white surface laid over it. A second surface a few centimetres
+above the first is the same trap that made grass show through the roads three
+times, and it is not worth re-entering for snow.
+
+How much of the white each surface takes is `SNOW_TAKE` in
+`src/systems/seasons.js`: lawns most, then roofs, then sand, then foliage.
+Roads and cliff faces take none - roads in a working town get cleared, and snow
+does not lie on a vertical face.
+
+### Leaves and flowers
+
+Falling leaves and falling snow are the same field of drifting specks with
+different weight, size and colour, which works because no season asks for both.
+Leaves put up about a sixth as many particles as snow: at the same density they
+read as confetti rather than as autumn.
+
+The spring flowers are sown once when the world is built, into whatever gaps
+are left after every road, building and monorail pier - about 1900 clumps of
+three. They **grow**: the whole field is scaled up from ground level by how far
+into spring it is, so through spring they push up and through summer they sink
+back. Out of season they are not drawn at all.
+
+### Changing how it looks
+
+Everything is in **`src/systems/seasons.js`**, and it is a table. Each season
+gives four things a target colour and a strength:
+
+| role | what it is |
+|---|---|
+| `grass` | the lawns - the one that matters most |
+| `foliage` | tree canopies, palm fronds, bushes, planters |
+| `ground` | the sand, and a fraction of the cliff faces |
+| `roof` | every generated building's roof |
+
+Nothing is painted an absolute colour: each material mixes from **its own**
+colour toward the target, so a light frond stays lighter than a dark one in
+every season. Turn a strength down to make a season subtler, up to make it
+stronger. Summer's are all zero, which is what makes summer the world you
+already know.
+
+Palms are registered at a quarter strength on purpose, so SKILLS and BLOG stay
+jungle whatever the month.
+
+`SEASON_BLEND` is how much of each season is spent turning into the next -
+0.25, so three quarters of a season looks like itself.
+
+---
+
+## The camera
+
+**Drag the world to look around. Scroll to zoom.** That is the whole of it if
+you never open the panel.
+
+From the keyboard, if you would rather keep your hands where they are:
+
+| key | what it does |
+|---|---|
+| **Q** / **E** | swing the camera left and right |
+| **R** / **F** | raise it and lower it |
+| **Z** / **X** | zoom out and in |
+| **C** | back to your view |
+| **V** | save this view |
+
+### Saving a view
+
+The **Camera** box, top right, has three buttons. The one that matters is
+**Save this view**.
+
+Normally, if you swing the camera somewhere and then let go, it eases back to
+where it was after a couple of seconds - so looking round a corner is
+temporary and you never have to remember to put it back. Saving changes what
+it eases back TO. So if you find an angle you like, save it, and from then on
+that is your camera: it holds there, and it is where C takes you.
+
+That means there is no "lock the camera" button, because saving already is
+one. **Reset to the default view** throws your saved view away and puts the
+shipped camera back; it only appears once you have something to reset.
+
+Your saved view is kept in the browser, so it survives a reload. Clearing site
+data clears it.
+
+### What it does on its own
+
+- **It looks over your shoulder when you reverse.** Back up for about three
+  quarters of a second and the camera swings round so you can see where you
+  are going, then comes back when you drive forward. Shuffling slowly out of a
+  parking space is too slow to trigger it, on purpose.
+- **It ducks when something is in the way.** If a building, a pier or a cliff
+  gets between you and the camera, the camera comes in closer rather than
+  letting you drive blind. It snaps in and eases back out, because a frame
+  spent easing toward a wall is a frame spent inside it. At the normal height
+  this hardly ever fires - the camera is above most of the town - and at a low
+  angle it fires often.
+- **It still pulls back with speed**, exactly as it always did.
+
+### Changing how it feels
+
+`src/systems/cameraPose.js`. `RIG` is the chase camera itself: how high and
+how far back, standing still and at speed. Below it are the rates (how fast a
+drag or a key moves the view), the limits (how low, how high, how close, how
+far), how long it waits before easing back, and the reverse timings.
+
+Everything else - Camera.js - is easing and a raycast. If you want the camera
+to feel different, the numbers are all in the one file.
+
+---
+
 ## What is *not* in this file
 
 | What | Where |
@@ -1274,7 +1409,10 @@ counts landings, pads used and double-bookings.
 | What props look like | `src/world/World.js` → `addBuilding`, `addPalm`, … |
 | Content text and links | `src/world/ZoneManager.js` |
 | Driving feel | `src/world/Vehicle.js` → `this.params` |
+| Camera feel, limits, free look | `src/systems/cameraPose.js` |
+| Headlights, brake lights, indicators | `src/world/vehicleLights.js` |
 | Day length, weather | `src/systems/Environment.js` |
+| Season colours, snow, leaves, flowers | `src/systems/seasons.js` |
 | 3D model files | `public/models/` — see `MODELS.md` |
 | The airport and its aircraft | `src/world/islandLayout.js` → `AIRPORT_*`, `PLANE_*` |
 | Helipads and helicopters | `src/world/islandLayout.js` → `HELIPAD_*`, `HELI_*` |

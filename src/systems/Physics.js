@@ -236,6 +236,19 @@ export class Physics {
   }
 
   /**
+   * Take a body out of the world.
+   *
+   * Needed because the player can change vehicle, and a bus is not a sedan:
+   * the collider has to change with the body it represents, and Rapier sizes a
+   * collider at creation. Leaving the old one behind would put an invisible
+   * sedan-shaped obstacle wherever you last swapped.
+   */
+  removeBody(body) {
+    if (!this.world || !body) return
+    this.world.removeRigidBody(body)
+  }
+
+  /**
    * Is there ground within `maxDistance` below this body?
    *
    * Used so the car only accelerates while it has something to push

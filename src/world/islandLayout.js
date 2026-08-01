@@ -23,6 +23,7 @@ import {
   pointInPolygon
 } from './shapes.js'
 import { ISLANDS, BRIDGES } from './mapData.js'
+import { SIGNAL_HOLD, turnDirection } from './vehicleLights.js'
 import {
   sampleSpline,
   bowedPath,
@@ -2717,6 +2718,12 @@ export function makeTraffic(network, fleet = TRAFFIC_FLEET, stops = null,
         wide: TRAFFIC_WIDTHS[kind],
         dwell: 0,
         nextStop: -1,
+        // Indicators: -1 left, 0 off, +1 right, and how long the lamp has
+        // left to run. Given a number here rather than left undefined, so
+        // nothing downstream has to guard against a vehicle that has not yet
+        // turned a corner.
+        signal: 0,
+        signalFor: 0,
         // A settled heading, so the first frame doesn't snap it round
         heading: pointAlong(lane, at).heading,
         siren: kind === 'police' || kind === 'ambulance' || kind === 'fire',
@@ -3056,6 +3063,12 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null) {
     // ever, and a queue built up behind it.
     let onward = null
 
+    // The indicator runs down here; it is set at the crossing below.
+    if (v.signalFor > 0) {
+      v.signalFor -= delta
+      if (v.signalFor <= 0) { v.signalFor = 0; v.signal = 0 }
+    }
+
     if (v.speed > 0) {
       const step = v.speed * delta
       const crossing = v.at + step >= lane.length && lane.next.length > 0
@@ -3165,6 +3178,29 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null) {
         v.at = lane.length
         v.speed = 0
       } else {
+        // The indicator, set from the turn the vehicle is ACTUALLY taking.
+        //
+        // It would be better to signal before the junction, and that was
+        // built first: the onward lane was chosen a couple of seconds early
+        // and remembered, so the same function made the same choice with the
+        // same randomness, only sooner. It read correctly and it cost
+        // nothing - except that moving the `v.rand()` draws re-shuffled every
+        // vehicle's route, and one car in the re-shuffled 94-vehicle run
+        // crossed a red light. Measured over four durations the old code
+        // never did and the new one did twice. A red light is one of only
+        // three things allowed to stop a vehicle here, so an indicator is not
+        // worth paying for with one.
+        //
+        // Signalling from the committed turn instead costs the simulation
+        // exactly nothing - the traffic numbers are bit-identical to before
+        // this existed - and looks almost the same, because the heading eases
+        // round at 2.6 rad/s and the car is still visibly turning for most of
+        // the time the lamp is lit.
+        const turn = turnDirection(
+          pointAlong(lane, lane.length).heading,
+          pointAlong(lanes[onward], 0).heading)
+        if (turn) { v.signal = turn; v.signalFor = SIGNAL_HOLD }
+
         v.lane = onward
         v.at = Math.min(over, lanes[onward].length)
         v.nextStop = -1
@@ -6836,4 +6872,167 @@ export function helicopterPosition(pads, machine, delta = 0) {
     pitch: machine.phase === 'cruise' ? 0.12 : 0,
     flying: machine.phase !== 'parked'
   }
+}
+
+// ---------------------------------------------------------------------------
+// THE PLAYER'S GARAGE
+// ---------------------------------------------------------------------------
+
+/**
+ * The garage the player's vehicle comes out of, and goes back into to change.
+ *
+ * Sized off the widest thing that has to fit through the door, which is the
+ * fire engine, plus room either side. That is the fire station's lesson (item
+ * 22) written down once: `doorWidth` there is 5.6 against a 2.4-wide engine
+ * because the run-in has to be straight and square to the opening, and nothing
+ * may swing near a door frame. Same rule, same reason.
+ */
+export const GARAGE_DOOR_WIDTH = Math.max(...Object.values(TRAFFIC_WIDTHS)) + 3.2
+export const GARAGE_WIDTH = GARAGE_DOOR_WIDTH + 6
+export const GARAGE_DEPTH = Math.max(...Object.values(TRAFFIC_LENGTHS)) + 6
+export const GARAGE_HEIGHT = 7
+
+/** How far in front of the doors a vehicle finishes rolling out. */
+export const GARAGE_APRON = 14
+
+let garageCache = null
+
+/**
+ * Is this garage, and the drive out of it, clear of the monorail?
+ *
+ * Checked along the whole roll-out, not just at the building: the point of a
+ * garage is getting out of it.
+ */
+function clearOfMonorail(island, localX, localZ, heading) {
+  const route = getMonorailRoute()
+  if (!route) return true
+
+  const points = route.points || route
+  const need = MONORAIL_CORRIDOR + GARAGE_DOOR_WIDTH / 2 + 2
+
+  // The building's own footprint, and then every step of the way out.
+  const steps = []
+  for (let t = -0.5; t <= 1.05; t += 0.05) {
+    steps.push({
+      x: island.x + localX + Math.sin(heading) * (GARAGE_DEPTH / 2 + GARAGE_APRON) * t,
+      z: island.z + localZ + Math.cos(heading) * (GARAGE_DEPTH / 2 + GARAGE_APRON) * t
+    })
+  }
+
+  for (const step of steps) {
+    for (const p of points) {
+      if (Math.hypot(p.x - step.x, p.z - step.z) < need) return false
+    }
+  }
+
+  return true
+}
+
+/**
+ * Where it stands: on the hub, on the plaza, facing the way out.
+ *
+ * Derived rather than written into the map, like everything else. Three things
+ * decide it and they are checked rather than assumed:
+ *
+ *  1. **It faces the nearest road**, so rolling out points you at somewhere to
+ *     go rather than at the sea.
+ *  2. **It is clear of the fountain.** The hub's plaza has one at
+ *     PLAZA_FOUNTAIN_OFFSET, and a garage dropped on the plaza centre would
+ *     sit on top of it.
+ *  3. **The building's RECTANGLE is clear of every road** - not the circle
+ *     round it. Testing the circle is what once placed no fire stations at all
+ *     on a town with streets every 34 units.
+ */
+export function getPlayerGarage() {
+  if (garageCache) return garageCache
+
+  const island = getIsland('hub') || ISLANDS[0]
+  if (!island) return null
+
+  const roads = getIslandRoads(island)
+  const ring = getIslandRing(island)
+  if (!ring) return null
+
+  // The plaza, if there is one - that is the middle of the island and the
+  // place a player would look for it.
+  const plaza = (island.districts || []).find(d => d.type === 'plaza')
+  const centre = { x: plaza ? (plaza.x || 0) : 0, z: plaza ? (plaza.z || 0) : 0 }
+
+  // Sweep round the plaza for a spot that is clear of the fountain and whose
+  // whole footprint is off the roads.
+  const half = Math.hypot(GARAGE_WIDTH, GARAGE_DEPTH) / 2
+  const fountain = { x: centre.x, z: centre.z + PLAZA_FOUNTAIN_OFFSET }
+  const reach = plaza ? Math.max(10, plaza.size - GARAGE_DEPTH / 2 - 2) : 18
+
+  let best = null
+
+  for (let ring0 = 0.45; ring0 <= 1.0; ring0 += 0.15) {
+    for (let a = 0; a < 360; a += 10) {
+      const angle = (a * Math.PI) / 180
+      const localX = centre.x + Math.sin(angle) * reach * ring0
+      const localZ = centre.z + Math.cos(angle) * reach * ring0
+
+      // Clear of the fountain, by both their half-sizes.
+      if (Math.hypot(localX - fountain.x, localZ - fountain.z) < half + 4) continue
+
+      // Face the nearest road, so the way out is obvious.
+      const near = nearestOnPath(ring, localX, localZ)
+      if (!near) continue
+      const heading = Math.atan2(near.x - localX, near.z - localZ)
+
+      if (!rectangleIsClear(island, roads, localX, localZ, heading,
+                           GARAGE_WIDTH, GARAGE_DEPTH, 3)) continue
+
+      // And clear of the monorail - the building AND the way out.
+      //
+      // This was missed first time round, and it is the same shape of mistake
+      // as everything else on the tally: the siting asked about roads and
+      // about the fountain, and never asked about the thing standing over the
+      // plaza. The first site put the roll-out 3.2 units from the beam's
+      // centre line, inside its 6-unit corridor, where a pier stands every 27
+      // units. Piers slide along the beam to miss ROADS; an apron is not a
+      // road, so one could have stood squarely in the doorway.
+      if (!clearOfMonorail(island, localX, localZ, heading)) continue
+
+      // The apron in front has to be clear too, or you roll out into a wall.
+      const apronX = localX + Math.sin(heading) * (GARAGE_DEPTH / 2 + GARAGE_APRON / 2)
+      const apronZ = localZ + Math.cos(heading) * (GARAGE_DEPTH / 2 + GARAGE_APRON / 2)
+      if (!rectangleIsClear(island, roads, apronX, apronZ, heading,
+                            GARAGE_DOOR_WIDTH, GARAGE_APRON, 1)) continue
+
+      const toRoad = Math.hypot(near.x - localX, near.z - localZ)
+      const score = -toRoad
+      if (!best || score > best.score) {
+        best = { localX, localZ, heading, score, toRoad }
+      }
+    }
+  }
+
+  if (!best) return (garageCache = null)
+
+  garageCache = {
+    island: island.id,
+    x: island.x + best.localX,
+    z: island.z + best.localZ,
+    localX: best.localX,
+    localZ: best.localZ,
+    heading: best.heading,
+    width: GARAGE_WIDTH,
+    depth: GARAGE_DEPTH,
+    height: GARAGE_HEIGHT,
+    doorWidth: GARAGE_DOOR_WIDTH,
+    // Where a vehicle sits inside, and where it finishes rolling out.
+    bay: {
+      x: island.x + best.localX,
+      z: island.z + best.localZ,
+      heading: best.heading
+    },
+    apron: {
+      x: island.x + best.localX + Math.sin(best.heading) * (GARAGE_DEPTH / 2 + GARAGE_APRON),
+      z: island.z + best.localZ + Math.cos(best.heading) * (GARAGE_DEPTH / 2 + GARAGE_APRON),
+      heading: best.heading
+    }
+  }
+
+  return garageCache
 }

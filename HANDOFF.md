@@ -95,12 +95,16 @@ src/world/curves.js        Splines, smoothing, resampling, ribbon meshes.
 src/world/shapes.js        Island outline polygons and polygon geometry.
 src/world/World.js         Builds the 3D world from the above.
 src/world/ZoneManager.js   CV content and the zone markers.
-src/systems/               Camera, Inputs, Physics, Assets, Environment.
+src/systems/               Camera, Inputs, Physics, Assets, Environment,
+                           plus three files with no THREE in them, so that a
+                           test can run them: seasons.js (the year),
+                           cameraPose.js (where the camera sits) and
+                           world/vehicleLights.js (what the lamps are doing).
 
 map-editor.html            The whole editor: one file, Vite entry, imports
                            the real modules from src/world/.
 
-tests/                     30 suites, ~865 checks. `npm test`.
+tests/                     35 suites, ~1150 checks. `npm test`.
 MAP.md                     How to edit the world. Written for Mike.
 DEPLOY.md                  How to publish. Written for Mike.
 ROADMAP.md                 Longer-term wishlist.
@@ -245,7 +249,7 @@ than a measurement or a reference, that is the moment to stop and ask.
 ## Testing
 
 ```bash
-npm test          # all 30 suites, ~865 checks
+npm test          # all 35 suites, ~1150 checks
 ```
 
 There's no framework. Each file in `tests/` is a plain script that prints
@@ -1242,6 +1246,214 @@ HTTP, and checks every asset the published site requests actually returns
       deleted. It now also finds ground under the line, confirms the ceiling
       there is 5.1 units against the 15 a pad needs, and confirms nothing was
       placed there.
+
+37. **Pick your vehicle, and a garage to change it in.** Done 31 July. You now
+    start in front of a garage on the hub and scroll the whole fleet with
+    A/D or the arrows - **sedan, convertible, pickup, SUV, police, ambulance,
+    fire, bus** - then drive out in whichever you chose. Driving back into the
+    bay reopens the picker, on the vehicle you arrived in rather than reset to
+    a sedan. `src/ui/VehicleSelector.js`, `tests/garage.mjs`, 12 checks.
+
+    The preview **is** the vehicle - `setKind()` rebuilds mesh, collider and
+    wheelbase together at the current position - so there is nothing to keep
+    in step between what you looked at and what you drove away in.
+
+    - **The garage is sized off the fleet, not off a number that looked
+      right.** Door 5.7 (widest vehicle + 2), depth 17 (longest + 6). Add
+      something bigger to `TRAFFIC_LENGTHS` and the building grows with it.
+      Item 22's lesson, applied before it could bite again.
+    - **The first site put the roll-out 3.2 units from the monorail beam**,
+      inside its 6-unit corridor, where a pier stands every 27 units. The
+      siting asked about roads and about the fountain and never about the
+      thing standing over the plaza. Piers slide to miss *roads*, and an
+      apron is not a road - so one could have stood in the doorway.
+      `clearOfMonorail()` now, and the test walks the whole drive rather
+      than checking only the building.
+
+    **The bus now drives like a bus.** `WHEELBASE_RATIO` is 0.7 - the axle
+    spacing the sedan already had, expressed as a fraction of its length - so
+    wheelbase follows length instead of being a constant. The bus gets 7.70
+    against the sedan's 3.08, which is a 9.1-unit turning circle against 3.7.
+    The sedan is unchanged to the last decimal, which is the point: the ratio
+    was derived from it.
+
+38. **Seasons.** Done 31 July. Spring, summer, autumn and winter, one season
+    per day so the year is four days long, with a **Season** row in the
+    conditions box beside the weather. `src/systems/seasons.js`,
+    `tests/seasons.mjs`, 85 checks.
+
+    - **The maths has no THREE in it**, so the whole year can be run in a
+      test. Environment turns the numbers into particles and a call to
+      `World.setSeason()`; World turns them into material colours. Neither
+      decides anything - the same split as islandLayout and World.
+    - **Nothing paints an absolute colour.** Each role (`grass`, `foliage`,
+      `ground`, `roof`) gets a target colour and an amount, and every material
+      mixes from ITS OWN base toward that target. The world is not one green -
+      two frond colours, a bush green, a dark grass - and setting them all to
+      "autumn orange" would flatten variety the map already has. It also makes
+      **summer the identity**: every amount is zero, so the world in summer is
+      exactly the world before seasons existed. The test says so.
+    - **The blend is weighted by the amounts, and that is the subtle line.**
+      Summer's amount is zero, so its colour is never read and is written as
+      black. A straight colour mix drags the grass toward that black halfway
+      through August, and the bug looks like the sun going out. The test
+      drives 4000 samples through the year and checks the grass never goes
+      darker than the darkest season it visits.
+    - **Snow is a covering, not a colour in the table.** Written the other way
+      round first, with the white folded into winter's grass tint - which made
+      `snow` a number nothing read: eased every frame, handed to World every
+      frame, connected to nothing, so a flurry out of season settled on
+      nothing at all. Winter's own tints are now dormant grass and bare
+      branches, and `SNOW_TAKE` says how much lying snow each surface holds
+      (lawn 0.88, roof 0.72, sand 0.45, foliage 0.35; roads and cliffs none).
+    - **There is no snow mesh.** The ground goes white by being coloured
+      white. A white surface laid over the grass is item 29 exactly, and the
+      grass has already shown through the tarmac three times for that reason.
+    - **SNOWING is a real weather**, reached by substitution rather than by a
+      second chain: `showers` and `storm` become `snowing` when `chill` says
+      so - always in winter, about one time in seven in late autumn. One
+      chain, and the season decides what falls out of the cloud. `flake`
+      rides alongside `rain`, so `rain * (1 - flake)` streaks down as water
+      and `rain * flake` drifts down as snow; halfway between, for the few
+      seconds it eases, is sleet.
+    - **Falling leaves and falling snow are one particle field**, and they can
+      be because no season asks for both - which the test asserts rather than
+      assumes. Leaves put up a sixth of the flakes snow does: at equal density
+      they read as confetti, which is what the first pass looked like.
+    - **Spring flowers grow rather than appear.** About 1900 sown sites, three
+      flowers each, two instanced meshes for the whole world, scaled from
+      their base by the season's flower amount so they push up out of the
+      ground and die back into it. The matrices are rewritten only when that
+      amount actually moves - a few seconds a year.
+
+    Two things want Mike's eye rather than more measurement: the sky under
+    SNOWING is dark (the existing cloud shader, same as storm) against a
+    bright snowy ground, and the palms take only a quarter of the season so
+    SKILLS and BLOG stay jungle. Both are taste, not correctness.
+
+39. **The camera you can move.** Done 31 July. Drag the world to look around,
+    wheel to zoom, Q/E/R/F/Z/X for the same from the keyboard, and a **Camera**
+    box top right to save a view you like. `src/systems/cameraPose.js`,
+    `tests/camera.mjs`, 80 checks.
+
+    - **The maths left Camera.js.** Camera.js needs a browser - THREE, a
+      canvas, a physics world - so everything with a decision in it is in
+      `cameraPose.js`, which has no THREE. Same split as islandLayout/World
+      and seasons/Environment.
+    - **The guarantee is section 1 of the test.** The old positioning code is
+      copied into the test verbatim, and the new code has to agree with it at
+      every speed and every angle: 1525 positions, worst disagreement 7e-15.
+      Adding free look fails silently by *retuning the driving feel*, and this
+      is what stops that happening by accident.
+    - **The pose is three OFFSETS, not three absolutes**: yaw round from
+      behind, pitch added to the rig's own elevation, zoom as a multiplier.
+      Absolutes would fight the speed pull-back - you would set a nice height
+      standing still and lose it the moment you accelerated - and at (0, 0, 1)
+      the polar round trip is the identity, which is what makes the guarantee
+      above possible at all.
+    - **Default, saved, live.** Free look moves `live`; left alone it eases
+      back to `saved` after 2.5s; V makes the live view the saved one; C snaps
+      there. So "make it stick where I put it" and "let it drift back" are the
+      same mechanism rather than a mode, and someone who never saves anything
+      still gets the shipped camera back.
+    - **Pitch is clamped on the TOTAL angle, not the offset.** The rig's own
+      elevation moves with speed, so clamping the offset would make "as low as
+      it goes" a different angle at 5mph and at 50, and the camera would sink
+      into the road on a fast straight.
+    - **Occlusion asks the physics world.** One `castRay` a frame against the
+      colliders the car itself hits, so the camera and the car agree on what
+      is solid. Raycasting meshes instead would have it stopped by a cloud, a
+      light pool or a pane of glass, and slide through a collider with no mesh.
+      Measured: at a normal or raised pitch the camera sees over the town and
+      is almost never blocked, which is correct; at a lowered pitch 4 of 48
+      bearings on the hub are blocked and it pulls in from 30.6 to 16.0.
+
+    Three bugs, all caught by a check rather than by looking:
+
+    - **The occlusion floor was applied in the wrong order.** `max(floor,
+      min(wanted, hit))` reads fine and is wrong: zoom in to two units, put a
+      wall at 1.9, and it pushed the camera OUT to 2.6 - past where it was
+      asked to be and into the wall it was avoiding. Occlusion may only ever
+      bring the camera closer.
+    - **The tail of every drag was thrown away.** Reading the accumulated
+      pixels only `if (dragging)` meant the movement between the last frame
+      and the mouseup was counted and then never spent. Invisible at sixty
+      frames a second and half the drag at ten - a bug that would only ever
+      appear on a slow machine.
+    - **`sanitisePose` had been `clampPose`.** The stored pitch is an OFFSET
+      and may be negative; clamping it as though it were a total turned every
+      saved low view into a raised one on reload.
+
+    The reverse view swings the camera round after 0.75s of actually reversing
+    and comes back after 0.35s of not - different on each edge because a blip
+    of reverse is meaningless and the road ahead is not. Below 1.6 units/s
+    nothing happens at all, so shuffling out of a parking space never spins
+    the world.
+
+40. **Lights that work on every vehicle, and indicators.** Done 31 July. Two
+    headlights, two tail lights and four amber indicators on every kind,
+    driven by one function. `src/world/vehicleLights.js`,
+    `tests/vehiclelights.mjs`, 68 checks.
+
+    **The bug Mike found.** There were two lighting systems: the traffic
+    registered its headlights on the world's night-emissive list, and the
+    player's car had its own materials and its own `updateLights()`. They
+    already disagreed - the player's answered to weather and the traffic's
+    only to nightfall, so a storm at two in the afternoon lit the player's car
+    and nothing else on the road. Then `setKind()` started rebuilding the
+    player's mesh from the traffic builder, and `this.headlightMaterial` went
+    on pointing at the **sedan's** material from before the swap. Every
+    vehicle out of the garage but the sedan drove around unlit while the code
+    carefully lit a mesh that was no longer in the scene. The lamps are read
+    off the mesh each frame now: a reference you re-read cannot go stale.
+
+    Three more faults fell out of unifying the two:
+
+    - **Every non-sedan was floating.** Traffic meshes are built standing on
+      the ground; the player's is drawn at the chassis centre. Nothing said
+      so and nothing converted - measured at 0.47 units for a saloon and 0.65
+      for the bus. Now 0.03 to 0.21.
+    - **And carrying eight wheels.** The player added four sedan-sized wheels
+      on top of whatever body it was given, sunk into the road under the bus.
+      The traffic builder records its own wheels on the mesh; the player uses
+      those.
+    - **Changing vehicle swung the car round to face north.** `this.heading`
+      was stored and restored across `setKind` and nothing ever wrote it. It
+      is read from the body now, and the body's rotation is restored with it.
+
+    **Indicators.** Amber at all four corners, blinking at 1.4Hz with a
+    per-vehicle phase offset so a queue at a red doesn't blink in unison. The
+    player's follow the steering, with `,` and `.` as a stalk that overrides
+    them and self-cancels once the car has actually gone round.
+
+    Two sign bugs, and how they were caught:
+
+    - **`turnDirection` was backwards, and the test agreed with it.** The sign
+      was reasoned from a compass - "east is +PI/2, so turning right increases
+      the heading" - which is false here, because the car's nose is +Z and its
+      right is therefore **-X**. Every AI indicator was on the wrong side. The
+      test compared the function's answer against the function's answer
+      computed from the lane headings either side of a junction: both were
+      flipped together and it passed perfectly. What settled it was a cross
+      product against the car's real direction of travel in the running game.
+      The suite now checks handedness geometrically, over 148 junction turns.
+    - **The stalk never self-cancelled**, because "how far have I turned" was
+      a wrapped difference of two headings. That cannot describe more than
+      half a turn and its sign flips past 180 degrees: a car that had swung
+      213 degrees to the right reported -2.56 radians, which reads as a left
+      turn. Accumulating the small per-frame deltas has neither problem.
+
+    **What was tried and rejected.** The AI should signal BEFORE a junction,
+    and that was built: the onward lane was chosen a couple of seconds early
+    by the same function with the same randomness, and remembered. It worked.
+    It also moved every vehicle's `rand()` draws, which re-shuffled every
+    route in the city, and one car in the re-shuffled 94-vehicle run crossed a
+    red light - measured over four durations where the old code never did. A
+    red light is one of only three things allowed to stop a vehicle here. So
+    it signals from the turn it is committed to and already taking, and the
+    traffic numbers are **bit-identical** to before indicators existed: min
+    97, median 704, max 2448, 37 relocations. That equality is the check that
+    this cost the simulation nothing.
 
 **Still open after 31 July:**
 

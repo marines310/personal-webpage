@@ -36,6 +36,7 @@
           <span id="cond-clock">06:00</span>
         </div>
         <div class="cond-weather" id="cond-weather">Clear</div>
+        <div class="cond-season" id="cond-season">Summer</div>
         <div class="cond-manual" id="cond-manual">held</div>
       </button>
 
@@ -60,6 +61,15 @@
           <button type="button" data-weather="cloudy">Cloudy</button>
           <button type="button" data-weather="showers">Showers</button>
           <button type="button" data-weather="storm">Storm</button>
+          <button type="button" data-weather="snowing">Snowing</button>
+        </div>
+
+        <div class="cond-label">Season</div>
+        <div class="cond-row" id="cond-seasons">
+          <button type="button" data-season="spring">Spring</button>
+          <button type="button" data-season="summer">Summer</button>
+          <button type="button" data-season="autumn">Autumn</button>
+          <button type="button" data-season="winter">Winter</button>
         </div>
 
         <button type="button" id="cond-auto" class="cond-auto">
@@ -68,11 +78,42 @@
       </div>
     </div>
 
+    <!-- Camera. Drag the world to look around; this is where you keep a view. -->
+    <div id="camera-box">
+      <button id="cam-toggle" type="button" aria-expanded="false"
+              aria-controls="cam-panel" title="Camera controls">
+        <span class="cam-icon">&#9673;</span>
+        <span class="cam-label">Camera</span>
+        <span class="cam-state" id="cam-state">default</span>
+      </button>
+
+      <div id="cam-panel" class="hidden">
+        <p class="cam-help">
+          Drag to look around &middot; scroll to zoom
+        </p>
+        <p class="cam-help cam-keys">
+          <b>Q</b>/<b>E</b> swing &middot; <b>R</b>/<b>F</b> raise &middot;
+          <b>Z</b>/<b>X</b> zoom
+        </p>
+
+        <button type="button" id="cam-save">Save this view <b>V</b></button>
+        <button type="button" id="cam-recentre">Back to my view <b>C</b></button>
+        <button type="button" id="cam-default" class="cam-reset">
+          Reset to the default view
+        </button>
+
+        <p class="cam-help cam-note">
+          A saved view is where the camera returns to when you let go of it.
+        </p>
+      </div>
+    </div>
+
     <!-- Controls hint -->
     <div id="controls-hint">
       <p>WASD or Arrow Keys to drive</p>
       <p>SHIFT to boost &middot; SPACE to brake</p>
-      <p>C to re-centre the camera</p>
+      <p>Drag to look &middot; scroll to zoom &middot; C to re-centre</p>
+      <p>&#44; and &#46; to indicate</p>
     </div>
 
     <!-- Zone content panels -->

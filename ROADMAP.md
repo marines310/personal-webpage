@@ -400,8 +400,47 @@ wrong in the middle of this one.
 ### Gameplay
 - [ ] Collectibles scattered around the map
 - [ ] Lap timer or small challenge course
-- [ ] Working headlights plus a day/night toggle
+- [x] Working headlights plus a day/night toggle
 - [ ] Horn
+
+---
+
+## Holiday moments
+
+Asked for 31 July. Not built - recorded here so it does not get lost.
+
+Pick a holiday and the world dresses itself for it, the way picking a season
+already changes the ground and the trees.
+
+| Holiday | What appears |
+|---|---|
+| New Year | fireworks |
+| Fourth of July | fireworks |
+| Easter | Easter eggs scattered about, and Easter bunnies |
+| Halloween | Halloween decorations |
+| Thanksgiving | turkeys, and Thanksgiving decorations |
+| Christmas | Christmas decorations and lights |
+
+Most of the machinery already exists. `seasons.js` tints registered materials
+by role and grows an instanced field of props up out of the ground; between
+them those two cover nearly everything in the table. Notes for whoever builds
+it:
+
+- **Fireworks are the only genuinely new thing.** The rest is props on the
+  ground or on buildings, which the spring flower field already shows how to
+  do cheaply. Fireworks want a particle burst high over the water, and the
+  drift field in `Environment.js` is the nearest existing machinery.
+- **Christmas lights belong on `registerNightLight`**, not in a new emissive
+  system - that list is exactly for things that glow after dark, and it
+  already fades them up at dusk.
+- **A holiday is not a season, and must not be one.** They have to compose:
+  Christmas happens in winter and wants both. So a holiday is its own layer
+  over the seasonal tint rather than another row in the seasons table -
+  otherwise picking one silently undoes the other, and the bug looks like the
+  snow disappearing when you put the decorations up.
+- Whether a holiday follows the real calendar or is picked by hand is a
+  decision nobody has made yet. The conditions panel is the pattern for
+  "pick it and it eases in".
 
 ---
 

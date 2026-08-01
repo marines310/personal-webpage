@@ -245,6 +245,141 @@ body {
   color: rgba(255, 255, 255, 0.66);
 }
 
+/* ---------------------------------------------------------------
+   Camera box
+   Top right, opposite the conditions box, so the two controls you can
+   open sit in the two corners you aren't driving through.
+   --------------------------------------------------------------- */
+#camera-box {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  pointer-events: auto;
+  text-align: right;
+}
+
+#cam-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  padding: 8px 12px;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+#cam-toggle:hover {
+  background: rgba(0, 0, 0, 0.56);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+#camera-box .cam-icon { font-size: 0.9rem; opacity: 0.75; }
+
+#camera-box .cam-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+}
+
+/* Says whether you're on the default view, your saved one, or somewhere
+   you've dragged to that isn't saved yet - the last being the only case
+   where the panel has something you might want to press. */
+#camera-box .cam-state {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+#camera-box.unsaved .cam-state { color: #ffd27f; }
+
+#cam-panel {
+  margin-top: 8px;
+  width: 214px;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+  padding: 12px 14px 14px;
+  color: rgba(255, 255, 255, 0.85);
+  text-align: left;
+}
+
+#cam-panel.hidden { display: none; }
+
+#cam-panel .cam-help {
+  margin: 0 0 8px;
+  font-size: 0.66rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+#cam-panel .cam-help b {
+  color: rgba(255, 255, 255, 0.85);
+  font-weight: 600;
+}
+
+#cam-panel .cam-keys { margin-bottom: 12px; }
+
+#cam-panel .cam-note {
+  margin: 12px 0 0;
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+#cam-panel button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 5px;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 6px 9px;
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+#cam-panel button b {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+#cam-panel button:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+#cam-panel .cam-reset {
+  margin-top: 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* Nothing to reset to, so don't offer it. */
+#camera-box.is-default .cam-reset { display: none; }
+
+/* The season sits under the weather and quieter than it: it changes once
+   every ten minutes rather than every minute, so it should not shout. */
+#conditions .cond-season {
+  margin-top: 2px;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  color: rgba(255, 255, 255, 0.42);
+}
+
 /* Controls Hint */
 #controls-hint {
   position: fixed;
@@ -379,4 +514,90 @@ body {
     width: 100px;
     height: 100px;
   }
+}
+
+
+/* ---------------------------------------------------------------------------
+   The vehicle picker
+   ------------------------------------------------------------------------ */
+
+#vehicle-selector {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 40;
+}
+
+.vs-inner {
+  pointer-events: auto;
+  cursor: pointer;
+  margin-bottom: 8vh;
+  padding: 1.1rem 1.6rem 1rem;
+  border-radius: 14px;
+  background: rgba(20, 28, 38, 0.82);
+  backdrop-filter: blur(8px);
+  color: #eef4fa;
+  text-align: center;
+  font-family: system-ui, -apple-system, sans-serif;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+
+.vs-title {
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  opacity: 0.6;
+  margin-bottom: 0.5rem;
+}
+
+.vs-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.1rem;
+}
+
+.vs-name {
+  min-width: 11rem;
+  font-size: 1.45rem;
+  font-weight: 600;
+}
+
+.vs-arrow {
+  pointer-events: auto;
+  width: 2.1rem;
+  height: 2.1rem;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #eef4fa;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.vs-arrow:hover { background: rgba(255, 255, 255, 0.2); }
+
+.vs-dots {
+  display: flex;
+  gap: 0.35rem;
+  justify-content: center;
+  margin: 0.7rem 0 0.55rem;
+}
+
+.vs-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.vs-dot.on { background: #4facfe; }
+
+.vs-hint {
+  font-size: 0.72rem;
+  opacity: 0.55;
 }
