@@ -246,6 +246,109 @@ body {
 }
 
 /* ---------------------------------------------------------------
+   Mission banner and progress bar
+   Top centre: the one place nothing else in the HUD occupies, and where
+   you are already looking when you are driving.
+   --------------------------------------------------------------- */
+#mission {
+  position: fixed;
+  top: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  text-align: center;
+  width: min(420px, 60vw);
+}
+
+#mission.hidden { display: none; }
+
+#mission-title {
+  display: inline-block;
+  padding: 8px 18px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 2.4px;
+  color: #ffd9a8;
+  background: rgba(28, 8, 0, 0.62);
+  border: 1px solid rgba(255, 150, 60, 0.35);
+  border-radius: 6px;
+  backdrop-filter: blur(10px);
+}
+
+/* The arrow. Points at the fire in SCREEN terms - straight up means dead
+   ahead - so it rotates as you turn, which is the whole point of it. */
+#mission-arrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 8px;
+  padding: 5px 13px 5px 10px;
+  background: rgba(28, 8, 0, 0.55);
+  border: 1px solid rgba(255, 150, 60, 0.28);
+  border-radius: 20px;
+  backdrop-filter: blur(10px);
+}
+
+#mission-arrow.hidden { display: none; }
+
+#mission-arrow-point {
+  display: inline-block;
+  font-size: 1.15rem;
+  line-height: 1;
+  color: #ff9a4d;
+  /* The glyph points RIGHT at rest, so it is pre-turned to point up. The
+     rotation the game supplies is added to that, not instead of it. */
+  transform: rotate(-90deg);
+  transition: transform 0.08s linear;
+}
+
+#mission-arrow-distance {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  color: rgba(255, 255, 255, 0.75);
+  font-variant-numeric: tabular-nums;
+}
+
+#mission-bar {
+  margin: 10px auto 0;
+  padding: 9px 14px 11px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  backdrop-filter: blur(10px);
+}
+
+#mission-bar.hidden { display: none; }
+
+#mission-bar-label {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 1.6px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 6px;
+}
+
+#mission-bar-track {
+  height: 9px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+#mission-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: #ff8a3c;
+  border-radius: 5px;
+  transition: width 0.15s linear;
+}
+
+/* On station: the bar is filling, and it should be obvious that it is. */
+#mission.on-station #mission-bar-fill { background: #6ee07a; }
+
+/* ---------------------------------------------------------------
    Camera box
    Top right, opposite the conditions box, so the two controls you can
    open sit in the two corners you aren't driving through.

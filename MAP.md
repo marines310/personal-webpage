@@ -1400,7 +1400,45 @@ to feel different, the numbers are all in the one file.
 
 ---
 
-## What is *not* in this file
+## The fire
+
+**Every two minutes** a building catches light. **FIRE AT (island)** appears at
+the top of the screen, and a column of smoke goes up from the roof - that is
+how you find it, so it is drawn big enough to see from the next island.
+
+Under the banner is an **arrow**, with how far away the fire is. It points in
+screen terms - straight up means dead ahead - and turns as you turn, so you can
+follow it round a corner. It is aimed from the camera rather than from the car,
+which is why swinging the camera round to look over your shoulder swings the
+arrow with it instead of leaving it pointing at nothing. The banner clears
+after a few seconds; the arrow stays for as long as the fire burns.
+
+**Driving the fire engine**, it is yours to put out. Pull up outside (within
+about sixteen units - anywhere along the frontage will do) and a ladder swings
+out and starts playing water on it. A **FIRE CONTAINMENT** bar fills while you
+are there and turns green to say you are on station; hold it for fourteen
+seconds and the fire is out. Drive off and the bar slips back, though more
+slowly than it filled, so overshooting and coming round again costs you
+something rather than everything.
+
+The AI engines turn out too - up to three of them, from wherever the road
+network says they are nearest - but **they cannot finish it while you are the
+one in a fire engine.** That is deliberate. If they could, the game would play
+itself while you watched.
+
+**Driving anything else**, they can, and do. You see the smoke and the
+response and there is no bar, because it is not your fire to contain. Left to
+themselves the engines take around four minutes to deal with something on the
+far side of the map; they have to drive there through the traffic like
+everybody else.
+
+A fire nobody ever attends burns out on its own after seven minutes, so the
+world does not slowly fill up with them.
+
+The numbers are all in `src/world/fireGame.js`: how often (`FIRE_GAP_MIN` and
+`FIRE_GAP_MAX`, both 120 - set them apart if you would rather it were
+irregular), how close counts as on station, how long you have to hold it, and
+how fast the bar slips back.
 
 | What | Where |
 |---|---|
@@ -1411,6 +1449,7 @@ to feel different, the numbers are all in the one file.
 | Driving feel | `src/world/Vehicle.js` → `this.params` |
 | Camera feel, limits, free look | `src/systems/cameraPose.js` |
 | Headlights, brake lights, indicators | `src/world/vehicleLights.js` |
+| The fire callout | `src/world/fireGame.js` |
 | Day length, weather | `src/systems/Environment.js` |
 | Season colours, snow, leaves, flowers | `src/systems/seasons.js` |
 | 3D model files | `public/models/` — see `MODELS.md` |

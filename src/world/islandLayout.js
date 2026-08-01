@@ -2498,6 +2498,35 @@ function findStationSite(network, island, spec, taken, route) {
  *
  * Infinity for a lane with no route home at all.
  */
+/**
+ * Which lane passes closest to a point, and how to get there from anywhere.
+ *
+ * Used to send fire engines to a fire. Deliberately the SAME pair of
+ * functions that already send a service vehicle home at the end of its
+ * shift - a callout is "drive to that lane", which is a problem this file
+ * solved once already, and solving it twice is how the two answers start
+ * disagreeing.
+ */
+export function routeToPoint(network, x, z) {
+  let best = -1
+  let bestGap = Infinity
+
+  network.lanes.forEach((lane, i) => {
+    // Sampled along the lane rather than judged by its ends: a long lane can
+    // pass within a few units of a building while both of its ends are half
+    // an island away.
+    const steps = Math.max(2, Math.ceil(lane.length / 8))
+    for (let s = 0; s <= steps; s++) {
+      const at = pointAlong(lane, (lane.length * s) / steps)
+      const gap = Math.hypot(at.x - x, at.z - z)
+      if (gap < bestGap) { bestGap = gap; best = i }
+    }
+  })
+
+  if (best < 0) return null
+  return { lane: best, gap: bestGap, hops: hopsToLane(network, best) }
+}
+
 function hopsToLane(network, target) {
   const lanes = network.lanes
   const hops = new Array(lanes.length).fill(Infinity)
@@ -3298,7 +3327,18 @@ function orderedNext(lanes, lane, v) {
 
   // A service vehicle whose shift is over heads for its station, choosing the
   // turn that shortens the route home. Everything else wanders.
-  const goingHome = v.home && v.patrol <= 0 ? v.home.station.toHome : null
+  // A vehicle on a callout heads for the incident; one whose shift is over
+  // heads for its station; everything else wanders.
+  //
+  // `v.mission` is the same shape as `station.toHome` - hops from every lane
+  // to the target - and so goes through the same scoring branch rather than a
+  // second one. That matters for more than tidiness: both branches draw
+  // exactly one `v.rand()` per option, so giving a fire engine a callout
+  // cannot shift anybody's random sequence. Moving a rand() draw is what
+  // re-shuffled the whole city and cost a red light when the indicators were
+  // first built.
+  const goingHome = v.mission ||
+                    (v.home && v.patrol <= 0 ? v.home.station.toHome : null)
 
   const options = lane.next
     .map((index) => {

@@ -227,6 +227,21 @@ export class Inputs {
     const control = this.resolveKey(event.code)
     if (!control) return
 
+    // Touching a driving key hands the keyboard back to the car.
+    //
+    // Clicking anything in the HUD leaves it focused, and a focused button
+    // eats the space bar - you brake, and instead you re-press whatever you
+    // last clicked. Blurring here means you can never get stuck in a panel
+    // whatever put the focus there: the first key you press to drive with is
+    // also the key that lets go of it.
+    //
+    // Deliberately unconditional. The first version of this rule lived in the
+    // panels and only covered the two that existed, and the zone panel's
+    // links were never considered at all. There is nothing in this game you
+    // type into, so there is nothing a blur can interrupt.
+    const focused = document.activeElement
+    if (focused && focused !== document.body && focused.blur) focused.blur()
+
     // Stop arrow keys / space from scrolling the page
     if (event.code.startsWith('Arrow') || event.code === 'Space') {
       event.preventDefault()

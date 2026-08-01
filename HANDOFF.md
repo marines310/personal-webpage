@@ -99,12 +99,13 @@ src/systems/               Camera, Inputs, Physics, Assets, Environment,
                            plus three files with no THREE in them, so that a
                            test can run them: seasons.js (the year),
                            cameraPose.js (where the camera sits) and
-                           world/vehicleLights.js (what the lamps are doing).
+                           world/vehicleLights.js (what the lamps are doing)
+                           and world/fireGame.js (the fire callout).
 
 map-editor.html            The whole editor: one file, Vite entry, imports
                            the real modules from src/world/.
 
-tests/                     35 suites, ~1150 checks. `npm test`.
+tests/                     36 suites, ~1210 checks. `npm test`.
 MAP.md                     How to edit the world. Written for Mike.
 DEPLOY.md                  How to publish. Written for Mike.
 ROADMAP.md                 Longer-term wishlist.
@@ -249,7 +250,7 @@ than a measurement or a reference, that is the moment to stop and ask.
 ## Testing
 
 ```bash
-npm test          # all 35 suites, ~1150 checks
+npm test          # all 36 suites, ~1210 checks
 ```
 
 There's no framework. Each file in `tests/` is a plain script that prints
@@ -1454,6 +1455,98 @@ HTTP, and checks every asset the published site requests actually returns
     traffic numbers are **bit-identical** to before indicators existed: min
     97, median 704, max 2448, 37 relocations. That equality is the check that
     this cost the simulation nothing.
+
+41. **The fire callout.** Done 1 August. Every minute or two a building
+    catches light somewhere; smoke goes up so you can find it from the next
+    island; get a fire engine alongside and hold it there and it goes out.
+    `src/world/fireGame.js`, `tests/fire.mjs`, 61 checks.
+
+    **The rule it all hangs on is deliberately asymmetric.** Driving the fire
+    engine, only YOUR engine can contain it - the AI turns out and fills the
+    street and cannot finish the job, or the game plays itself while you
+    watch. Driving anything else, the AI deals with it and there is no bar,
+    because it is not your bar. One flag, asked in one place:
+    `whoIsFighting()`.
+
+    - **The decay nearly broke the second half.** Losing progress when nobody
+      is on station is the player's challenge, and applying it to the AI as
+      well meant a responding engine crossed the map, reached the fire, got
+      the bar to 8.3 of 14, drove on round the block and lost the lot. The
+      fire was still burning after 320 seconds, and would never have gone out
+      for anyone not driving the engine themselves. It only shows in the
+      running game - the pure test passed, because the test put an engine at
+      the fire and left it there. Decay is now the player's alone.
+    - **Callouts reuse the go-home routing.** `v.mission` is the same
+      hops-per-lane table that already sends a service vehicle back to its
+      station, and it goes through the SAME scoring branch - so it draws the
+      same one `rand()` per option and cannot shift anybody's sequence. The
+      traffic numbers with no fire burning are bit-identical: min 97, median
+      704, max 2448, 37 relocations.
+    - **Buildings are recorded with the height they came out at**, not the
+      height that was asked for. Under the monorail a building loses storeys
+      and a model is squashed, so the two regularly differ - and a smoke
+      column started at the requested roof would hang in the air above a
+      shorter building.
+    - **worldsanity caught the fire group at y=0.** The children carried
+      absolute heights, which is right only while the ground under that
+      particular building happens to be at zero. The group sits on the ground
+      now and everything in it is measured from there.
+
+    **Changed 1 August at Mike's request:** fires now start every **two
+    minutes** exactly - `FIRE_GAP_MIN` and `FIRE_GAP_MAX` are both 120, on
+    purpose, because "every two minutes" is a promise you can feel and the
+    70-150 second window it replaced read as random. And there is now an
+    **arrow** under the banner with the distance to the fire.
+
+    The arrow is aimed from the CAMERA, not the car - what "left" means on a
+    screen is decided by where the camera is looking, and an arrow aimed from
+    the car would swing about every time you looked over your shoulder while
+    the world stayed still. Its angle comes out of `missionArrow()` already in
+    screen terms (0 up, growing clockwise, which is what a CSS rotation
+    wants), so the heading convention is flipped exactly once, in the pure
+    module, rather than in the renderer where nobody would find it. The
+    handedness was checked in the running game against the camera's own
+    matrix - ahead/right/left/behind gave 0/90/-90/180 - rather than derived
+    from the heading convention, which is the check that was missing when
+    `turnDirection` came out backwards and its test agreed with it.
+
+    One thing that needed fixing with it: the panel was only on screen while
+    there was a banner or a bar, and the banner clears after five seconds
+    while the fire burns for minutes. So the arrow was hidden for all but the
+    first five seconds of every fire - the entire time you would be using it.
+
+    Measured response times: **about 14 seconds** once you are alongside, and
+    **roughly four minutes** for the AI to deal with a fire on the far side of
+    the map on its own - it is a background event, and the engines have to
+    drive there through the traffic like everything else. Say if that is too
+    slow and it is one number.
+
+42. **Clicking the weather box stopped you driving.** Fixed 1 August, and it
+    was mine twice over.
+
+    Clicking a button leaves it FOCUSED. That drew a ring round the whole
+    conditions box, and it meant tapping space to brake re-pressed whichever
+    button had been clicked last. The fix for the second problem was to stop
+    key events propagating out of the panel - which worked, and created
+    something far worse: `Inputs` listens on the WINDOW, so an event swallowed
+    inside the panel never reaches the car at all. Click the weather box once
+    and W, A, S and D did nothing until you clicked the world again. Mike
+    found it; the screenshot showed the focus ring, which is the tell.
+
+    Suppressing a symptom cost the entire keyboard. Blurring removes the
+    cause: nothing is focused, so nothing can be re-pressed, and every key
+    goes exactly where it always went.
+
+    Two layers, because the first version of this rule only knew about the
+    panels that existed when it was written:
+
+    - `releaseFocusAfterClicks()` blurs on **mouseup** in the conditions and
+      camera boxes. Mouseup rather than click, because a click fires after
+      focus has been taken and, on a range slider, only when the drag ends.
+    - `Inputs.onKeyDown` blurs whatever is focused before acting on any
+      driving key, wherever the focus came from - the zone panel's links were
+      never considered by the per-panel version. Unconditional, and safe:
+      there is nothing in this game you type into.
 
 **Still open after 31 July:**
 

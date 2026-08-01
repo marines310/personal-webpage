@@ -355,8 +355,15 @@ chk('the hint mentions the mouse, which is the discoverable part',
 const ui = readFileSync(ROOT + 'src/ui/UI.js', 'utf8')
 chk('every button calls the same method the key does',
     /savePose\(\)/.test(ui) && /snapBehind\(\)/.test(ui) && /resetPose\(\)/.test(ui))
-chk('driving keys do not reach the camera buttons',
-    /cameraEl\.addEventListener\(event, \(e\) => e\.stopPropagation\(\)\)/.test(ui))
+// The panel must not TRAP the keyboard. It used to stop key events
+// propagating, which kept space from re-pressing the last button clicked and
+// also stopped W, A, S and D reaching the car at all - Inputs listens on the
+// window, so a swallowed event never arrives. Clicking the camera box once
+// left you unable to drive. Blurring is the fix: nothing focused, nothing to
+// re-press, and every key goes where it always went.
+chk('the panel gives the keyboard back rather than swallowing it',
+    /releaseFocusAfterClicks\(this\.cameraEl\)/.test(ui) &&
+    !/stopPropagation/.test(ui))
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

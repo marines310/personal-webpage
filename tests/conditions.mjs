@@ -176,5 +176,39 @@ resumeAuto(rolling)
 for (let i = 0; i < 300; i++) advance(rolling, 1)
 chk('and starts again when handed back', rolling.time !== stopped)
 
+// ---------------------------------------------------------------------------
+console.log('\n6. Opening the panel does not cost you the car')
+
+// Mike found this: click the weather box and the driving keys stop working.
+// Two causes, both mine. Clicking a button leaves it FOCUSED, so the browser
+// drew a ring round the whole box; and to stop space re-pressing that button
+// the panel stopped key events propagating - but Inputs listens on the
+// WINDOW, so a swallowed event never reaches the car at all.
+//
+// Suppressing the symptom cost the whole keyboard. Blurring removes the
+// cause: nothing focused, nothing to re-press, every key goes where it went
+// before.
+const uiSource = readFileSync(ROOT + 'src/ui/UI.js', 'utf8')
+const inputsSource = readFileSync(ROOT + 'src/systems/Inputs.js', 'utf8')
+
+chk('no panel swallows key events any more',
+    !/stopPropagation/.test(uiSource))
+chk('the conditions box lets go of the focus when you finish clicking',
+    /releaseFocusAfterClicks\(this\.conditionsEl\)/.test(uiSource))
+chk('and so does the camera box',
+    /releaseFocusAfterClicks\(this\.cameraEl\)/.test(uiSource))
+// On mouseup, not click: a click fires after focus has been taken and, for a
+// range slider, only once the drag ends.
+chk('it releases on mouseup, not on click',
+    /addEventListener\('mouseup'/.test(uiSource))
+
+// And the wider rule, so nothing can trap the keyboard however it got focus -
+// the zone panel's links were never considered by the per-panel version.
+chk('a driving key blurs whatever is focused, wherever it is',
+    /focused !== document\.body && focused\.blur\) focused\.blur\(\)/.test(inputsSource))
+chk('and it does so before acting on the key, not after',
+    inputsSource.indexOf('focused.blur()') <
+    inputsSource.indexOf('this.keys[control] = true'))
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

@@ -1,5 +1,37 @@
 import { Game } from '../core/Game.js'
 import { getMapExtent, islandOutline } from '../world/islandLayout.js'
+import { fireHud, missionArrow } from '../world/fireGame.js'
+
+/**
+ * Give the keyboard back to the car after you touch a panel.
+ *
+ * Clicking a button leaves it FOCUSED. That was doing two bad things at once:
+ * the browser drew a focus ring round the whole conditions box, and tapping
+ * space to brake re-pressed whichever button you had clicked last.
+ *
+ * The first attempt at the second problem was to stop key events propagating
+ * out of the panel - which fixed the double-press and created something far
+ * worse. Inputs listens on the WINDOW, so swallowing the event inside the
+ * panel meant W, A, S and D never reached the car at all: click the weather
+ * box once and you were stuck in it, exactly as Mike found. That is what
+ * suppressing a symptom buys you.
+ *
+ * Blurring removes the cause instead. Nothing is focused, so nothing can be
+ * re-pressed, and every key goes where it always went. `Inputs.onKeyDown` has
+ * a second, wider version of the same rule for anything that gets focus some
+ * other way.
+ */
+function releaseFocusAfterClicks(element) {
+  if (!element) return
+  // On mouseup rather than click: a click fires after the button has already
+  // taken focus and, for a range slider, only when the drag ends. Mouseup is
+  // the moment the pointer is finished with it either way.
+  element.addEventListener('mouseup', () => {
+    if (document.activeElement && element.contains(document.activeElement)) {
+      document.activeElement.blur()
+    }
+  })
+}
 
 /**
  * UI - Manages HTML UI overlays
@@ -24,6 +56,15 @@ export class UI {
     this.condToggle = document.getElementById('cond-toggle')
     this.hourSlider = document.getElementById('cond-hour')
     this.hourValue = document.getElementById('cond-hour-value')
+
+    this.missionEl = document.getElementById('mission')
+    this.missionTitle = document.getElementById('mission-title')
+    this.missionBar = document.getElementById('mission-bar')
+    this.missionBarLabel = document.getElementById('mission-bar-label')
+    this.missionFill = document.getElementById('mission-bar-fill')
+    this.missionArrow = document.getElementById('mission-arrow')
+    this.missionArrowPoint = document.getElementById('mission-arrow-point')
+    this.missionArrowDistance = document.getElementById('mission-arrow-distance')
 
     this.cameraEl = document.getElementById('camera-box')
     this.camPanel = document.getElementById('cam-panel')
@@ -69,12 +110,7 @@ export class UI {
       if (cam()) { cam().resetPose(); cam().snapBehind() }
     })
 
-    // Same reason as the conditions box: driving keys must not reach a button
-    // you clicked a moment ago, or tapping space to brake would re-press it.
-    // The camera keys matter here too - Q and E would otherwise arrive twice.
-    for (const event of ['keydown', 'keyup']) {
-      this.cameraEl.addEventListener(event, (e) => e.stopPropagation())
-    }
+    releaseFocusAfterClicks(this.cameraEl)
   }
 
   /**
@@ -137,11 +173,7 @@ export class UI {
       this.markWeatherButtons()
     })
 
-    // Driving keys must not reach the sliders and buttons - tapping space to
-    // brake would otherwise re-press whichever one you clicked last.
-    for (const event of ['keydown', 'keyup']) {
-      this.conditionsEl.addEventListener(event, (e) => e.stopPropagation())
-    }
+    releaseFocusAfterClicks(this.conditionsEl)
   }
 
   /** Put the panel's controls where the world actually is. */
@@ -184,6 +216,50 @@ export class UI {
     this.updateSpeedometer()
     this.updateConditions()
     this.updateCamera()
+    this.updateMission()
+  }
+
+  /**
+   * The callout banner and its progress bar.
+   *
+   * Everything shown here is decided in fireGame.js and handed over as one
+   * object by `fireHud()`. This method works nothing out - it has no idea
+   * what a fire is, which is what will let the police and ambulance games
+   * use the same three elements without any of them growing a special case.
+   */
+  updateMission() {
+    const world = this.game.world
+    if (!this.missionEl || !world || !world.fire) return
+
+    const vehicle = this.game.vehicle
+    const hud = fireHud(world.fire, !!(vehicle && vehicle.kind === 'fire'))
+
+    // The arrow counts as a reason to be on screen, and it is the only one
+    // that outlives the banner: the banner clears after five seconds and the
+    // fire burns for minutes. Leaving it out of this hid the arrow for all
+    // but the first five seconds of every fire - which is the entire time you
+    // would actually be using it.
+    const burning = !!world.fire.fire
+    const showing = !!hud.message || hud.showBar || burning
+
+    this.missionEl.classList.toggle('hidden', !showing)
+    if (!showing) return
+
+    if (this.missionTitle.textContent !== (hud.message || '')) {
+      this.missionTitle.textContent = hud.message || ''
+    }
+    this.missionTitle.style.display = hud.message ? '' : 'none'
+
+    this.updateMissionArrow()
+
+    this.missionBar.classList.toggle('hidden', !hud.showBar)
+    if (hud.showBar) {
+      if (this.missionBarLabel.textContent !== hud.barLabel) {
+        this.missionBarLabel.textContent = hud.barLabel
+      }
+      this.missionFill.style.width = `${Math.round(hud.progress * 100)}%`
+      this.missionEl.classList.toggle('on-station', hud.onStation)
+    }
   }
 
   /**
@@ -250,6 +326,49 @@ export class UI {
       const minutes = Math.round(env.getHours() * 60)
       this.hourSlider.value = String(minutes)
       this.hourValue.textContent = formatMinutes(minutes)
+    }
+  }
+
+  /**
+   * The arrow, pointing at whatever is going on.
+   *
+   * Aimed from the CAMERA, not from the car. What "left" means on a screen is
+   * decided by where the camera is looking, so an arrow aimed from the car
+   * would swing about every time you looked over your shoulder while the
+   * world stayed still.
+   *
+   * The angle arrives already in screen terms - see missionArrow(). The only
+   * thing done to it here is the -90 degrees that turns a glyph which points
+   * right at rest into one that points up.
+   */
+  updateMissionArrow() {
+    if (!this.missionArrow) return
+
+    const world = this.game.world
+    const camera = this.game.camera
+    const arrow = (world && camera)
+      ? missionArrow(world.fire, {
+          x: camera.instance.position.x,
+          z: camera.instance.position.z,
+          yaw: camera.yaw
+        })
+      : { show: false }
+
+    this.missionArrow.classList.toggle('hidden', !arrow.show)
+    if (!arrow.show) return
+
+    const degrees = (arrow.angle * 180) / Math.PI - 90
+    this.missionArrowPoint.style.transform = `rotate(${degrees.toFixed(1)}deg)`
+
+    // Rounded to something you can read at a glance while driving: whole
+    // metres up close, and tens once it is far enough away that the last
+    // digit would be a blur of changing numbers.
+    const d = arrow.distance
+    const shown = d < 100 ? `${Math.round(d)}m`
+                : d < 1000 ? `${Math.round(d / 10) * 10}m`
+                : `${(d / 1000).toFixed(1)}km`
+    if (this.missionArrowDistance.textContent !== shown) {
+      this.missionArrowDistance.textContent = shown
     }
   }
 

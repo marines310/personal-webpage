@@ -77,7 +77,8 @@ import {
   MONORAIL_CAR_LENGTH,
   MONORAIL_PLATFORM_OFFSET,
   MONORAIL_PLATFORM_LENGTH,
-  PLAZA_FOUNTAIN_OFFSET
+  PLAZA_FOUNTAIN_OFFSET,
+  routeToPoint
 } from './islandLayout.js'
 import { findWindowFaces, windowGeometry } from './windows.js'
 import {
@@ -124,6 +125,7 @@ export const GROUND_SINK = 0.7
 export const GRASS_ABOVE_SAND = 0.3
 import { mixHex, SNOW_COLOUR, SNOW_TAKE } from '../systems/seasons.js'
 import { lampBrightness, blinkOn, gloomLevel } from './vehicleLights.js'
+import { newFireState, stepFire, smokeStrength, RESPONDERS } from './fireGame.js'
 import { insetPolygon, insetPolygonRadial, polygonCentroid, rayDistanceToBoundary } from './shapes.js'
 import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
 
@@ -302,6 +304,20 @@ export const PALETTE = {
  * cost. Every one of those samples runs isBuildable(), which walks every road
  * on the island, and that is the expensive part - not the geometry.
  */
+/**
+ * The smoke column.
+ *
+ * Big and long-lived on purpose: it is the only thing telling you where the
+ * fire is, so it has to be visible from the next island rather than merely
+ * present. SMOKE_RISE is how high the column goes before a puff is recycled.
+ */
+export const SMOKE_COUNT = 130
+export const SMOKE_LIFE = 5.5
+export const SMOKE_RISE = 46
+
+/** Droplets in the water jet. */
+export const JET_COUNT = 90
+
 export const FLOWERS_PER_CLUMP = 3
 export const FLOWER_COLOURS = [
   0xff6f9c,   // pink - the one already in the palette
@@ -323,6 +339,7 @@ export class World {
     this.layout = { islands: ISLANDS, bridges: getBridges() }
 
     this.nightEmissives = []  // materials that light up after dark
+    this.buildings = []       // everything with a roof, so one can catch fire
     this.seasonals = []       // materials that change colour with the year
     this.flowerSites = []     // where spring flowers come up, filled while building
     this.swayables = []       // foliage that moves in the wind
@@ -373,6 +390,11 @@ export class World {
     this.createStations()
     this.createTraffic()
     this.createHubSign()
+
+    // Last: a fire needs the buildings to exist before it can pick one, and
+    // the traffic to exist before it can send anybody.
+    this.fire = newFireState()
+    this.createFireEffects()
   }
 
   /**
@@ -4234,7 +4256,7 @@ export class World {
       radius: Math.hypot(width, depth) / 2 + 1.5
     })
 
-    this.addBuilding(x, z, {
+    const built = this.addBuilding(x, z, {
       rotation,
       width,
       depth,
@@ -4242,6 +4264,23 @@ export class World {
       model: def.model,
       colour: def.colour
     })
+
+    // And remember the building, so something can be set alight later.
+    //
+    // Recorded with the height addBuilding ACTUALLY produced, not the height
+    // that was asked for. Under the monorail a building loses storeys until
+    // its roof clears the beam, and a model is squashed rather than shortened,
+    // so the number that went in is regularly not the number that came out -
+    // and a smoke column starting at the requested roof would hang in the air
+    // above a building that is no longer that tall.
+    if (built > 0) {
+      this.buildings.push({
+        x, z,
+        island: island.name || island.id,
+        width, depth,
+        height: built
+      })
+    }
   }
 
   /**
@@ -4758,7 +4797,8 @@ export class World {
         footprint.x, footprint.y, footprint.z,
         rotation
       )
-      return
+      // The height it actually came out at, so a fire knows where the roof is.
+      return footprint.y
     }
 
     const group = new THREE.Group()
@@ -4772,7 +4812,7 @@ export class World {
     const floors = monorailFloors(
       this.monorail, x, z,
       opts.floors || Math.floor(this.randRange(2, 6)), floorHeight)
-    if (floors < 1) return
+    if (floors < 1) return 0
 
     const height = floors * floorHeight
 
@@ -4882,6 +4922,8 @@ export class World {
     this.game.physics.createStaticBoxAt(
       x, this.groundAt(x, z) + height / 2, z, width, height, depth, rotation
     )
+
+    return height
   }
 
   /**
@@ -5350,6 +5392,231 @@ export class World {
   }
 
   // -------------------------------------------------------------
+  // The fire
+  //
+  // The incident itself is decided in fireGame.js, which has no THREE in it.
+  // Everything here is smoke, flame and a ladder - and sending the engines.
+  // -------------------------------------------------------------
+
+  /**
+   * The smoke column, the flames and the water jet.
+   *
+   * Built once, at the origin, and moved to whatever is alight. A fire is a
+   * rare event and building the plume each time would mean a hitch on the
+   * frame it starts - which is the frame you are looking at it.
+   */
+  createFireEffects() {
+    this.fireGroup = new THREE.Group()
+    this.fireGroup.visible = false
+
+    // --- Flames: a few flat panels that flicker, cheaper than a fluid ---
+    this.flameMaterial = new THREE.MeshBasicMaterial({
+      color: 0xff8a2b, transparent: true, opacity: 0.9,
+      depthWrite: false, side: THREE.DoubleSide, fog: false
+    })
+    this.flames = []
+    for (let i = 0; i < 7; i++) {
+      const flame = new THREE.Mesh(
+        new THREE.ConeGeometry(1.2, 3.4, 5), this.flameMaterial)
+      flame.rotation.y = (i / 7) * Math.PI * 2
+      this.flames.push(flame)
+      this.fireGroup.add(flame)
+    }
+
+    // A real light, so the fire lights the street it is in. One, not seven.
+    this.fireLight = new THREE.PointLight(0xff7a20, 0, 46, 1.6)
+    this.fireGroup.add(this.fireLight)
+
+    // --- Smoke: the thing you actually navigate by ---
+    //
+    // Rises and spreads, and is drawn big enough to read from the next
+    // island. It is what replaces an arrow on the screen: Mike asked to find
+    // the fire by looking for the smoke, so the smoke has to be findable.
+    this.smokePositions = new Float32Array(SMOKE_COUNT * 3)
+    this.smokeAge = new Float32Array(SMOKE_COUNT)
+    for (let i = 0; i < SMOKE_COUNT; i++) this.smokeAge[i] = Math.random() * SMOKE_LIFE
+
+    const smokeGeo = new THREE.BufferGeometry()
+    smokeGeo.setAttribute('position', new THREE.BufferAttribute(this.smokePositions, 3))
+    this.smokeMaterial = new THREE.PointsMaterial({
+      color: 0x4a4a4e, size: 6, sizeAttenuation: true,
+      transparent: true, opacity: 0.5, depthWrite: false, fog: true
+    })
+    this.smoke = new THREE.Points(smokeGeo, this.smokeMaterial)
+    this.smoke.frustumCulled = false
+    this.fireGroup.add(this.smoke)
+
+    this.game.add(this.fireGroup)
+
+    // --- The ladder and the jet, which live on the player's truck ---
+    this.ladderGroup = new THREE.Group()
+    this.ladderGroup.visible = false
+
+    const ladderMat = new THREE.MeshStandardMaterial({
+      color: 0xd8d2c4, roughness: 0.6, metalness: 0.3, flatShading: true
+    })
+    this.ladder = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 1), ladderMat)
+    // Authored along +Z from its base, so scaling z extends it outward
+    // rather than growing it from the middle.
+    this.ladder.geometry.translate(0, 0, 0.5)
+    this.ladderGroup.add(this.ladder)
+
+    this.jetMaterial = new THREE.PointsMaterial({
+      color: 0xbfe4ff, size: 0.7, sizeAttenuation: true,
+      transparent: true, opacity: 0.85, depthWrite: false
+    })
+    this.jetPositions = new Float32Array(JET_COUNT * 3)
+    this.jetAge = new Float32Array(JET_COUNT)
+    for (let i = 0; i < JET_COUNT; i++) this.jetAge[i] = Math.random()
+    const jetGeo = new THREE.BufferGeometry()
+    jetGeo.setAttribute('position', new THREE.BufferAttribute(this.jetPositions, 3))
+    this.jet = new THREE.Points(jetGeo, this.jetMaterial)
+    this.jet.frustumCulled = false
+    this.ladderGroup.add(this.jet)
+
+    this.game.add(this.ladderGroup)
+  }
+
+  /**
+   * Send fire engines to the fire, and take them off the call afterwards.
+   *
+   * `v.mission` is a hops-per-lane table, exactly the shape the layout
+   * already uses to send a service vehicle home - so the routing is the
+   * routing that has always been there, pointed somewhere else.
+   */
+  callOutEngines(fire) {
+    const engines = this.traffic.filter(v => v.kind === 'fire')
+
+    if (!fire) {
+      for (const v of engines) v.mission = null
+      this.fireRoute = null
+      return
+    }
+
+    if (this.fireRoute && this.fireRoute.for === fire) return
+
+    const route = routeToPoint(this.lanes, fire.x, fire.z)
+    this.fireRoute = route ? { for: fire, hops: route.hops } : null
+    if (!this.fireRoute) return
+
+    // Nearest first, so the ones that turn out are the ones that would
+    // plausibly be sent - and only a few, or every fire empties the streets.
+    const sorted = engines
+      .map(v => ({ v, hops: this.fireRoute.hops[v.lane] ?? Infinity }))
+      .sort((a, b) => a.hops - b.hops)
+
+    sorted.forEach(({ v }, i) => {
+      v.mission = i < RESPONDERS ? this.fireRoute.hops : null
+    })
+  }
+
+  updateFire(delta) {
+    if (!this.fire) return
+
+    const vehicle = this.game.vehicle
+    const player = vehicle && vehicle.mesh
+      ? { x: vehicle.mesh.position.x, z: vehicle.mesh.position.z,
+          isFire: vehicle.kind === 'fire' }
+      : null
+
+    stepFire(this.fire, delta, {
+      buildings: this.buildings,
+      player,
+      engines: (this.traffic || [])
+        .filter(v => v.kind === 'fire' && v.drawn)
+        .map(v => ({ x: v.drawn.x, z: v.drawn.z })),
+      rand: () => this.rand()
+    })
+
+    const fire = this.fire.fire
+    this.callOutEngines(fire)
+    this.updateFireEffects(delta, fire, player)
+  }
+
+  updateFireEffects(delta, fire, player) {
+    if (!this.fireGroup) return
+
+    this.fireGroup.visible = !!fire
+    if (!fire) {
+      this.ladderGroup.visible = false
+      return
+    }
+
+    // The group sits ON THE GROUND under the building, and everything in it
+    // is measured from there. Parking it at y=0 and giving the children
+    // absolute heights worked and is the habit worldsanity exists to catch:
+    // it is right only while the ground under that particular building
+    // happens to be at zero.
+    const base = this.groundAt(fire.x, fire.z)
+    const roof = fire.top
+    const strength = smokeStrength(this.fire)
+
+    this.fireGroup.position.set(fire.x, base, fire.z)
+
+    // Flames at the roof, flickering out of step with each other
+    for (let i = 0; i < this.flames.length; i++) {
+      const flicker = 0.7 + 0.3 * Math.sin(this.elapsed * (5 + i) + i * 2.1)
+      this.flames[i].position.set(
+        Math.sin(i * 2.4) * 1.6, roof + 1.2 * flicker, Math.cos(i * 2.4) * 1.6)
+      this.flames[i].scale.set(strength, flicker * strength, strength)
+      this.flames[i].visible = strength > 0.05
+    }
+    this.flameMaterial.opacity = 0.9 * strength
+    this.fireLight.position.set(0, roof + 2, 0)
+    this.fireLight.intensity = 26 * strength
+
+    // Smoke: straight up, spreading, blown by whatever wind there is
+    const env = this.game.environment
+    const wind = env ? env.windVector : { x: 0, z: 0 }
+    for (let i = 0; i < SMOKE_COUNT; i++) {
+      this.smokeAge[i] += delta
+      if (this.smokeAge[i] > SMOKE_LIFE) this.smokeAge[i] -= SMOKE_LIFE
+      const t = this.smokeAge[i] / SMOKE_LIFE
+      const spread = 1.5 + t * 11
+      const angle = i * 2.399                      // golden angle, so no rows
+      const i3 = i * 3
+      this.smokePositions[i3] = Math.sin(angle + t * 3) * spread * t + wind.x * t * 26
+      this.smokePositions[i3 + 1] = roof + t * SMOKE_RISE
+      this.smokePositions[i3 + 2] = Math.cos(angle + t * 3) * spread * t + wind.z * t * 26
+    }
+    this.smoke.geometry.attributes.position.needsUpdate = true
+    this.smokeMaterial.opacity = 0.5 * strength
+
+    // The ladder and the jet, only for the player's own truck and only when
+    // it is actually alongside. Both are drawn from the truck to the fire, so
+    // they point wherever it is parked rather than assuming an approach.
+    const vehicle = this.game.vehicle
+    const alongside = !!(player && player.isFire && fire.playerOnStation)
+    this.ladderGroup.visible = alongside
+    if (!alongside || !vehicle) return
+
+    const from = vehicle.mesh.position
+    const dx = fire.x - from.x
+    const dz = fire.z - from.z
+    const flat = Math.hypot(dx, dz)
+    const rise = (base + roof + 1.5) - (from.y + 1.2)
+    const reach = Math.hypot(flat, rise)
+
+    this.ladderGroup.position.set(from.x, from.y + 1.2, from.z)
+    this.ladderGroup.rotation.set(0, Math.atan2(dx, dz), 0, 'YXZ')
+    this.ladder.rotation.x = -Math.atan2(rise, flat)
+    this.ladder.scale.z = reach
+
+    // Water, thrown along the ladder and falling into the fire
+    for (let i = 0; i < JET_COUNT; i++) {
+      this.jetAge[i] += delta * 1.7
+      if (this.jetAge[i] > 1) this.jetAge[i] -= 1
+      const t = this.jetAge[i]
+      const i3 = i * 3
+      // In the ladder group's own frame: out along +Z, up and then over.
+      this.jetPositions[i3] = (Math.random() - 0.5) * 0.5 * t
+      this.jetPositions[i3 + 1] = rise * t + Math.sin(t * Math.PI) * 2.2
+      this.jetPositions[i3 + 2] = flat * t
+    }
+    this.jet.geometry.attributes.position.needsUpdate = true
+  }
+
+  // -------------------------------------------------------------
   // Per-frame
   // -------------------------------------------------------------
   setTimeOfDay(dayFactor, nightFactor) {
@@ -5381,6 +5648,7 @@ export class World {
     this.updateHelicopters(delta)
     this.updateTraffic(delta)
     this.updateGarageDoors(delta)
+    this.updateFire(delta)
 
     const env = this.game.environment
     if (!env) return

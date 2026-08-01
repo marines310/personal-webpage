@@ -31,6 +31,7 @@ const SUITES = [
   'conditions.mjs',    // setting the time and weather by hand
   'camera.mjs',        // free look, the saved view, reversing, occlusion
   'vehiclelights.mjs', // headlights, brake lights and indicators, on every kind
+  'fire.mjs',          // the fire callout: who may fight it, and getting there
   'seasons.mjs',       // the year: colour, snow, leaves and flowers
   'zebra.mjs',         // crossing bars run along the road, side by side
   'traffic.mjs',       // lanes, right of way, and thirty vehicles on them
