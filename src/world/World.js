@@ -52,6 +52,11 @@ import {
   PIER_DECK_DEPTH,
   getAirport,
   getAirGraph,
+  getApronRoad,
+  getAirportCauseway,
+  getCausewayRoadPath,
+  AIRPORT_ROAD_WIDTH,
+  CAUSEWAY_DECK_MARGIN,
   getHelipads,
   getPlayerGarage,
   GARAGE_HEIGHT,
@@ -462,6 +467,17 @@ export const FLOWER_COLOURS = [
  */
 export const DECOR_SHARE = {
   eggs: 0.85,
+  // Halloween's. Jack-o'-lanterns are what a street puts out by the dozen;
+  // ghosts nearly as many; a witch or a HAPPY HALLOWEEN sign is a thing one
+  // household on a street does. Gravestones want a churchyard's worth without
+  // turning every verge into one.
+  // Dropped from 0.42. Sixty-six of them on one island read as an
+  // installation rather than as a decoration somebody put out, which was half
+  // of why they scanned as a field of snowmen.
+  ghosts: 0.22,
+  witches: 0.14,
+  graves: 0.3,
+  signs: 0.12,
   bunnies: 0.16,
   pumpkins: 0.5,
   turkeys: 0.18,
@@ -471,6 +487,29 @@ export const DECOR_SHARE = {
   // so rarer still.
   trees: 0.45,
   snowmen: 0.28
+}
+
+/**
+ * How big each kind is, on top of the site's own size.
+ *
+ * The site size (1.9 to 2.5) exists because an Easter egg at true scale is one
+ * pixel from a moving car. Everything then inherited it, including things that
+ * were never small: measured in the world, a witch came out 6.1 units tall
+ * against a three-unit storey and a 4.4-unit car - two storeys of witch. A
+ * ghost was 4.5, a headstone 2.9.
+ *
+ * So the site size stays as the VARIATION between one instance and the next,
+ * and this is what each kind actually is. The numbers are world units of
+ * height at an average site: a lawn ghost taller than a person, a headstone
+ * you could lean on, a Christmas tree you could not.
+ */
+export const DECOR_SCALE = {
+  ghosts: 0.58,      // ~2.6 units
+  witches: 0.46,     // ~2.8
+  snowmen: 0.52,     // ~2.6
+  trees: 0.8,        // ~3.6
+  graves: 0.48,      // ~1.4
+  signs: 0.7
 }
 
 /** How far apart decoration sites are sown, as area per site. */
@@ -492,6 +531,16 @@ export const GIFT_COLOURS = [0xd6342e, 0x2f7d43, 0x2b58a8, 0xe0b03a]
  * materials is three draw calls and keeps them red, green and gold after dark.
  */
 export const FESTIVE_COLOURS = [0xff3b30, 0x35c759, 0xffcf4a]
+
+/**
+ * And the same three strands at Halloween: orange, amber, and a deep pumpkin.
+ *
+ * Mike, on the first pass: "don't add the Christmas lights ... If it's
+ * convenient to have decorative lights, make them have orange colored lights."
+ * Red, green and gold on a Halloween street read as somebody having left the
+ * Christmas ones up.
+ */
+export const SPOOKY_COLOURS = [0xff7518, 0xff9e3d, 0xd4571a]
 
 /** How many bulbs go round a building's eaves. */
 export const BULBS_PER_BUILDING = 16
@@ -516,6 +565,7 @@ export class World {
     this.flowerSites = []     // where spring flowers come up, filled while building
     this.decorSites = []      // and where holiday decorations go, likewise
     this.wreathSites = []     // one per building door, for Christmas
+    this.doorSites = []       // and on the ground in front of it, for Halloween
     this.fields = []          // every instanced field that grows: flowers, decorations
     this.holiday = emptyLayer()
     this.festiveLevel = 0     // how much of the festive lighting is on
@@ -752,7 +802,12 @@ export class World {
     // They come up as the ground goes white and go as it thaws - which means
     // a flurry in a mild season builds a few and then takes them away again,
     // and a green Christmas has none, both of which are right.
-    this.growField(this.snowmanField, view.snow)
+    //
+    // Remembered rather than applied here, because a holiday is allowed to
+    // veto them and only setHolidayLayer knows about that. One place ends up
+    // knowing both numbers, which is better than this one guessing.
+    this.snowLevel = view.snow
+    this.growSnowmen()
   }
 
   // -------------------------------------------------------------
@@ -3713,6 +3768,104 @@ export class World {
                             { x: e.at.x, z: e.at.z })
       }
     }
+
+    this.createCauseway()
+  }
+
+  /**
+   * The causeway, and the road that runs round the platform.
+   *
+   * The airport was buildable and standable-on from the day it was sited - the
+   * deck has always been a collider - but there was no way to GET there, so it
+   * was scenery you flew past. This is the road link, and it is deliberately
+   * the ordinary road machinery: the same ribbon builder as every street, the
+   * same railings as a bridge, and both pieces are in getRoadNetwork() so the
+   * town's own traffic drives out to the terminal.
+   *
+   * The loop is what makes it work. The runway lies between the world and the
+   * terminal, so any direct approach would cross it; going round the outside
+   * does not, and it puts the kerb at the terminal's front door on the way.
+   */
+  createCauseway() {
+    const way = getAirportCauseway()
+    const loop = getApronRoad(this.airport)
+    const road = getCausewayRoadPath()
+    // Kept on the world so a browser probe can ask where the crossing is,
+    // rather than deriving it a second time - the same reason `this.airport`
+    // and `this.ports` are kept.
+    this.causeway = way
+    this.apron = loop
+    if (!way || !loop || !road) return
+
+    const concreteMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.concrete, roughness: 0.9, metalness: 0.05, flatShading: true
+    })
+
+    // The deck, top face on the sea-level datum like every bridge in the
+    // world - see PIER_DECK_Y for what happens when a deck disagrees.
+    const deck = new THREE.Mesh(
+      new THREE.BoxGeometry(way.width + CAUSEWAY_DECK_MARGIN, PIER_DECK_DEPTH, way.deckLength),
+      concreteMat)
+    deck.position.set(way.mid.x, PIER_DECK_Y - PIER_DECK_DEPTH / 2, way.mid.z)
+    deck.rotation.y = way.rotationY
+    deck.castShadow = true
+    deck.receiveShadow = true
+    this.game.add(deck)
+
+    this.game.physics.createStaticBoxAt(
+      way.mid.x, PIER_DECK_Y - PIER_DECK_DEPTH / 2, way.mid.z,
+      way.width + CAUSEWAY_DECK_MARGIN, PIER_DECK_DEPTH, way.deckLength, way.rotationY)
+
+    // Piles, so it stands on something rather than floating - the same
+    // reasoning as the platform's own.
+    const pileMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.beamDark, roughness: 0.85, flatShading: true
+    })
+    const bays = Math.max(2, Math.round(way.deckLength / 22))
+    for (let i = 1; i < bays; i++) {
+      const d = (way.deckLength * i) / bays
+      for (const side of [1, -1]) {
+        const px = way.root.x + way.dirX * d - way.dirZ * side * (way.width / 2)
+        const pz = way.root.z + way.dirZ * d + way.dirX * side * (way.width / 2)
+        const pile = new THREE.Mesh(
+          new THREE.CylinderGeometry(1, 1.2, 7, 8), pileMat)
+        pile.position.set(px, SEA_LEVEL - 2.4, pz)
+        pile.castShadow = true
+        this.game.add(pile)
+      }
+    }
+
+    // Railings over the water only. The same builder the bridges use, handed a
+    // bridge-shaped description of the causeway - one implementation, so a
+    // barrier here can never be a different height from a barrier there.
+    this.addBridgeRailings({
+      x: way.mid.x, z: way.mid.z,
+      length: way.deckLength, width: way.width + CAUSEWAY_DECK_MARGIN,
+      rotationY: way.rotationY
+    })
+
+    // The road itself: island ring, across the water, onto the loop - one
+    // unbroken surface, so there is no seam where the land ends.
+    this.buildRoadSurface(road.points, road.width)
+
+    // And the loop round the platform. Closed, so the last point joins the
+    // first: passing `true` is what stops the ribbon ending in a square edge
+    // across the taxiway.
+    this.buildRoadSurface([...loop.points, loop.points[0]], loop.width)
+
+    // Lit, like every other road. Every fourth point of the loop, so the lamps
+    // are evenly spaced round it whatever size the platform is - and set OFF
+    // the carriageway, on the seaward side, aimed back at the road. A pole
+    // placed on the loop's own points would stand in the middle of it.
+    const centre = this.airport
+    const stand = loop.width / 2 + 2.5
+    for (let i = 0; i < loop.points.length; i += 4) {
+      const p = loop.points[i]
+      const ox = p.x - centre.x
+      const oz = p.z - centre.z
+      const len = Math.hypot(ox, oz) || 1
+      this.addStreetlight(p.x + (ox / len) * stand, p.z + (oz / len) * stand, p)
+    }
   }
 
   /** The terminal, its glass, and an airbridge reaching to each stand. */
@@ -4509,8 +4662,8 @@ export class World {
    * base at the origin. That is what makes a bunny four instanced meshes and
    * not four transforms to keep in step.
    */
-  registerField(name, parts, instances) {
-    const field = { name, parts, instances, amount: -1 }
+  registerField(name, parts, instances, scale = 1) {
+    const field = { name, parts, instances, amount: -1, scale }
     for (const part of parts) {
       part.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
       part.frustumCulled = false
@@ -4532,13 +4685,20 @@ export class World {
   growField(field, amount) {
     if (!field || !field.parts.length) return
 
-    const a = Math.max(0, Math.min(1, amount))
-    if (Math.abs(a - field.amount) < 0.004) return
+    // Snapped to exactly nothing once it is nearly nothing. The easing is
+    // exponential and never actually reaches zero, so without this a field
+    // that has been turned off sits at 0.003 for ever - invisible, but with
+    // its state saying "very slightly on". That is the sort of almost-off
+    // that eventually gets read as on by something else.
+    let a = Math.max(0, Math.min(1, amount))
+    if (a < 0.02) a = 0
+    if (Math.abs(a - field.amount) < 0.004 && a !== 0) return
+    if (a === field.amount) return
     field.amount = a
 
     // Below this it is not worth drawing, and - more to the point - a field
     // scaled to zero still costs a draw call if it is left visible.
-    const visible = a > 0.02
+    const visible = a > 0
     for (const part of field.parts) part.visible = visible
     if (!visible) return
 
@@ -4550,7 +4710,7 @@ export class World {
 
     for (let i = 0; i < field.instances.length; i++) {
       const f = field.instances[i]
-      const grow = f.size * a
+      const grow = f.size * a * field.scale
       p.set(f.x, f.y, f.z)
       q.setFromAxisAngle(up, f.rotation)
       s.set(grow, grow, grow)
@@ -4583,9 +4743,16 @@ export class World {
    * brown, and giving them a palette would be inventing variety rather than
    * finding it.
    */
-  decorPart(geometry, colour, count, { rough = 0.9, tint = null, sites = null } = {}) {
+  decorPart(geometry, colour, count,
+            { rough = 0.9, tint = null, sites = null, ghostly = false } = {}) {
     const material = new THREE.MeshStandardMaterial({
-      color: colour, roughness: rough, flatShading: true
+      color: colour, roughness: rough, flatShading: true,
+      // A sheet you can see through. Not a subtlety: a translucent white
+      // figure cannot be mistaken for a snowman, whatever its shape.
+      // depthWrite stays off so the parts do not cut holes in each other.
+      ...(ghostly
+        ? { transparent: true, opacity: 0.72, depthWrite: false }
+        : {})
     })
     const mesh = new THREE.InstancedMesh(geometry, material, count)
 
@@ -4642,7 +4809,7 @@ export class World {
       ], bunnySites)
     }
 
-    // --- Pumpkins: squashed, with a stem ---
+    // --- Jack-o'-lanterns: squashed, with a stem and a face that lights ---
     const pumpkinSites = take('pumpkins')
     if (pumpkinSites.length) {
       const body = new THREE.SphereGeometry(0.32, 9, 6)
@@ -4650,10 +4817,194 @@ export class World {
       body.translate(0, 0.25, 0)
       const stem = new THREE.CylinderGeometry(0.035, 0.055, 0.16, 5)
       stem.translate(0, 0.52, 0)
+
+      // The carving. Two triangular eyes and a grin, sitting just proud of the
+      // skin and glowing after dark - which is the whole difference between a
+      // pumpkin and a jack-o'-lantern. On the festive list, so they light on
+      // the same dusk curve as everything else and go out with the holiday.
+      const faceMat = new THREE.MeshStandardMaterial({
+        color: 0xffb03a, roughness: 0.5, flatShading: true,
+        emissive: new THREE.Color(0xffa42a), emissiveIntensity: 0
+      })
+      this.registerNightLight(faceMat, 2.8, true)
+
+      const carved = []
+      for (const eye of [-0.11, 0.11]) {
+        const g = new THREE.ConeGeometry(0.075, 0.11, 3)
+        g.rotateX(Math.PI / 2)
+        g.translate(eye, 0.31, 0.3)
+        carved.push(g)
+      }
+      const grin = new THREE.BoxGeometry(0.24, 0.06, 0.04)
+      grin.translate(0, 0.17, 0.3)
+      carved.push(grin)
+      for (const tooth of [-0.06, 0.06]) {
+        const g = new THREE.BoxGeometry(0.05, 0.09, 0.04)
+        g.translate(tooth, 0.21, 0.3)
+        carved.push(g)
+      }
+
       this.pumpkinField = this.registerField('pumpkins', [
         this.decorPart(body, 0xe8761f, pumpkinSites.length, { rough: 0.7 }),
-        this.decorPart(stem, 0x4f6b32, pumpkinSites.length)
+        this.decorPart(stem, 0x4f6b32, pumpkinSites.length),
+        ...carved.map(g => {
+          const m = new THREE.InstancedMesh(g, faceMat, pumpkinSites.length)
+          this.game.add(m)
+          return m
+        })
       ], pumpkinSites)
+    }
+
+    // --- Ghosts ---
+    //
+    // REDESIGNED, because the first ones were snowmen. Mike sent a photograph
+    // of an autumn Halloween street and said "there are still snowmen in this
+    // setting" - and the snowman field was measured at amount 0 and not drawn.
+    // They were these. A white sphere on a white cone, sitting on the grass
+    // with two dark dots on its face, IS a snowman; nothing about it said
+    // ghost except my intention.
+    //
+    // Five things fix it, and every one of them is a thing a snowman cannot
+    // do: it FLOATS with a gap underneath, it TAPERS to a tattered hem instead
+    // of bulging, it has ARMS out to the sides, it has an open MOUTH as well
+    // as eyes, and you can see through it. The last one alone would nearly do
+    // it - a translucent snowman is not a snowman - but the silhouette is what
+    // reads at distance, and the silhouette is the float and the taper.
+    const ghostSites = take('ghosts')
+    if (ghostSites.length) {
+      const HOVER = 0.55
+
+      const head = new THREE.SphereGeometry(0.34, 9, 7)
+      head.scale(1, 1.1, 1)
+      head.translate(0, HOVER + 1.28, 0)
+
+      // Narrowing DOWNWARD - wide at the shoulders, thin at the tail. The old
+      // one was a cone the other way up, which is the shape of a snowman's
+      // body and the opposite of a hanging sheet.
+      const body = new THREE.CylinderGeometry(0.4, 0.17, 1.0, 9)
+      body.translate(0, HOVER + 0.62, 0)
+
+      // A tattered hem: three points trailing off the bottom at different
+      // lengths, so the edge is ragged rather than a rim.
+      const hem = []
+      for (const [i, a] of [0.5, 2.6, 4.6].entries()) {
+        const g = new THREE.ConeGeometry(0.13, 0.45 + i * 0.12, 5)
+        g.rotateX(Math.PI)
+        g.translate(Math.cos(a) * 0.13, HOVER + 0.05 - i * 0.04, Math.sin(a) * 0.13)
+        hem.push(g)
+      }
+
+      // Sleeves, out and slightly up - the pose is the whole joke.
+      const arms = []
+      for (const side of [1, -1]) {
+        const g = new THREE.CapsuleGeometry(0.11, 0.42, 3, 7)
+        g.rotateZ(side * 1.15)
+        g.translate(side * 0.5, HOVER + 0.95, 0)
+        arms.push(g)
+      }
+
+      const faceMat = new THREE.MeshStandardMaterial({
+        color: 0x14141c, roughness: 0.95, flatShading: true
+      })
+      const face = []
+      for (const e of [-0.13, 0.13]) {
+        const g = new THREE.SphereGeometry(0.07, 6, 5)
+        g.scale(1, 1.25, 1)
+        g.translate(e, HOVER + 1.36, 0.29)
+        face.push(g)
+      }
+      // The mouth. Two dots on their own are eyes on a snowman; a dark open
+      // mouth under them is a ghost saying boo, and it is the cheapest single
+      // thing that tells them apart close up.
+      const mouth = new THREE.SphereGeometry(0.11, 7, 6)
+      mouth.scale(1, 1.35, 0.6)
+      mouth.translate(0, HOVER + 1.13, 0.28)
+      face.push(mouth)
+
+      const sheet = 0xeef2fb
+      this.ghostField = this.registerField('ghosts', [
+        this.decorPart(head, sheet, ghostSites.length, { rough: 0.95, ghostly: true }),
+        this.decorPart(body, sheet, ghostSites.length, { rough: 0.95, ghostly: true }),
+        ...hem.map(g => this.decorPart(g, sheet, ghostSites.length,
+          { rough: 0.95, ghostly: true })),
+        ...arms.map(g => this.decorPart(g, sheet, ghostSites.length,
+          { rough: 0.95, ghostly: true })),
+        ...face.map(g => {
+          const m = new THREE.InstancedMesh(g, faceMat, ghostSites.length)
+          this.game.add(m)
+          return m
+        })
+      ], ghostSites, DECOR_SCALE.ghosts)
+    }
+
+    // --- Witches: hat, robe, and a green face ---
+    const witchSites = take('witches')
+    if (witchSites.length) {
+      const robe = new THREE.ConeGeometry(0.5, 1.5, 8)
+      robe.translate(0, 0.75, 0)
+      const head = new THREE.SphereGeometry(0.24, 8, 6)
+      head.translate(0, 1.62, 0)
+      const brim = new THREE.CylinderGeometry(0.5, 0.5, 0.05, 10)
+      brim.translate(0, 1.83, 0)
+      const hat = new THREE.ConeGeometry(0.3, 0.85, 8)
+      hat.translate(0, 2.25, 0)
+      // A broom, because a witch without one is a person in a hat.
+      const handle = new THREE.CylinderGeometry(0.05, 0.05, 1.9, 5)
+      handle.rotateZ(0.42)
+      handle.translate(0.52, 0.95, 0.16)
+      const bristles = new THREE.ConeGeometry(0.19, 0.5, 6)
+      bristles.rotateZ(0.42 + Math.PI)
+      bristles.translate(0.9, 0.12, 0.16)
+
+      this.witchField = this.registerField('witches', [
+        this.decorPart(robe, 0x2b2140, witchSites.length, { rough: 0.9 }),
+        this.decorPart(head, 0x74b05a, witchSites.length, { rough: 0.8 }),
+        this.decorPart(brim, 0x17141f, witchSites.length),
+        this.decorPart(hat, 0x17141f, witchSites.length),
+        this.decorPart(handle, 0x7a5a33, witchSites.length),
+        this.decorPart(bristles, 0xb9873f, witchSites.length, { rough: 0.95 })
+      ], witchSites, DECOR_SCALE.witches)
+    }
+
+    // --- Gravestones, in the grass ---
+    const graveSites = take('graves')
+    if (graveSites.length) {
+      // A slab with a rounded top, and a mound in front of it. Leaning
+      // slightly - a headstone standing perfectly true reads as a bollard.
+      const slab = new THREE.BoxGeometry(0.7, 0.95, 0.16)
+      slab.translate(0, 0.48, 0)
+      const top = new THREE.CylinderGeometry(0.35, 0.35, 0.16, 10, 1, false, 0, Math.PI)
+      top.rotateZ(Math.PI / 2)
+      top.rotateY(Math.PI / 2)
+      top.translate(0, 0.95, 0)
+      const mound = new THREE.SphereGeometry(0.5, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2)
+      mound.scale(1, 0.35, 1.5)
+      mound.translate(0, 0.02, 0.55)
+
+      this.graveField = this.registerField('graves', [
+        this.decorPart(slab, 0x8a8d92, graveSites.length, { rough: 0.95 }),
+        this.decorPart(top, 0x8a8d92, graveSites.length, { rough: 0.95 }),
+        this.decorPart(mound, 0x5b4a33, graveSites.length, { rough: 1 })
+      ], graveSites, DECOR_SCALE.graves)
+    }
+
+    // --- HAPPY HALLOWEEN signs ---
+    const signSites = take('signs')
+    if (signSites.length) {
+      const post = new THREE.BoxGeometry(0.09, 1.15, 0.09)
+      post.translate(0, 0.58, 0)
+      const posts = [-0.62, 0.62].map(x => {
+        const g = post.clone()
+        g.translate(x, 0, 0)
+        return g
+      })
+      const board = new THREE.BoxGeometry(1.7, 0.62, 0.07)
+      board.translate(0, 1.45, 0)
+
+      this.signField = this.registerField('signs', [
+        ...posts.map(g => this.decorPart(g, 0x4a3624, signSites.length)),
+        this.signBoard(board, signSites.length)
+      ], signSites, DECOR_SCALE.signs)
     }
 
     // --- Turkeys: body, head, and the fan ---
@@ -4771,7 +5122,7 @@ export class World {
         ...tiers.map(t => this.decorPart(t, 0x2d7a3c, treeSites.length, { rough: 0.9 })),
         starMesh,
         ...bulbMeshes
-      ], treeSites)
+      ], treeSites, DECOR_SCALE.trees)
     }
 
     // --- Snowmen: winter, not Christmas ---
@@ -4809,10 +5160,58 @@ export class World {
         this.decorPart(brim, 0x27272c, snowmanSites.length),
         this.decorPart(nose, 0xe4762a, snowmanSites.length),
         ...arms.map(a => this.decorPart(a, 0x6b4a2a, snowmanSites.length))
-      ], snowmanSites)
+      ], snowmanSites, DECOR_SCALE.snowmen)
     }
 
     this.createFestiveLights()
+  }
+
+  /**
+   * The board of a HAPPY HALLOWEEN sign.
+   *
+   * Painted onto a canvas rather than built out of boxes, because the sign has
+   * to actually say something and there is no low-poly way to spell. One
+   * canvas, one texture, one material, shared by every sign in the world - the
+   * text is identical on all of them, so anything else would be paying per
+   * instance for a picture that never changes.
+   */
+  signBoard(geometry, count) {
+    const canvas = document.createElement('canvas')
+    canvas.width = 512
+    canvas.height = 192
+    const ctx = canvas.getContext('2d')
+
+    ctx.fillStyle = '#1b1220'
+    ctx.fillRect(0, 0, 512, 192)
+    ctx.strokeStyle = '#e8761f'
+    ctx.lineWidth = 12
+    ctx.strokeRect(10, 10, 492, 172)
+
+    ctx.fillStyle = '#ff8c2b'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.font = 'bold 62px Georgia, serif'
+    ctx.fillText('HAPPY', 256, 64)
+    ctx.fillText('HALLOWEEN', 256, 132)
+
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    texture.anisotropy = 4
+
+    const material = new THREE.MeshStandardMaterial({
+      map: texture, roughness: 0.75, flatShading: true,
+      // Lit like everything else on the festive list, so the sign is readable
+      // after dark instead of being the one Halloween decoration you cannot
+      // see at Halloween.
+      emissive: new THREE.Color(0xff8c2b),
+      emissiveMap: texture,
+      emissiveIntensity: 0
+    })
+    this.registerNightLight(material, 1.5, true)
+
+    const mesh = new THREE.InstancedMesh(geometry, material, count)
+    this.game.add(mesh)
+    return mesh
   }
 
   /**
@@ -4831,6 +5230,7 @@ export class World {
 
     const strands = FESTIVE_COLOURS.map(() => [])
     this.wreathSites = []
+    this.doorSites = []
 
     for (const b of this.buildings) {
       // Round the top of the walls, just under the roof line. Following the
@@ -4838,8 +5238,19 @@ export class World {
       // clear of the corners of a square building reads as a halo.
       const hw = b.width / 2 + 0.12
       const hd = b.depth / 2 + 0.12
-      const y = b.height - 0.35
-      if (y < 1) continue
+      // ON THE GROUND THE BUILDING IS ON.
+      //
+      // `b.height` is the height the building came out AT, measured from its
+      // own base - and addBuilding() puts that base at groundAt(x, z). So
+      // every decoration hung off it has to start there too. Without this the
+      // whole set is placed at absolute world heights, which is right only
+      // where the terrain happens to be at zero: on a slope the lights float
+      // over the roof at the top of the hill and sink into the wall at the
+      // bottom. It is the habit worldsanity exists to catch, and it slipped in
+      // because the buildings I was looking at were on flat ground.
+      const foot = this.groundAt(b.x, b.z)
+      const y = foot + b.height - 0.35
+      if (b.height < 1) continue
 
       // 1. ALONG THE EAVES, all the way round.
       for (let i = 0; i < BULBS_PER_BUILDING; i++) {
@@ -4879,7 +5290,7 @@ export class World {
       const cf = Math.cos(face)
       const onFront = (across, height, out) => ({
         x: b.x + across * cf + (hd + out) * sf,
-        y: height,
+        y: foot + height,
         z: b.z - across * sf + (hd + out) * cf,
         rotation: 0, size: 1
       })
@@ -4914,17 +5325,27 @@ export class World {
           0.16))
       }
 
-      // 4. A WREATH ON THE DOOR.
+      // 4. THE DOOR ITSELF - a wreath at Christmas, a basket of sweets at
+      //    Halloween. One place, two decorations, so they cannot end up on
+      //    different doors.
       this.wreathSites.push({
         x: b.x + (hd + 0.22) * sf,
-        y: DOOR_HEIGHT * 0.62,
+        y: foot + DOOR_HEIGHT * 0.62,
         z: b.z + (hd + 0.22) * cf,
+        rotation: face,
+        size: 1
+      })
+      this.doorSites.push({
+        x: b.x + (hd + 0.55) * sf,
+        y: this.groundAt(b.x + (hd + 0.55) * sf, b.z + (hd + 0.55) * cf),
+        z: b.z + (hd + 0.55) * cf,
         rotation: face,
         size: 1
       })
     }
 
     this.festiveFields = []
+    this.strandMaterials = []
 
     strands.forEach((sites, i) => {
       if (!sites.length) return
@@ -4949,6 +5370,7 @@ export class World {
         emissiveIntensity: 0
       })
       this.registerNightLight(material, 2.6, true)
+      this.strandMaterials.push(material)
       const mesh = new THREE.InstancedMesh(bulb, material, sites.length)
       this.game.add(mesh)
       // One field per colour, because the three strands hold different
@@ -4957,6 +5379,43 @@ export class World {
     })
 
     this.createWreaths()
+    this.createBaskets()
+  }
+
+  /**
+   * A trick-or-treat basket on every doorstep.
+   *
+   * Built here rather than with the other scattered props because it hangs off
+   * `doorSites`, and those are collected by createFestiveLights() when it walks
+   * the buildings. Written the other way round first and the baskets simply
+   * never appeared: the list was empty at the moment the field was made, so
+   * `if (this.doorSites.length)` was false and nothing was built. Nothing threw
+   * and nothing looked wrong - the decoration was just absent, which is the
+   * quietest way for an ordering mistake to present.
+   */
+  createBaskets() {
+    if (!this.doorSites.length) return
+    // --- Trick-or-treat baskets, on the doorsteps ---
+      const pail = new THREE.CylinderGeometry(0.3, 0.24, 0.42, 9)
+      pail.translate(0, 0.21, 0)
+      const rim = new THREE.TorusGeometry(0.3, 0.045, 5, 10)
+      rim.rotateX(Math.PI / 2)
+      rim.translate(0, 0.42, 0)
+      // Sweets spilling over the top, which is what makes it a full basket
+      // rather than a bucket.
+      const sweets = []
+      for (const [i, a] of [0.4, 2.1, 3.8, 5.4].entries()) {
+        const g = new THREE.SphereGeometry(0.1, 5, 4)
+        g.translate(Math.cos(a) * 0.13, 0.46 + (i % 2) * 0.06, Math.sin(a) * 0.13)
+        sweets.push({ g, colour: [0x8e3fd4, 0xd43f6a, 0x3fb0d4, 0xd4a63f][i] })
+      }
+
+      this.basketField = this.registerField('baskets', [
+        this.decorPart(pail, 0xe8761f, this.doorSites.length, { rough: 0.6 }),
+        this.decorPart(rim, 0x2a2028, this.doorSites.length),
+        ...sweets.map(x =>
+          this.decorPart(x.g, x.colour, this.doorSites.length, { rough: 0.4 }))
+      ], this.doorSites)
   }
 
   /**
@@ -5020,6 +5479,24 @@ export class World {
   }
 
   /**
+   * The snowmen, which answer to the snow AND to the holiday.
+   *
+   * The snow is the season's and puts them up; a holiday may take them down
+   * again. Mike: "no snowmen should be present for the Halloween decoration
+   * mode" - and he is right, a snowman on a Halloween lawn is somebody else's
+   * decoration. It only comes up if you force winter weather at Halloween,
+   * which the conditions panel lets you do.
+   *
+   * Called from both setSeason and setHolidayLayer, because either can change
+   * the answer and neither knows the other's number. Recomputed from the two
+   * stored values rather than nudged from wherever it was, so it cannot drift.
+   */
+  growSnowmen() {
+    const veto = (this.holiday && this.holiday.noSnowmen) || 0
+    this.growField(this.snowmanField, (this.snowLevel || 0) * (1 - veto))
+  }
+
+  /**
    * Apply a holiday. `layer` comes from holidays.js via Environment, already
    * eased - nothing here decides anything, it only paints.
    *
@@ -5038,9 +5515,40 @@ export class World {
     this.growField(this.treeField, layer.trees)
     this.growField(this.wreathField, layer.lights)
 
-    this.festiveLevel = layer.lights
+    this.growField(this.ghostField, layer.ghosts)
+    this.growField(this.witchField, layer.witches)
+    this.growField(this.graveField, layer.graves)
+    this.growField(this.signField, layer.signs)
+    this.growField(this.basketField, layer.baskets)
+    this.growSnowmen()
+
+    // ONE SET OF STRANDS, TWO TONES.
+    //
+    // The bulbs are the same objects on the same buildings whichever holiday
+    // is on; only their colour changes. Building a second set in orange would
+    // have been four and a half thousand more instances to hold a copy of a
+    // thing already there, and two lots of geometry to keep in step the next
+    // time the strands move.
+    //
+    // The tone is the RATIO of the two amounts rather than a switch, so a
+    // holiday handing over to another mid-fade changes the colour on the way
+    // instead of snapping. In practice Halloween and Christmas are four months
+    // apart and it never happens - but a ratio costs nothing and a switch is
+    // the kind of thing that shows up the one time two windows do overlap.
+    const warm = layer.lights + layer.spooky
+    const tone = warm > 0 ? layer.spooky / warm : 0
+    this.festiveLevel = Math.max(layer.lights, layer.spooky)
+
+    const strandMats = this.strandMaterials || []
+    for (let i = 0; i < strandMats.length; i++) {
+      const material = strandMats[i]
+      const hex = mixHex(FESTIVE_COLOURS[i], SPOOKY_COLOURS[i], tone)
+      material.color.setHex(hex)
+      material.emissive.setHex(hex)
+    }
+
     for (const field of this.festiveFields || []) {
-      this.growField(field, layer.lights)
+      this.growField(field, this.festiveLevel)
     }
   }
 
@@ -6778,6 +7286,7 @@ export class World {
     stepPolice(this.police, delta, {
       player,
       robbers,
+      stations: this.policeStations(),
       spawn: () => this.makeRobber(),
       release: (id) => this.releaseRobber(id),
       rand: () => this.rand()
@@ -7054,6 +7563,22 @@ export class World {
     }
 
     this.callOutAmbulances(crewTarget(this.ambulance))
+  }
+
+  /**
+   * The police stations, for the run to the cells.
+   *
+   * Cached the same way the hospitals are, and read off the same `stations`
+   * list - a station is a station, and there is one place that knows where
+   * they all are.
+   */
+  policeStations() {
+    if (!this._policeStations) {
+      this._policeStations = (this.stations || [])
+        .filter(s => s.kind === 'police')
+        .map(s => ({ x: s.x, z: s.z, island: s.island.name || s.island.id }))
+    }
+    return this._policeStations
   }
 
   hospitals() {

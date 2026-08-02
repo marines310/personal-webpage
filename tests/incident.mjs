@@ -229,22 +229,46 @@ const through = (() => {
   let early = 0, late = 0
   const split = 20 / dt
   const lateFrom = (seconds - 20) / dt
+
+  // WHO is inside it late on, not just how many frames.
+  //
+  // "Fewer overlaps late than early" reads like "the disruption clears", but
+  // the number it compares counts vehicle-frames, so it moves with how much
+  // traffic happens to pass in each window rather than with whether anything
+  // is stuck. Adding the airport to the road network moved the busiest lane;
+  // the crash landed on a road that got busier as the run went on, and a
+  // perfectly healthy run reported 1843 then 2201 and failed.
+  //
+  // What tells a jam from a flow is TURNOVER. If the wreck is a wall, the same
+  // two or three cars sit against it for the whole run and no others ever
+  // reach it. If traffic is getting past, a different set of vehicles touches
+  // it every few seconds. Counting distinct vehicles says which - and it does
+  // not care which lane the crash landed on or how busy that lane was.
+  const earlyWho = new Set()
+  const lateWho = new Set()
+
   for (let step = 0; step < seconds / dt; step++) {
     stepTraffic(net, vehicles, dt, step * dt, null, crash)
     let hits = 0
-    for (const v of vehicles) {
+    vehicles.forEach((v, i) => {
       const box = vehicleBox(trafficPosition(net, v), v)
+      let touching = false
       for (const wreck of crash.blocks) {
-        if (boxesOverlap(box, vehicleBox(wreck, wreck))) hits++
+        if (boxesOverlap(box, vehicleBox(wreck, wreck))) touching = true
       }
-    }
+      if (!touching) return
+      hits++
+      if (step < split) earlyWho.add(i)
+      if (step >= lateFrom) lateWho.add(i)
+    })
     if (step < split) early += hits
     if (step >= lateFrom) late += hits
   }
-  return { early, late }
+  return { early, late, earlyWho: earlyWho.size, lateWho: lateWho.size }
 })()
-console.log(`   first 20s: ${through.early} vehicle-frames inside a crashed car`)
-console.log(`   last 20s:  ${through.late}`)
+console.log(`   first 20s: ${through.early} vehicle-frames inside a crashed car,` +
+            ` ${through.earlyWho} different vehicles`)
+console.log(`   last 20s:  ${through.late}, ${through.lateWho} different vehicles`)
 // NOT zero, and this is the honest part of the whole feature.
 //
 // Every position across a road is somebody's driving line - move the wreck off
@@ -259,8 +283,11 @@ console.log(`   last 20s:  ${through.late}`)
 // behaviour - four thousand and rising - rather than to bless this number.
 chk('the traffic is not simply ignoring the crash',
     through.late < 2500, `${through.late}`)
-chk('and the opening overlaps clear rather than persisting',
-    through.late < through.early, `${through.early} then ${through.late}`)
+// Six different vehicles in twenty seconds is traffic moving past an
+// obstruction. The behaviour Mike reported - the road simply shut - would show
+// as two or three, over and over, for the whole run.
+chk('and the traffic at the wreck keeps turning over rather than piling up',
+    through.lateWho >= 6, `${through.lateWho} different vehicles in the last 20s`)
 
 // ---------------------------------------------------------------------------
 console.log('\n4. The rules themselves')

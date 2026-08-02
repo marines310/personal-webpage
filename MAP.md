@@ -799,6 +799,37 @@ There's also a **don't-block-the-box** rule: a vehicle still behind its stop
 line waits properly if the road beyond the junction is occupied. Once past the
 line it is committed, and creeps until it is clear.
 
+### The short-lane rule
+
+**Do not pull into a stretch you cannot stand on if the light at the far end of
+it is against you.** Don't-block-the-box, moved one junction back.
+
+The box rule above looks at the *vehicles* sitting in the entrance ahead. This
+one looks at the road itself, because a short lane blocks the box whether or
+not anyone else is on it - the vehicle's own tail is what does the blocking. A
+bus stopping on a twelve-unit lane leaves five and a half units of itself lying
+across the crossroads it has just come out of, and everything with a green
+through *that* junction waits for a light it cannot see.
+
+`laneHolds(lane, vehicle)` is the whole question, and it is asked of the
+vehicle, not of the lane: a lane that holds a sedan easily may not hold a fire
+engine. Four of this map's 121 lanes are too short for a bus. On the denser
+street grid that has been measured but not shipped, five cannot hold a bus at
+all and fifty-one are shorter than a bus plus its stopping distance - which is
+why that work is parked and why this rule is what unparks it.
+
+`orderedNext()` carries the matching penalty (`SHORT_LANE_PENALTY`), applied
+*after* the random draw exactly like the incident penalty, so the lane a
+vehicle chooses and the reason it slowed down cannot disagree. It is a
+preference and not a wall: if the only way out is a shut short lane, that is
+still the way out.
+
+**What it is not:** the first version let a vehicle already on a short lane run
+the red rather than stop across the box behind it. That is a tidy sentence and
+it cost eighteen red lights in five minutes. A blocked box clears in one cycle;
+a vehicle crossing traffic that has the green is a crash. So the rule is
+entirely about not going in.
+
 ### What can stop a vehicle
 
 Only three things bring one to a halt: a red light, the vehicle directly in
@@ -962,6 +993,19 @@ are parked at a time.
 Every island has a port, and **you can drive out onto the quay**. A road
 leaves the ring, crosses the beach and runs the length of the pier. The deck
 is solid; there are no railings, for the same reason a real quay has none.
+
+**`PIER_DECK_Y` is zero, and that is the whole of it.** Zero is the world's
+sea-level datum: `groundHeight()` returns it everywhere off an island, and
+`coastFactor()` takes every island's terrain to exactly zero at its own
+shoreline. So every road arrives at zero where it meets the water, and the
+bridge decks are built with their top face at zero for that reason. The quays
+were the one structure that disagreed - their deck sat at 0.3, which put a
+30cm vertical face across the full width of the pier exactly where the road ran
+onto it. The AI traffic never noticed, because a traffic vehicle's collider is
+kinematic and is placed on the ground each frame, so it passes straight through
+the step; the player's chassis is a dynamic box, and a box against a vertical
+face stops dead. Driving at it left the nose exactly half a car length short of
+the pier root with the throttle open and the speedometer reading 18.
 
 The two biggest islands (`radius` at or above `PORT_BIG_REACH`) get cargo
 terminals - gantry cranes, a shed, stacked containers, two berths. The rest
@@ -1228,9 +1272,40 @@ can stop something with nowhere to stop is a rule that produces a deadlock.
 Holding only the ground traffic left landings queueing behind a rollout, which
 measured as 980 frames of two aircraft on the runway in six minutes.
 
-**You cannot drive there yet.** There is no causeway; the airport is something
-you fly past. The site is deliberately kept within `AIRPORT_MAX_SPAN` of land so
-one can be built.
+### Driving there
+
+**A causeway comes ashore on whichever island is nearest**, and a service road
+runs right round the platform. Both are derived - move an island and the
+crossing moves with the airport.
+
+**The road round the platform is a loop, and that is not decoration.** The
+runway lies down the middle of the deck with the terminal on the far side of
+it, so any road heading straight for the terminal from the landward side would
+cross the runway. Going round the outside does not, and it costs nothing: the
+loop's seaward leg passes seven units off the terminal's front door, so it is
+the forecourt as well as the perimeter, and there is no dead end anywhere on
+it. `AIRPORT_ROAD_MARGIN` sets how far in from the deck edge it runs;
+`AIRPORT_ROAD_CORNER` how tightly it turns its four corners.
+
+**The causeway lands on a straight, never on a bend** (`CAUSEWAY_CORNER_CLEAR`),
+because a road meeting a corner has no junction in it - and it keeps clear of
+that island's own quay (`CAUSEWAY_PORT_CLEAR`). Left to itself it did not: a
+port picks the bearing with the most open water in front of it and so, in
+effect, does the airport, so the first version came ashore ten units from
+BLOG's pier at five degrees to it - two piers side by side running out to sea
+together.
+
+Both pieces go into `getRoadNetwork()`, so the town's own traffic drives out
+there. About one vehicle in ten reaches the airport in five minutes.
+
+**The platform had to grow first.** `airportFootprint()` summed its width from
+the pieces and then added `AIRPORT_EDGE` on top, and the sum double-counted:
+93 units of deck against 90 units of content, so the runway's landward edge
+finished ONE unit from the edge of the deck. Every screenshot looked fine - a
+runway fills its platform in a photograph - and nothing measured it, because
+the checks were all about the stands and the stands are nowhere near the
+outside. It surfaced the moment a road needed somewhere to go: there was
+nowhere on the whole platform to put one.
 
 ---
 
@@ -1473,6 +1548,16 @@ with police behind it. They resolve on their own after a minute or two. There
 is nothing on screen for these - no banner and no arrow. They are scenery, not
 a callout, and you are not in them.
 
+**Catching it is not the end.** You have the suspect in the back and you drive
+him to a police station - the nearest one to where you caught him - and the
+banner says **TAKE HIM IN** until you get there. Arrive and he is booked and
+the mission is over. There is no clock on that half, deliberately: the
+ambulance's two minutes are there because a patient is dying, and nothing is
+dying in the back of a police car. The pressure was the chase.
+
+Step out of the police car on the way and the arrest still stands - it already
+happened.
+
 The robber is not a special car. It is whichever ordinary car happened to be
 chosen, told to run, so when the chase ends it simply carries on with its day.
 Buses and service vehicles are never picked.
@@ -1558,7 +1643,7 @@ over a few seconds.
 |---|---|
 | Easter | eggs scattered on the verges, and bunnies |
 | Fourth of July | fireworks over the water after dark |
-| Halloween | pumpkins, and lights on the buildings |
+| Halloween | jack-o'-lanterns with lit faces, ghosts, witches, gravestones, HAPPY HALLOWEEN signs, a trick-or-treat basket on every doorstep, and **orange** lights |
 | Thanksgiving | turkeys - and the pumpkins stay, at about half |
 | Christmas | trees, gifts, wreaths on the doors, and red, green and gold lights across every building |
 | New Year | fireworks, and the gifts still out |
@@ -1575,6 +1660,12 @@ names a colour and never mentions snow.
 Which means picking Christmas in summer gives you a green Christmas, and
 picking it in winter gives you gifts, lights **and** the snow. Both are
 correct, and neither needed a special case.
+
+**Halloween is orange**, not red-green-gold. The same strands run along the
+same buildings, tinted: the tone is the ratio of the two lightings rather than
+a switch between them, so one holiday handing over to another changes colour on
+the way instead of snapping. Jack-o'-lanterns have carved faces that glow after
+dark, and the signs are lit so you can read them at night.
 
 **Christmas gets the most of it**: about fifty bulbs a building - along the
 eaves, across the windows of every storey, and in an arch round the door - all
@@ -1601,6 +1692,21 @@ Dates are the real ones converted into the game's year, so the holidays turn
 up in the right seasons and the Christmas and New Year decorations overlap the
 way that week does. Everything is in `src/systems/holidays.js`: the table, the
 dates, how long each lasts, and the fireworks.
+
+---
+
+## Falling in
+
+Drive into the sea and you are put back in the garage with the picker open, so
+you choose a vehicle and drive out again — the same way every session starts.
+Ending up under the water counts too, not just falling a long way: anything
+submerged for more than a moment comes back, because no road on the map is
+below the waterline.
+
+That is deliberate rather than lazy. Anywhere on the road might have a car on
+it, so putting you back there is a search that can fail; the garage bay cannot
+be occupied and needs no search. It also makes falling in read as starting
+again rather than as being teleported.
 
 ---
 

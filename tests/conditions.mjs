@@ -14,6 +14,8 @@
  * being in the wrong place.
  */
 import { Environment, WEATHER_TYPES } from '../src/systems/Environment.js'
+import { holidayStrength } from '../src/systems/holidays.js'
+import { phaseForSeason } from '../src/systems/seasons.js'
 
 let pass = 0, fail = 0
 const chk = (n, c, d = '') => {
@@ -190,6 +192,38 @@ console.log('\n6. Opening the panel does not cost you the car')
 // before.
 const uiSource = readFileSync(ROOT + 'src/ui/UI.js', 'utf8')
 const inputsSource = readFileSync(ROOT + 'src/systems/Inputs.js', 'utf8')
+
+// ---------------------------------------------------------------------------
+// Picking a season by hand must not bring a holiday with it.
+//
+// Mike: "After the Christmas holiday was turned off, I saw the Christmas
+// lights STILL attached to the buildings." They had gone - and the calendar
+// had put them straight back. `phaseForSeason('winter')` is 0.75 and Christmas
+// sits at 0.77 with a half-window of 0.025, so the very first instant of
+// winter is INSIDE Christmas at 74% strength. Clicking Winter, or "back to the
+// automatic cycle", switched the decorations on again and it read as them
+// refusing to leave.
+//
+// The rule: the calendar drives holidays only while the calendar is driving
+// the season.
+const env = readFileSync(ROOT + 'src/systems/Environment.js', 'utf8')
+chk('a hand-picked season silences the holiday calendar',
+    /this\.holidayPick \|\| \(this\.seasonLocked \? 'none' : null\)/.test(env))
+chk('but an explicit holiday still wins over it',
+    /const manual = this\.holidayPick \|\|/.test(env))
+chk('and going back to auto hands both of them back',
+    /resumeAuto\(\)[\s\S]{0,300}this\.holidayPick = null/.test(env))
+
+// The proof that the collision is real, from the two modules themselves.
+chk('the start of winter really does fall inside Christmas',
+    holidayStrength('christmas', phaseForSeason('winter')) > 0.5,
+    `${holidayStrength('christmas', phaseForSeason('winter'))}`)
+
+// And the thaw. Picking Summer should give you summer, not a minute of
+// waiting: measured at 65.2s on the weather's own clock and 5.6s hurried.
+chk('a hand-picked season hurries the snow along', /SEASON_HURRY/.test(env))
+chk('and stops hurrying once it has caught up, not after a fixed time',
+    /Math\.abs\(this\.season\.snow - this\.seasonTarget\.snow\) < 0\.01/.test(env))
 
 chk('no panel swallows key events any more',
     !/stopPropagation/.test(uiSource))

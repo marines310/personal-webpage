@@ -761,8 +761,30 @@ export const CONTAINER_STACKS = 12
 /** How far the cargo shed's own CORNER stays from the edge of a road. */
 export const SHED_ROAD_CLEARANCE = 3
 
-/** Deck height above the water, and how thick the deck is. */
-export const PIER_DECK_Y = 0.3
+/**
+ * Deck height, and how thick the deck is.
+ *
+ * ZERO IS NOT AN ARBITRARY CHOICE - it is the world's one sea-level datum.
+ * `groundHeight()` returns 0 for every point that is not on an island, and
+ * `coastFactor()` takes every island's terrain to exactly 0 at its own
+ * shoreline. So every road arrives at 0 where it meets the water, and the
+ * bridge decks are built with their top face at 0 for that reason.
+ *
+ * The quays were the one structure in the world that disagreed. Their deck top
+ * sat at 0.3, which put a 30cm vertical face across the full width of the pier
+ * exactly where the road ran onto it. The AI traffic never noticed: a traffic
+ * vehicle's collider is kinematic and is placed at `groundAt() + height/2`
+ * every frame, so it passes straight THROUGH the step. The player's chassis is
+ * a dynamic cuboid, and a cuboid against a vertical face is stopped dead - so
+ * Mike could watch the town's cars drive out onto a quay he could not reach.
+ * Driving at it left the nose exactly 2.2 units short of the pier root - half a
+ * car length - with the throttle open and the speedometer reading 18.
+ *
+ * The lesson is the familiar one wearing a new hat: two surfaces that have to
+ * meet were given their heights independently, and no test ever asked whether
+ * they did. tests/ports.mjs asks now.
+ */
+export const PIER_DECK_Y = 0
 export const PIER_DECK_DEPTH = 1.2
 
 /** Width of the road out along the pier. */
@@ -852,6 +874,51 @@ export const AIRPORT_RUNWAY_WIDTH = 24
 export const AIRPORT_APRON_DEPTH = 46
 export const AIRPORT_EDGE = 14
 export const AIRPORT_STANDS = 4
+
+/** How deep the terminal is, front to back. */
+export const AIRPORT_TERMINAL_DEPTH = 22
+
+/**
+ * The service road that runs right round the platform, and how far its centre
+ * line sits in from the deck edge.
+ *
+ * A LOOP RATHER THAN A SPUR, and the reason is the layout, not neatness. The
+ * runway lies down the middle of the platform and the terminal is on the far
+ * side of it from the world, so a road arriving from land and heading straight
+ * for the terminal would cross the runway. Going round the outside is how a
+ * real airport solves the same problem, and it costs nothing here: the loop
+ * passes the terminal's front door on its seaward leg, so it is the forecourt
+ * as well as the perimeter, and there is no dead end anywhere on it.
+ */
+export const AIRPORT_ROAD_WIDTH = 8.5
+export const AIRPORT_ROAD_MARGIN = 7
+
+/**
+ * How tightly the loop turns its four corners.
+ *
+ * Held down rather than up. A wide sweep looks better on its own, but the
+ * corner it is cutting is the corner of the DECK, and the runway's own corner
+ * is only AIRPORT_EDGE inside that - so the wider the arc, the further it
+ * swings in toward the runway. At sixteen the road's inner kerb clipped the
+ * threshold corner by a unit and a half; at ten it clears it, and ten is still
+ * more than twice the radius the ribbon needs to keep its width.
+ */
+export const AIRPORT_ROAD_CORNER = 10
+
+/**
+ * How far from a corner of that loop a causeway is allowed to land.
+ *
+ * A road meeting another road on a bend has no junction in it - the ribbon
+ * folds and the traffic network sees one node where a driver sees two
+ * choices. Landing on a straight is worth the extra few units of crossing.
+ */
+export const CAUSEWAY_CORNER_CLEAR = 20
+
+/** And how much water it leaves between itself and that island's quay. */
+export const CAUSEWAY_PORT_CLEAR = 16
+
+/** How much wider than its road the causeway deck is - a verge, both sides. */
+export const CAUSEWAY_DECK_MARGIN = 3
 
 /**
  * Open water the platform needs around it, and how far a link to land may
@@ -2095,6 +2162,25 @@ export function getLaneNetwork() {
     const measured = measurePath(seg.points)
     const marks = cuts[segIndex].sort((a, b) => a.along - b.along)
 
+    // A closed path's first and last point are the SAME point, so a junction
+    // sitting on the seam can be found at nought units along or at the whole
+    // length of the loop, and which of the two you get comes down to whether
+    // the node's own coordinates ended up a billionth off one side or the
+    // other. Fold it to the start.
+    //
+    // Not a theoretical worry: the airport's perimeter loop is deliberately
+    // started at the causeway junction, so the only cut on it lands exactly on
+    // the seam. Landing at the far end instead produced one piece running from
+    // 623.9 to 623.9 - zero length, skipped - and the airport got no lanes at
+    // all while every existing test went on passing.
+    if (seg.closed) {
+      let folded = false
+      for (const mark of marks) {
+        if (mark.along > measured.length - 1e-3) { mark.along = 0; folded = true }
+      }
+      if (folded) marks.sort((a, b) => a.along - b.along)
+    }
+
     // Where the pieces begin and end. An open road runs from its own start
     // to its own end; a ring has no ends, so its first junction serves as
     // both - and if it has none at all it stays one continuous loop.
@@ -2939,6 +3025,16 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
     // anything it would hit, so it cannot drive through the side of a bus.
     if (v.robber) continue
 
+    // NOT AN EXEMPTION FOR SHORT LANES, and it was written as one first.
+    //
+    // "A lane you cannot stand on is part of the junction, so carry through"
+    // is a tidy sentence and it costs eighteen red lights in five minutes. A
+    // vehicle that entered on a green and met a red halfway along a twelve-
+    // unit lane has nowhere legal to be either way, and choosing to run the
+    // light trades a blocked box for a vehicle crossing traffic that has the
+    // green. The blocked box clears in one cycle. The other one is a crash.
+    //
+    // So the whole of the short-lane rule is the half below: don't go in.
     const state = signalState(lane.signal, lane.signalGroup, elapsed)
     if (state === 'red' || (state === 'amber' && toEnd > 8)) heldAtRed.add(v)
   }
@@ -2958,6 +3054,19 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
   // from 1283, because a car stopped for ANY reason then held the junction
   // shut. Only something actually moving into a junction gets to own it; two
   // stopped vehicles inside one are dealt with afterwards, by the unjam below.
+  // Which lanes are showing something other than green right now.
+  //
+  // Worked out once for the whole step rather than per vehicle per option:
+  // orderedNext() needs it to decline a short lane that is shut, and asking
+  // signalState() inside that loop would ask the same question a few hundred
+  // times a frame for the same answer.
+  const shutLanes = new Set()
+  for (let i = 0; i < lanes.length; i++) {
+    const l = lanes[i]
+    if (!l.signal) continue
+    if (signalState(l.signal, l.signalGroup, elapsed) !== 'green') shutLanes.add(i)
+  }
+
   const busyNodes = new Map()
   for (const v of vehicles) {
     if (heldAtRed.has(v) || v.speed < 0.4) continue
@@ -3120,6 +3229,30 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
       hold(gap < 0.5 ? 0 : stopSpeed(gap, v), 'red light')
     }
 
+    // THE SHORT-LANE RULE: do not pull into a stretch you cannot stand on if
+    // the light at the far end of it is against you.
+    //
+    // This is "don't block the box" moved one junction back. The existing box
+    // rule looks at the VEHICLES sitting in the entrance ahead; this looks at
+    // the road itself, because a short lane blocks the box whether or not
+    // anybody else is on it - the vehicle's own tail is what does the
+    // blocking. A bus stopping on a twelve-unit lane leaves five and a half
+    // units of itself lying across the crossroads it has just come out of, and
+    // everything with a green through THAT junction waits for a light it
+    // cannot see.
+    //
+    // Every onward option is asked, not just the favourite. A driver at a
+    // junction with one short arm shut and another open takes the open one, so
+    // holding for the shut arm would be waiting for a road it is not going to
+    // use. orderedNext() applies the matching penalty, so the choice and this
+    // hold cannot disagree. Only when there is nowhere it could go does it
+    // wait, and it waits at its own stop line where it is out of the way.
+    if (toStopLine > 0 && toEnd < TRAFFIC_STOP_SIGHT && lane.next.length) {
+      const somewhereToGo = lane.next.some(index =>
+        laneHolds(lanes[index], v) || !shutLanes.has(index))
+      if (!somewhereToGo) hold(stopSpeed(toStopLine - 0.4, v), 'short lane ahead')
+    }
+
     // Somebody else already in the junction ahead
     if (lane.toNode !== null && toEnd < JUNCTION_GUARD) {
       const claim = busyNodes.get(lane.toNode)
@@ -3229,7 +3362,7 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
     if (v.speed > 0) {
       const step = v.speed * delta
       const crossing = v.at + step >= lane.length && lane.next.length > 0
-      const options = crossing ? orderedNext(lanes, lane, v, incident) : [null]
+      const options = crossing ? orderedNext(lanes, lane, v, incident, shutLanes) : [null]
 
       // Straight ahead first, then a step to one side, then further out.
       //
@@ -3515,7 +3648,7 @@ function resolveOverlaps(network, vehicles, was) {
  * whole life turning corners, plus a little randomness so it doesn't all
  * follow the same route round the island.
  */
-function orderedNext(lanes, lane, v, incident = null) {
+function orderedNext(lanes, lane, v, incident = null, shut = null) {
   const dir = pointAlong(lane, lane.length).heading
 
   // A service vehicle whose shift is over heads for its station, choosing the
@@ -3569,6 +3702,19 @@ function orderedNext(lanes, lane, v, incident = null) {
       // none of this code in it.
       if (incident && lanePastIncident(lanes[index], incident)) {
         score -= INCIDENT_PENALTY
+      }
+
+      // And away from a lane it could not stand on that is showing red. Same
+      // shape and the same reason: a subtraction on the finished score, never
+      // a branch, so the draw above happens exactly once per option whatever
+      // the road ahead is doing. With nothing shut the penalty is zero and the
+      // scores are bit-identical to a run with none of this code in it.
+      //
+      // This is what keeps the choice and the 'short lane ahead' hold in step.
+      // Without it a vehicle could hold for one shut arm, take a different one
+      // at the junction, and the two halves would be arguing.
+      if (shut && shut.has(index) && !laneHolds(lanes[index], v)) {
+        score -= SHORT_LANE_PENALTY
       }
 
       return { index, score }
@@ -3710,6 +3856,45 @@ function blocked(where, v, snapshot, obstacles = null) {
  */
 function noseGap(lane, v) {
   return (lane.stopLine ?? lane.length) - v.at - v.length / 2
+}
+
+/**
+ * Can this vehicle come to rest on this lane without its tail in the junction
+ * behind it?
+ *
+ * THE SHORT-LANE RULE lives on this one question. `stepTraffic()` has always
+ * assumed a lane is somewhere you can queue, and on this map that is nearly
+ * always true - four lanes in a hundred and twenty-one are too short for a
+ * bus. On the denser street grid it stops being true: five lanes cannot hold a
+ * bus behind their own stop line at all and fifty-one are shorter than a bus
+ * plus its stopping distance, and each one is a plug. The vehicle stops with
+ * its nose on the line and five and a half units of itself still lying across
+ * the crossroads it came out of, and everything with a green through THAT
+ * junction waits for a light it cannot see.
+ *
+ * `stopLine` is where the NOSE must stop, so the whole vehicle fits only if
+ * the line is at least a vehicle-length along - plus a little, because a tail
+ * exactly on the boundary is still in the junction patch.
+ *
+ * Deliberately asked of the vehicle and not of the lane: a lane that holds a
+ * sedan easily may be unable to hold a fire engine, and the answer has to be
+ * different for each of them. A single `lane.short` flag would be the same
+ * mistake as one turning circle for a bus and a saloon.
+ */
+export const SHORT_LANE_CLEAR = 1.5
+
+/**
+ * How much a shut lane you could not stand on is discouraged at a junction.
+ *
+ * Big enough to beat the wander (which tops out near 1.6) and a couple of hops
+ * of the going-home table (10 each) - the same reasoning as INCIDENT_PENALTY,
+ * and finite for the same reason: if it is the only way out, it is still the
+ * way out.
+ */
+export const SHORT_LANE_PENALTY = 42
+
+export function laneHolds(lane, v) {
+  return (lane.stopLine ?? lane.length) >= v.length + SHORT_LANE_CLEAR
 }
 
 function gapSpeed(gap, v) {
@@ -4228,15 +4413,35 @@ export function getAirport() {
 function airportFootprint() {
   const taxiAcross = AIRPORT_RUNWAY_WIDTH / 2 + 12
   const standAcross = taxiAcross + 20
-  const offset = (standAcross + AIRPORT_APRON_DEPTH / 2) / 2
+  const terminalAcross = standAcross + AIRPORT_APRON_DEPTH / 2
+
+  // THE TWO OUTERMOST THINGS ON THE PLATFORM, measured from the runway centre
+  // line, which is what every other distance here is measured from.
+  //
+  // The width used to be a sum of the pieces plus AIRPORT_EDGE, and the sum
+  // double-counted: it came out at 93 against 90 units of content, so the
+  // runway's landward edge finished ONE unit from the edge of the deck and the
+  // terminal's face two from the other. Every screenshot looked fine - a
+  // runway fills its platform in a photograph - and no test asked, because the
+  // stands were checked against the platform and the stands were nowhere near
+  // the outside.
+  //
+  // It surfaced when the causeway needed somewhere to put a road: there was
+  // nowhere on the whole platform a road could go. Same lesson as the pier
+  // deck, one page later. Ask the geometry where the edge is.
+  const landward = -AIRPORT_RUNWAY_WIDTH / 2
+  const seaward = terminalAcross + AIRPORT_TERMINAL_DEPTH / 2
 
   return {
     taxiAcross,
     standAcross,
-    offset,
+    terminalAcross,
+    // Where the site sits in the same across coordinate everything else uses,
+    // so the deck comes out symmetrical about the content rather than about
+    // one arbitrary piece of it.
+    offset: (landward + seaward) / 2,
     length: AIRPORT_RUNWAY_LENGTH + AIRPORT_EDGE * 2,
-    width: AIRPORT_RUNWAY_WIDTH / 2 + standAcross +
-           AIRPORT_APRON_DEPTH / 2 + AIRPORT_EDGE
+    width: (seaward - landward) + AIRPORT_EDGE * 2
   }
 }
 
@@ -4328,7 +4533,9 @@ function layOutAirport(site, heading) {
   })
 
   const halfRun = AIRPORT_RUNWAY_LENGTH / 2
-  const { taxiAcross, standAcross, offset, length, width } = airportFootprint()
+  const {
+    taxiAcross, standAcross, terminalAcross, offset, length, width
+  } = airportFootprint()
 
   // Stands spaced by a wingspan and a gap, centred on the apron.
   const pitch = PLANE_SPAN + 8
@@ -4366,14 +4573,344 @@ function layOutAirport(site, heading) {
       width: 14
     },
     terminal: {
-      ...at(0, standAcross + AIRPORT_APRON_DEPTH / 2),
+      ...at(0, terminalAcross),
       heading,
       length: AIRPORT_STANDS * pitch,
-      depth: 22
+      depth: AIRPORT_TERMINAL_DEPTH
     },
     stands,
     platform: { x: site.x, z: site.z, heading, length, width }
   }
+}
+
+/**
+ * The service road round the platform: a closed loop inset from the deck edge.
+ *
+ * Four corners, in the platform's own frame, so it stays a rectangle whatever
+ * the site and heading turn out to be. Nothing about it is written down.
+ *
+ * The margin is checked rather than assumed - `tests/airport.mjs` measures the
+ * loop's own kerbs against the runway, the terminal and the edge of the deck,
+ * because "inset by seven" is only correct while the platform is wide enough
+ * to be inset by seven, and it was not before AIRPORT_EDGE was fixed.
+ */
+export function getApronRoad(air = getAirport()) {
+  if (!air) return null
+
+  const hl = air.platform.length / 2 - AIRPORT_ROAD_MARGIN
+  const hw = air.platform.width / 2 - AIRPORT_ROAD_MARGIN
+  if (hl <= AIRPORT_ROAD_CORNER || hw <= AIRPORT_ROAD_CORNER) return null
+
+  const world = (along, across) => ({
+    x: air.x + air.along.x * along + air.across.x * across,
+    z: air.z + air.along.z * along + air.across.z * across
+  })
+
+  const corners = [
+    world(hl, hw), world(hl, -hw), world(-hl, -hw), world(-hl, hw)
+  ]
+
+  // ROUNDED, not mitred. A road ribbon folds through itself at a bend
+  // tighter than its own half-width, and a right angle is infinitely tight -
+  // the same failure that `smoothRoad` exists to prevent on the island
+  // streets. Here the shape is known exactly, so the arc is drawn rather
+  // than smoothed into existence.
+  const r = AIRPORT_ROAD_CORNER
+  const raw = []
+  const arc = (cAlong, cAcross, from) => {
+    for (let i = 0; i <= 6; i++) {
+      const a = from + (Math.PI / 2) * (i / 6)
+      raw.push(world(cAlong + Math.cos(a) * r, cAcross + Math.sin(a) * r))
+    }
+  }
+
+  arc(hl - r, hw - r, 0)                     // +along/+across
+  arc(-(hl - r), hw - r, Math.PI / 2)        // -along/+across
+  arc(-(hl - r), -(hw - r), Math.PI)         // -along/-across
+  arc(hl - r, -(hw - r), Math.PI * 1.5)      // +along/-across
+  raw.push(raw[0])                           // a closed path repeats its start
+
+  // Evenly spaced, including along the four straights - which the arcs alone
+  // leave as single 200-unit segments. That matters twice over: the ribbon
+  // builder wants even spacing to round its corners, and the network measures
+  // "how far along" by walking the points, so a landing on a bare straight
+  // would be found at the end of it rather than where it is.
+  return {
+    points: resamplePath(raw, ROAD_POINT_SPACING),
+    corners,
+    width: AIRPORT_ROAD_WIDTH,
+    closed: true,
+    halfLength: hl,
+    halfWidth: hw
+  }
+}
+
+/**
+ * The same loop, but starting at a given point.
+ *
+ * getLaneNetwork() cuts a closed segment at each junction on it and runs its
+ * last piece to the END OF THE POLYLINE - so the stretch between a loop's
+ * first point and its first junction belongs to no lane at all. On an island
+ * ring that is a few units nobody notices. Here it was the entire loop: the
+ * causeway lands on the straight that closes the rectangle, so the one cut
+ * came out at 552.2 of 552.2 and the airport got zero lanes while every test
+ * still passed, because "there are lanes" was true of the rest of the map.
+ *
+ * Starting the polyline AT the junction makes that lost stretch zero long.
+ */
+function loopFrom(points, target) {
+  const ring = points.slice(0, -1)
+  if (!target || ring.length < 3) return [...ring, ring[0]]
+
+  // The closest point ON the loop, not the closest vertex: a vertex can be
+  // half a spacing away and that is the error we are here to remove.
+  let bestIndex = 0
+  let bestPoint = ring[0]
+  let bestDist = Infinity
+
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i]
+    const b = ring[(i + 1) % ring.length]
+    const dx = b.x - a.x
+    const dz = b.z - a.z
+    const lenSq = dx * dx + dz * dz
+    if (lenSq < 1e-9) continue
+    let t = ((target.x - a.x) * dx + (target.z - a.z) * dz) / lenSq
+    t = Math.max(0, Math.min(1, t))
+    const p = { x: a.x + dx * t, z: a.z + dz * t }
+    const d = Math.hypot(target.x - p.x, target.z - p.z)
+    if (d < bestDist) { bestDist = d; bestIndex = (i + 1) % ring.length; bestPoint = p }
+  }
+
+  const out = [bestPoint,
+               ...ring.slice(bestIndex),
+               ...ring.slice(0, bestIndex)]
+  out.push({ ...bestPoint })
+  return out
+}
+
+/**
+ * Does a proposed crossing stay off this island's pier?
+ *
+ * Measured along the whole crossing against the whole pier, not between the
+ * two roots and not between the two bearings: a five-degree difference is
+ * nothing at the beach and thirty units at the pier head, and a bearing tells
+ * you neither. Ask the geometry how close the two things get.
+ */
+function clearOfPort(island, from, to) {
+  const port = getPort(island)
+  if (!port) return true
+
+  const need = (port.width + AIRPORT_ROAD_WIDTH) / 2 + CAUSEWAY_PORT_CLEAR
+  const pier = [port.root, port.head]
+  const span = Math.hypot(to.x - from.x, to.z - from.z)
+  const steps = Math.max(2, Math.ceil(span / 4))
+
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const x = from.x + (to.x - from.x) * t
+    const z = from.z + (to.z - from.z) * t
+    if (distanceToPath(pier, x, z) < need) return false
+  }
+
+  return true
+}
+
+// `undefined` means "not worked out yet"; null is a real answer meaning there
+// is nowhere to put one, and caching that matters as much as caching a hit.
+let causewayCache
+
+/**
+ * The causeway: the road link that makes the airport somewhere you can drive.
+ *
+ * Derived, like the airport itself. It runs from whichever island's shore is
+ * nearest a straight of the perimeter loop, out across the water, and lands on
+ * that loop - so arriving at the airport puts you on the road that passes the
+ * terminal's front door without ever crossing the runway.
+ *
+ * Two things are deliberately NOT done here:
+ *
+ *  - It does not aim at the terminal. Every route from the landward side to
+ *    the terminal crosses the runway; the loop is what solves that, and the
+ *    causeway's only job is to reach the loop.
+ *  - It does not land on a corner. A road that meets a bend has no junction in
+ *    it, so the landing point is pushed CAUSEWAY_CORNER_CLEAR along the
+ *    straight and the crossing is allowed to be a few units longer.
+ *
+ * Returns null if there is no airport, or if no island is within reach of one
+ * - the same answer the search gives when it cannot site a platform at all,
+ * and for the same reason: a link nothing can reach is worse than no link.
+ */
+export function getAirportCauseway() {
+  if (causewayCache !== undefined) return causewayCache
+
+  const air = getAirport()
+  const loop = getApronRoad(air)
+  if (!air || !loop) return (causewayCache = null)
+
+  // The loop's four straights, as segments in world space. Taken from the
+  // rectangle rather than from the sampled path: a landing point has to sit on
+  // a straight, and every point of the sampled path is on one of the arcs as
+  // easily as on a side.
+  const edges = []
+  for (let i = 0; i < loop.corners.length; i++) {
+    edges.push({ a: loop.corners[i], b: loop.corners[(i + 1) % loop.corners.length] })
+  }
+
+  let best = null
+
+  for (const island of ISLANDS) {
+    for (const edge of edges) {
+      const vx = edge.b.x - edge.a.x
+      const vz = edge.b.z - edge.a.z
+      const span = Math.hypot(vx, vz)
+      if (span < CAUSEWAY_CORNER_CLEAR * 2 + 1) continue
+
+      // Where the island sits along this straight, kept clear of both bends.
+      let t = ((island.x - edge.a.x) * vx + (island.z - edge.a.z) * vz) / (span * span)
+      const clear = CAUSEWAY_CORNER_CLEAR / span
+      t = Math.max(clear, Math.min(1 - clear, t))
+
+      const landing = { x: edge.a.x + vx * t, z: edge.a.z + vz * t }
+
+      // The crossing is measured from the SHORE, not from the island's centre.
+      const dx = landing.x - island.x
+      const dz = landing.z - island.z
+      const centreDist = Math.hypot(dx, dz)
+      if (centreDist === 0) continue
+      const shore = shoreDistance(island, dx, dz)
+      const water = centreDist - shore
+      if (water <= 0 || water > AIRPORT_MAX_SPAN) continue
+
+      const dirX = dx / centreDist
+      const dirZ = dz / centreDist
+      const root = {
+        x: island.x + dirX * (shore - 1.5),
+        z: island.z + dirZ * (shore - 1.5)
+      }
+
+      // CLEAR OF THAT ISLAND'S OWN QUAY.
+      //
+      // A port picks the bearing with the most open water in front of it, and
+      // so, in effect, does the airport - so the two want the same piece of
+      // coast. Left to itself the causeway came ashore on BLOG 9.8 units from
+      // the pier root at 5.6 degrees to it: two piers side by side running out
+      // to sea together, which is the wrong picture on its own.
+      //
+      // The lane network agreed, and rather more loudly. The causeway's lanes
+      // and the port road's lanes shared tarmac, so the de-duplication dropped
+      // one of each pair - and a lane whose opposite has been dropped has no
+      // U-turn, so blog's quay became the map's only dead end with nothing to
+      // do at the end of it. The fleet median fell from 704 to 598 and
+      // relocations went from 37 to 47.
+      if (!clearOfPort(island, root, landing)) continue
+
+      if (!best || water < best.water) {
+        best = { island, landing, water, dirX, dirZ, shore }
+      }
+    }
+  }
+
+  if (!best) return (causewayCache = null)
+
+  // Start just inside the beach, the way a bridge deck does, so the deck
+  // tucks under the land instead of leaving a seam at the waterline.
+  const rootDist = best.shore - 1.5
+  const root = {
+    x: best.island.x + best.dirX * rootDist,
+    z: best.island.z + best.dirZ * rootDist
+  }
+  const length = Math.hypot(best.landing.x - root.x, best.landing.z - root.z)
+
+  // WHERE THE DECK STOPS, which is not where the road stops. The road runs on
+  // to the loop, seven units inside the platform; the deck has to end at the
+  // platform's own edge or it would lay a second slab - and a railing - across
+  // the apron. Found by walking the line rather than by subtracting the
+  // margin, because the causeway meets the edge at whatever angle the island
+  // happens to be at, and only a perpendicular crossing would make the two the
+  // same number.
+  // MEASURED ACROSS THE WHOLE DECK, not down its centre line. The crossing
+  // meets the platform at whatever angle the island happens to be at, so one
+  // corner of the deck reaches the edge several units before the other - and
+  // the centre line reaches it somewhere in between. Stopping there left a
+  // four-unit sliver of the road's kerb hanging over open water at the join,
+  // which is exactly the kind of thing a screenshot never shows you.
+  const halfDeck = (AIRPORT_ROAD_WIDTH + CAUSEWAY_DECK_MARGIN) / 2
+  const inside = (x, z) => {
+    const a = (x - air.x) * air.along.x + (z - air.z) * air.along.z
+    const c = (x - air.x) * air.across.x + (z - air.z) * air.across.z
+    return Math.abs(a) <= air.platform.length / 2 &&
+           Math.abs(c) <= air.platform.width / 2
+  }
+
+  let deckLength = length
+  for (let d = 0; d <= length; d += 0.5) {
+    const x = root.x + best.dirX * d
+    const z = root.z + best.dirZ * d
+    // Perpendicular is (dirZ, -dirX) - see the coordinate note at the top of
+    // this file: nose is +Z, so right is (-1, 0, 0).
+    const ox = best.dirZ * halfDeck
+    const oz = -best.dirX * halfDeck
+    if (inside(x + ox, z + oz) && inside(x - ox, z - oz)) { deckLength = d; break }
+  }
+
+  causewayCache = {
+    island: best.island,
+    root,
+    landing: best.landing,
+    dirX: best.dirX,
+    dirZ: best.dirZ,
+    shore: best.shore,
+    water: best.water,
+    length,
+    deckLength,
+    width: AIRPORT_ROAD_WIDTH,
+    rotationY: Math.atan2(best.dirX, best.dirZ),
+    // The middle of the DECK, which is what World.js places a slab at.
+    mid: {
+      x: root.x + best.dirX * deckLength / 2,
+      z: root.z + best.dirZ * deckLength / 2
+    }
+  }
+  return causewayCache
+}
+
+/**
+ * The road across the causeway, as one continuous world-space path:
+ *
+ *   island ring -> the shore -> across the water -> the perimeter loop
+ *
+ * Built the same way the bridge roads are, and for the same reason: the
+ * approach and the crossing have to be ONE surface or there is a seam where
+ * they meet. The island end starts on the ring so the traffic network finds a
+ * junction there without being told about one.
+ */
+export function getCausewayRoadPath() {
+  const way = getAirportCauseway()
+  if (!way) return null
+
+  const island = way.island
+  const points = []
+
+  const ring = getIslandRing(island)
+  if (ring) {
+    const on = nearestOnPath(ring, way.root.x - island.x, way.root.z - island.z)
+    if (on) points.push({ x: island.x + on.x, z: island.z + on.z })
+  }
+  if (!points.length) points.push({ x: island.x, z: island.z })
+
+  // Sampled along the crossing rather than left as two points, so the
+  // smoothing pass cannot bow a straight causeway into an arc.
+  const steps = Math.max(2, Math.round(way.length / 4))
+  for (let i = 0; i <= steps; i++) {
+    const d = (way.length * i) / steps
+    points.push({
+      x: way.root.x + way.dirX * d,
+      z: way.root.z + way.dirZ * d
+    })
+  }
+
+  return { points: smoothRoad(points, way.width), width: way.width }
 }
 
 /**
@@ -5819,6 +6356,47 @@ export function getRoadNetwork() {
       bridge: BRIDGES[i],
       closed: false
     })
+  }
+
+  // The airport. Both pieces go in, so the traffic drives out there and the
+  // missions can route to it - the alternative is a road nothing uses, which
+  // reads as scenery rather than as part of the town.
+  const causeway = getCausewayRoadPath()
+  if (causeway) {
+    segments.push({
+      points: causeway.points,
+      island: null,
+      width: causeway.width,
+      kind: 'causeway',
+      closed: false
+    })
+  }
+
+  const apron = getApronRoad()
+  if (apron) {
+    const way = getAirportCauseway()
+    const loop = loopFrom(apron.points, way && way.landing)
+
+    // TWO HALVES, not one loop, and the reason is what happens at the
+    // causeway junction. A closed segment with a single cut on it becomes ONE
+    // piece running from that cut all the way round to itself - so every
+    // lane-end at the airport, both directions of the loop and both of the
+    // causeway, meets at the same node, and the only decision anywhere on the
+    // platform is 600 units after the last one. Splitting the loop opposite
+    // the causeway gives it a second junction and halves the distance between
+    // choices, which is what the rest of the map looks like.
+    const cut = Math.floor((loop.length - 1) / 2)
+    const halves = [loop.slice(0, cut + 1), loop.slice(cut)]
+
+    for (const points of halves) {
+      segments.push({
+        points,
+        island: null,
+        width: apron.width,
+        kind: 'apron',
+        closed: false
+      })
+    }
   }
 
   return buildNetwork(segments)

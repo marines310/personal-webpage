@@ -21,7 +21,8 @@
  */
 import {
   SEASONS, SEASON_ORDER, SEASON_ROLES, SEASON_BLEND, SNOW_COLOUR, SNOW_TAKE,
-  seasonAt, seasonView, phaseForSeason, blendSeasons, easeView, emptyView, mixHex
+  seasonAt, seasonView, phaseForSeason, blendSeasons, easeView, emptyView, mixHex,
+  SNOW_HURRY, SNOW_SETTLE, SNOW_MELT
 } from '../src/systems/seasons.js'
 import { Environment, WEATHER_TYPES, COLD_FORM } from '../src/systems/Environment.js'
 import { readFileSync } from 'fs'
@@ -385,6 +386,46 @@ chk('and it only rewrites when the amount has actually changed',
     /Math\.abs\(a - field\.amount\) < /.test(world))
 chk('the flowers grow through the same field machinery as everything else',
     /growField\(this\.flowerField, amount\)/.test(world))
+// The thaw, when you have asked for it rather than waited for it. Snow's own
+// clock is right for a flurry that blew through and wrong for a menu: measured
+// at 65.2 seconds to melt normally against 5.6 hurried, and a minute after
+// picking Summer the grass was still #62a951 against its true #5fa84e.
+const winterFull = seasonView(phaseForSeason('winter'))
+const settledSnow = { ...winterFull }
+for (let i = 0; i < 30 * 400; i++) easeView(settledSnow, winterFull, 1 / 30)
+const summerNow = seasonView(phaseForSeason('summer'))
+
+const measureThaw = (hurry) => {
+  const v = { ...settledSnow }
+  for (let i = 0; i < 30 * 200; i++) {
+    easeView(v, summerNow, 1 / 30, 0.5, hurry)
+    if (v.snow < 0.02) return +(i / 30).toFixed(1)
+  }
+  return null
+}
+const slowThaw = measureThaw(false)
+const fastThaw = measureThaw(true)
+console.log(`   snow melts in ${slowThaw}s normally, ${fastThaw}s hurried`)
+chk('snow melts slowly on its own, as snow does', slowThaw > 30, `${slowThaw}`)
+chk('and quickly when a season was chosen by hand', fastThaw < 12, `${fastThaw}`)
+chk('the hurry is faster than either of snow\'s own rates',
+    SNOW_HURRY > SNOW_SETTLE && SNOW_HURRY > SNOW_MELT)
+
+// And the whole point: summer gets its own colour back exactly.
+const backToSummer = { ...settledSnow }
+for (let i = 0; i < 30 * 120; i++) easeView(backToSummer, summerNow, 1 / 30, 0.5, true)
+chk('summer ends with no tint and no snow at all',
+    backToSummer.snow < 0.001 && backToSummer.grass[1] < 0.001,
+    `snow ${backToSummer.snow}, tint ${backToSummer.grass[1]}`)
+// Which means a material returns to EXACTLY its base colour, not nearly.
+const base = 0x5fa84e
+const painted = mixHex(
+  mixHex(base, backToSummer.grass[0], backToSummer.grass[1]),
+  SNOW_COLOUR, backToSummer.snow * SNOW_TAKE.grass)
+chk('so the grass is the same green it was at the start',
+    painted === base,
+    `#${painted.toString(16)} against #${base.toString(16)}`)
+
 chk('the palms take only a fraction of the season',
     /registerSeasonal\(frondMat, 'foliage', 0\.\d+\)/.test(world))
 

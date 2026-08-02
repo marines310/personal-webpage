@@ -66,6 +66,27 @@ export const ESCAPE_AFTER = 240
 export const MESSAGE_TIME = 5
 
 /**
+ * THE RUN TO THE CELLS.
+ *
+ * Mike's addition, and the shape is the ambulance's: the crash is not over
+ * when you reach it, and the chase is not over when you catch the car. You
+ * have the suspect in the back and you drive them to a station.
+ *
+ * WHAT IT DELIBERATELY DOES NOT HAVE IS A CLOCK. The ambulance's two minutes
+ * are there because a patient is dying; nothing is dying in the back of a
+ * police car, and putting a timer on it would be inventing jeopardy to match a
+ * shape rather than because the fiction asks for one. The pursuit already had
+ * its pressure - it was the pursuit.
+ *
+ * So this half is a delivery, not a race, and the only number it needs is how
+ * close counts as arriving. `ABANDON_CUSTODY` exists for the same reason the
+ * fire has a burn limit: a player who drives off and never books the suspect
+ * should not leave the game holding a chase that can never end.
+ */
+export const AT_STATION = 20
+export const ABANDON_CUSTODY = 420
+
+/**
  * How many chases run in the background when the player is not the police.
  *
  * One to three, as asked. Re-rolled each time the set changes rather than
@@ -155,6 +176,29 @@ export function backgroundWanted(playerIsPolice, rand) {
  * Everything to do with lanes, meshes and flashing paint is the caller's.
  * This decides who is being chased and when it stops.
  */
+/** Whichever police station is nearest a point. */
+export function nearestStation(stations, to) {
+  if (!stations || !stations.length || !to) return null
+  let best = null
+  let gap = Infinity
+  for (const s of stations) {
+    const d = Math.hypot(s.x - to.x, s.z - to.z)
+    if (d < gap) { gap = d; best = s }
+  }
+  return best
+}
+
+/** Wrap the whole thing up and set the clock for the next one. */
+function finish(state, ctx, message) {
+  state.phase = 'over'
+  state.chases = []
+  state.custody = null
+  state.message = message
+  state.messageFor = MESSAGE_TIME
+  state.timer = CHASE_GAP_MIN + ctx.rand() * (CHASE_GAP_MAX - CHASE_GAP_MIN)
+  return state
+}
+
 export function stepPolice(state, delta, ctx) {
   if (state.messageFor > 0) {
     state.messageFor -= delta
@@ -172,6 +216,30 @@ export function stepPolice(state, delta, ctx) {
     state.timer = 2
   }
   state.playerChase = playerIsPolice
+
+  // --- Driving the suspect in ---
+  //
+  // Ahead of the pursuit branch, because while you are holding somebody there
+  // is no chase to run and no new one to start.
+  if (state.phase === 'custody' && state.custody) {
+    if (!playerIsPolice) {
+      // Got out of the police car with a suspect in the back. They are not
+      // yours to deliver any more, so the arrest stands and the leg ends.
+      return finish(state, ctx, 'SUSPECT HANDED OVER')
+    }
+
+    state.custody.held += delta
+
+    const at = state.custody.station
+    const here = ctx.player &&
+      Math.hypot(ctx.player.x - at.x, ctx.player.z - at.z) <= AT_STATION
+    if (here) return finish(state, ctx, 'SUSPECT BOOKED')
+
+    if (state.custody.held > ABANDON_CUSTODY) {
+      return finish(state, ctx, 'SUSPECT HANDED OVER')
+    }
+    return state
+  }
 
   // --- The player's pursuit ---
   if (playerIsPolice) {
@@ -193,10 +261,17 @@ export function stepPolice(state, delta, ctx) {
       if (caught(ctx.player, robber)) {
         ctx.release(chase.id)
         state.chases = []
-        state.phase = 'over'
+        // Not over: you have them in the back and a station to get to.
+        state.phase = 'custody'
+        state.custody = {
+          station: nearestStation(ctx.stations, ctx.player),
+          held: 0
+        }
         state.message = 'SUSPECT APPREHENDED'
         state.messageFor = MESSAGE_TIME
-        state.timer = CHASE_GAP_MIN + ctx.rand() * (CHASE_GAP_MAX - CHASE_GAP_MIN)
+        // No station in the world at all - nothing to drive to, so it ends
+        // here rather than opening a leg that cannot be completed.
+        if (!state.custody.station) return finish(state, ctx, 'SUSPECT APPREHENDED')
         return state
       }
 
@@ -281,6 +356,22 @@ export function policeHud(state, playerIsPolice, robbers) {
   const robber = chase
     ? (robbers || []).find(r => r.id === chase.id)
     : null
+
+  // Holding a suspect: the arrow points at the station instead, the same way
+  // the ambulance's turns from the crash to the hospital.
+  if (state.phase === 'custody' && state.custody) {
+    const at = state.custody.station
+    return {
+      active: true,
+      mine: !!playerIsPolice,
+      title: state.message || 'TAKE HIM IN',
+      target: at ? { x: at.x, z: at.z } : null,
+      showBar: false,
+      barLabel: '',
+      progress: 0,
+      good: false
+    }
+  }
 
   return {
     active: !!robber || !!state.message,

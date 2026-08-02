@@ -286,6 +286,110 @@ chk('the festive lights ride on the existing night-emissive list',
 chk('the props are scattered on the same sown sites as the flowers',
     /decorSites|flowerSites/.test(world))
 
+// --- Halloween has its own decorations, and its own colour ---
+//
+// Mike: "For Halloween decorations, don't add the Christmas lights - add more
+// distinctly halloween decorations ... If it's convenient to have decorative
+// lights, make them have orange colored lights."
+chk('Halloween lights nothing with the Christmas strands',
+    HOLIDAYS.halloween.lights === 0)
+chk('and lights the same strands in orange instead',
+    HOLIDAYS.halloween.spooky > 0.9)
+chk('Christmas is the other way round',
+    HOLIDAYS.christmas.lights === 1 && HOLIDAYS.christmas.spooky === 0)
+chk('and autumn stays warm through Thanksgiving',
+    HOLIDAYS.thanksgiving.spooky > 0 && HOLIDAYS.thanksgiving.lights === 0)
+
+chk('Halloween puts out jack-o\'-lanterns, ghosts, witches, graves and signs',
+    ['pumpkins', 'ghosts', 'witches', 'graves', 'signs']
+      .every(k => HOLIDAYS.halloween[k] > 0))
+chk('and a trick-or-treat basket on every doorstep',
+    HOLIDAYS.halloween.baskets === 1)
+chk('nothing of Christmas comes with it',
+    ['gifts', 'trees'].every(k => HOLIDAYS.halloween[k] === 0))
+chk('and nothing of Halloween comes with Christmas',
+    ['ghosts', 'witches', 'graves', 'signs', 'baskets']
+      .every(k => HOLIDAYS.christmas[k] === 0))
+
+// The tone is a RATIO of two amounts, not a palette switch: every value in a
+// layer has to be a number that eases, and a colour cannot.
+chk('the two lightings are amounts, so they can cross-fade',
+    typeof HOLIDAYS.halloween.spooky === 'number' &&
+    typeof HOLIDAYS.christmas.lights === 'number')
+chk('one set of strands serves both, tinted by the ratio',
+    /const tone = warm > 0 \? layer\.spooky \/ warm : 0/.test(world) &&
+    /mixHex\(FESTIVE_COLOURS\[i\], SPOOKY_COLOURS\[i\], tone\)/.test(world))
+chk('and the strand brightness is whichever holiday is louder',
+    /Math\.max\(layer\.lights, layer\.spooky\)/.test(world))
+
+// EVERY decoration must be connected to the layer, or it stays behind when
+// the holiday ends - which Mike has now had to report twice.
+chk('every scattered kind is grown from the layer',
+    DECOR_KINDS.every(k => {
+      const field = {
+        eggs: 'eggField', bunnies: 'bunnyField', pumpkins: 'pumpkinField',
+        turkeys: 'turkeyField', gifts: 'giftField', trees: 'treeField',
+        ghosts: 'ghostField', witches: 'witchField', graves: 'graveField',
+        signs: 'signField', baskets: 'basketField'
+      }[k]
+      return new RegExp(`growField\\(this\\.${field}, layer\\.${k}\\)`).test(world)
+    }),
+    DECOR_KINDS.filter(k => !new RegExp(`layer\\.${k}\\)`).test(world)).join(','))
+
+// The baskets hang off the door sites, which are collected while the lights
+// are hung - so they must be built after that, not with the other props.
+chk('the baskets are built once the doorsteps are known',
+    /createFestiveLights\(\)[\s\S]{0,4000}createBaskets\(\)/.test(world))
+
+// A GHOST MUST NOT LOOK LIKE A SNOWMAN.
+//
+// Mike sent a photograph of an autumn Halloween street: "there are still
+// snowmen in this setting". The snowman field measured amount 0 and not drawn
+// - they were the GHOSTS. A white sphere on a white cone standing on the grass
+// with two dark dots on its face IS a snowman; nothing about it said ghost
+// except my intention. The veto was working perfectly and the report was still
+// completely right, which is the useful part: "it looks like X" is a bug even
+// when the logic says Y.
+//
+// Measured after the redesign - ghost floats 0.17 clear of its base and tapers
+// 0.80 wide at the top to 0.17 at the bottom; the snowman sits at -0.02 and
+// goes 0.84 to 0.52.
+chk('a ghost floats and a snowman does not',
+    /const HOVER = 0\.55/.test(world))
+chk('a ghost tapers downward to a tattered hem',
+    /CylinderGeometry\(0\.4, 0\.17/.test(world))
+chk('has arms, which a snowman has as sticks and a ghost as sleeves',
+    /CapsuleGeometry\(0\.11, 0\.42/.test(world))
+chk('has an open mouth as well as eyes',
+    /mouth\.scale\(1, 1\.35, 0\.6\)/.test(world))
+chk('and you can see through it, which settles it whatever the shape',
+    /\.\.\.\(ghostly[\s\S]{0,80}transparent: true/.test(world) &&
+    /ghostly: true/.test(world))
+
+// And the sizes. Everything inherited a site scale chosen so an Easter egg is
+// visible from a moving car, including things that were never small: measured
+// in the world, a witch was 6.1 units against a 3-unit storey.
+chk('each kind has its own size on top of the site variation',
+    /export const DECOR_SCALE/.test(world))
+chk('and the field applies it when it grows',
+    /f\.size \* a \* field\.scale/.test(world))
+
+// No snowmen at Halloween. Mike asked directly, and he is right: a snowman on
+// a Halloween lawn is somebody else's decoration. It can only come up if you
+// force winter weather at Halloween, which the conditions panel lets you do.
+//
+// `noSnowmen` is the one key that takes something away rather than putting it
+// out, and it is still an amount that eases - so it fades them rather than
+// switching them off, and composes with everything else the same way.
+chk('Halloween sends the snowmen away', HOLIDAYS.halloween.noSnowmen === 1)
+chk('and nothing else does',
+    HOLIDAY_ORDER.filter(k => k !== 'halloween')
+      .every(k => HOLIDAYS[k].noSnowmen === 0))
+chk('the veto is a multiplier on the snow, not a second source of truth',
+    /this\.snowLevel \|\| 0\) \* \(1 - veto\)/.test(world))
+chk('and it is recomputed from both numbers wherever either changes',
+    /growSnowmen\(\)[\s\S]{0,2000}growSnowmen\(\)/.test(world))
+
 // --- Christmas trees are a holiday; snowmen are a SEASON ---
 chk('Christmas puts trees out', HOLIDAYS.christmas.trees === 1)
 chk('and New Year has not taken them down yet', HOLIDAYS.newyear.trees > 0.5)
@@ -300,9 +404,12 @@ chk('snowmen are not a holiday at all',
     !HOLIDAY_KEYS.includes('snowmen') &&
     Object.values(HOLIDAYS).every(h => h.snowmen === undefined))
 chk('they are grown from the season\'s snow instead',
-    /growField\(this\.snowmanField, view\.snow\)/.test(world))
-chk('which is inside setSeason, not setHolidayLayer',
-    /setSeason\(view\)[\s\S]{0,1400}growField\(this\.snowmanField/.test(world))
+    /this\.snowLevel = view\.snow/.test(world))
+// setSeason records the snow and setHolidayLayer records the veto; one place
+// combines them. Called from both, because either can change the answer and
+// neither knows the other's number.
+chk('the season is what supplies it',
+    /setSeason\(view\)[\s\S]{0,1600}this\.snowLevel = view\.snow/.test(world))
 
 // --- The lights actually light ---
 //

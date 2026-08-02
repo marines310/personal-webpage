@@ -3,6 +3,18 @@ import { Game } from '../core/Game.js'
 import {
   SEASON_ORDER, seasonView, seasonAt, phaseForSeason, easeView
 } from './seasons.js'
+
+/**
+ * The longest a hand-picked season may spend hurrying the snow along.
+ *
+ * A cap, not a duration - the hurry ends when the snow has caught up with the
+ * season, which is the thing actually being waited for. A fixed ten seconds
+ * was tried and expired while the WEATHER was still easing out of snowing, so
+ * the target was still high when the hurry stopped and the last of it melted
+ * at the slow rate anyway: a minute after picking Summer the grass was still
+ * #62a951 against its true #5fa84e.
+ */
+const SEASON_HURRY = 45
 import {
   HOLIDAYS, holidayAt, holidayLayer, emptyLayer, easeLayer,
   newFireworksState, stepFireworks, shellView, sparkOffset,
@@ -179,6 +191,8 @@ export class Environment {
     // December and the other never shows you anything.
     this.holidayPick = null
     this.holiday = emptyLayer()
+    // Counts down after a season is chosen by hand; see updateSeason.
+    this.seasonHurry = 0
     this.fireworks = newFireworksState()
 
     // --- Lightning ---
@@ -622,7 +636,20 @@ export class Environment {
     const fromWeather = this.current.rain * this.current.flake * 0.7
     this.seasonTarget.snow = Math.max(this.seasonTarget.snow, fromWeather)
 
-    easeView(this.season, this.seasonTarget, delta)
+    // Picking a season by hand hurries the snow along. Left on its own clock a
+    // thaw takes the best part of a minute - which is right for a flurry that
+    // blew through, and wrong for "I clicked Summer". Measured: a minute after
+    // switching from winter the grass was still #63aa52 against its true
+    // #5fa84e, because 0.027 of snow was still lying on it.
+    if (this.seasonHurry > 0) {
+      this.seasonHurry = Math.max(0, this.seasonHurry - delta)
+      // Caught up: stop hurrying, so a flurry arriving a moment later settles
+      // at its own pace rather than inheriting the menu's.
+      if (Math.abs(this.season.snow - this.seasonTarget.snow) < 0.01) {
+        this.seasonHurry = 0
+      }
+    }
+    easeView(this.season, this.seasonTarget, delta, 0.5, this.seasonHurry > 0)
 
     if (this.game.world && this.game.world.setSeason) {
       this.game.world.setSeason(this.season)
@@ -641,7 +668,22 @@ export class Environment {
    * having a key for anything a season owns.
    */
   updateHoliday(delta) {
-    const target = holidayLayer(this.seasonPhase, this.holidayPick)
+    // A HAND-PICKED SEASON TURNS THE CALENDAR OFF FOR HOLIDAYS TOO.
+    //
+    // Mike: "After the Christmas holiday was turned off, I saw the Christmas
+    // lights STILL attached to the buildings." They had gone, and the calendar
+    // had put them straight back - because picking Winter sets the year to
+    // phase 0.75, and Christmas sits at 0.77 with a half-window of 0.025. The
+    // very first instant of winter is INSIDE Christmas, at 74% strength. So
+    // "turn Christmas off, then click Winter" reads as the decorations
+    // refusing to leave, and so does "back to the automatic cycle".
+    //
+    // The rule that makes it predictable: the calendar drives holidays only
+    // while the calendar is driving the season. Choose a season by hand and
+    // you get that season and nothing else; choose a holiday as well and you
+    // get both. Nothing arrives that you did not ask for.
+    const manual = this.holidayPick || (this.seasonLocked ? 'none' : null)
+    const target = holidayLayer(this.seasonPhase, manual)
     easeLayer(this.holiday, target, delta)
 
     if (this.game.world && this.game.world.setHolidayLayer) {
@@ -1163,6 +1205,9 @@ export class Environment {
     if (phase === null) return this
     this.seasonPhase = phase
     this.seasonLocked = true
+    // Long enough to melt or lay a full covering, short enough that it is
+    // still a thaw rather than a cut.
+    this.seasonHurry = SEASON_HURRY
     return this
   }
 

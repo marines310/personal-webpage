@@ -39,7 +39,20 @@ import {
   getAirGraph,
   makePlanes,
   stepPlanes,
-  planePosition
+  planePosition,
+  getApronRoad,
+  getAirportCauseway,
+  getCausewayRoadPath,
+  getPort,
+  getLaneNetwork,
+  islandAt,
+  AIRPORT_ROAD_MARGIN,
+  AIRPORT_ROAD_WIDTH,
+  AIRPORT_TERMINAL_DEPTH,
+  AIRPORT_EDGE,
+  CAUSEWAY_CORNER_CLEAR,
+  CAUSEWAY_PORT_CLEAR,
+  CAUSEWAY_DECK_MARGIN
 } from '../src/world/islandLayout.js'
 
 let pass = 0, fail = 0
@@ -304,6 +317,196 @@ console.log(`   highest ${highest.toFixed(0)}u, lowest while airborne ${lowestFl
 chk('they climb', highest > AIRPORT_APPROACH_HEIGHT, `${highest.toFixed(0)}`)
 chk('and they are never at sea level while flying the cruise',
     lowestFlying > AIRPORT_APPROACH_HEIGHT * 0.5, `${lowestFlying.toFixed(1)}`)
+
+// ---------------------------------------------------------------------------
+console.log('\n14. You can drive there')
+
+/**
+ * The airport has been standable-on since the day it was sited - the deck was
+ * always a collider - but for as long as nothing reached it, it was scenery
+ * you flew past. These checks are about the road link, and every one of them
+ * measures the ROAD'S OWN KERBS rather than its centre line, because a road is
+ * eight and a half units wide and "the centre line is on the platform" is the
+ * kind of true statement that leaves half a carriageway over the sea.
+ */
+const loop = getApronRoad(air)
+const way = getAirportCauseway()
+const drive = getCausewayRoadPath()
+
+chk('there is a perimeter road', !!loop)
+chk('and a causeway to it', !!way)
+chk('and one continuous road along it', !!drive)
+
+if (loop && way && drive) {
+  // Into the platform's own frame, which is where every distance on it means
+  // something.
+  const frame = (p) => ({
+    along: (p.x - air.x) * air.along.x + (p.z - air.z) * air.along.z,
+    across: (p.x - air.x) * air.across.x + (p.z - air.z) * air.across.z
+  })
+
+  const halfL = air.platform.length / 2
+  const halfW = air.platform.width / 2
+  const kerb = AIRPORT_ROAD_WIDTH / 2
+
+  // The platform has to have room for a road at all. This is the check that
+  // would have caught the footprint sum double-counting: it made the deck 93
+  // wide against 90 units of content, so the runway finished ONE unit from the
+  // edge and there was nowhere on the whole platform a road could go.
+  console.log(`   platform ${air.platform.length} x ${air.platform.width},` +
+              ` margin ${AIRPORT_ROAD_MARGIN}, road ${AIRPORT_ROAD_WIDTH} wide`)
+  chk(`the deck keeps its ${AIRPORT_EDGE}u margin all round`,
+      halfW >= AIRPORT_RUNWAY_WIDTH / 2 + AIRPORT_EDGE &&
+      halfL >= AIRPORT_RUNWAY_LENGTH / 2 + AIRPORT_EDGE)
+
+  // Every point of the loop, both kerbs, against everything it must miss.
+  const runwayHalf = AIRPORT_RUNWAY_WIDTH / 2
+  const terminal = frame(air.terminal)
+  let offDeck = 0
+  let onRunway = 0
+  let inTerminal = 0
+  let closestToEdge = Infinity
+
+  for (let i = 0; i < loop.points.length; i++) {
+    const p = loop.points[i]
+    // The kerb is perpendicular to the road's OWN direction here, not to the
+    // rectangle. On the four straights those are the same thing; on the corner
+    // arcs they are not, and using the rectangle's axes put an imaginary kerb
+    // four units sideways from a road that was turning - which reported a
+    // point on the runway that no vehicle could ever occupy.
+    const q = loop.points[(i + 1) % loop.points.length]
+    const r = loop.points[(i - 1 + loop.points.length) % loop.points.length]
+    const dx = q.x - r.x
+    const dz = q.z - r.z
+    const len = Math.hypot(dx, dz) || 1
+
+    for (const side of [1, -1]) {
+      const f = frame({
+        x: p.x + (-dz / len) * side * kerb,
+        z: p.z + (dx / len) * side * kerb
+      })
+      const a = f.along
+      const c = f.across
+
+      if (Math.abs(a) > halfL || Math.abs(c) > halfW) offDeck++
+      closestToEdge = Math.min(closestToEdge, halfW - Math.abs(c), halfL - Math.abs(a))
+
+      if (Math.abs(c - frame(air.runway.from).across) < runwayHalf &&
+          Math.abs(a) < AIRPORT_RUNWAY_LENGTH / 2) onRunway++
+
+      if (Math.abs(c - terminal.across) < AIRPORT_TERMINAL_DEPTH / 2 &&
+          Math.abs(a - terminal.along) < air.terminal.length / 2) inTerminal++
+    }
+  }
+
+  console.log(`   the loop's kerbs come within ${closestToEdge.toFixed(1)}u of the deck edge`)
+  chk('the whole width of the loop is on the platform', offDeck === 0, `${offDeck} points`)
+  chk('and none of it is on the runway', onRunway === 0, `${onRunway} points`)
+  chk('and none of it is inside the terminal', inTerminal === 0, `${inTerminal} points`)
+
+  // The loop passes the terminal's front door, which is the whole reason it
+  // goes round the outside instead of straight in: a road that crossed the
+  // runway would be shorter and unusable.
+  let atTheDoor = Infinity
+  for (const p of loop.points) {
+    const f = frame(p)
+    if (Math.abs(f.along - terminal.along) > air.terminal.length / 2) continue
+    atTheDoor = Math.min(atTheDoor,
+      Math.abs(f.across - terminal.across) - AIRPORT_TERMINAL_DEPTH / 2)
+  }
+  console.log(`   it passes the terminal front at ${atTheDoor.toFixed(1)}u`)
+  chk('the loop is the terminal forecourt as well as the perimeter',
+      atTheDoor > 0 && atTheDoor < 20, `${atTheDoor.toFixed(1)}u`)
+
+  // The causeway: where it lands, and what it stays away from.
+  const landing = frame(way.landing)
+  // How far along its own straight the landing sits. One of the two terms is
+  // zero - the landing is ON an edge, so it is flush with the rectangle in
+  // that axis - and the other is the distance to the nearer bend.
+  const fromCorner = Math.max(
+    loop.halfLength - Math.abs(landing.along),
+    loop.halfWidth - Math.abs(landing.across))
+  console.log(`   the causeway crosses ${way.water.toFixed(0)}u of water from ${way.island.id}`)
+  chk('the causeway lands on a straight, not on a bend',
+      fromCorner >= CAUSEWAY_CORNER_CLEAR - 1e-6, `${fromCorner.toFixed(1)}u from the corner`)
+
+  const port = getPort(way.island)
+  if (port) {
+    // Sampled along both, because a bearing tells you nothing: the first
+    // version came ashore 9.8 units from BLOG's pier at 5.6 degrees to it.
+    let nearest = Infinity
+    for (let i = 0; i <= 40; i++) {
+      const t = i / 40
+      const x = way.root.x + (way.landing.x - way.root.x) * t
+      const z = way.root.z + (way.landing.z - way.root.z) * t
+      for (let j = 0; j <= 40; j++) {
+        const u = j / 40
+        const px = port.root.x + (port.head.x - port.root.x) * u
+        const pz = port.root.z + (port.head.z - port.root.z) * u
+        nearest = Math.min(nearest, Math.hypot(x - px, z - pz))
+      }
+    }
+    console.log(`   and passes ${nearest.toFixed(0)}u from that island's quay`)
+    chk('the causeway is not a second pier alongside the first',
+        nearest >= (port.width + AIRPORT_ROAD_WIDTH) / 2 + CAUSEWAY_PORT_CLEAR - 1,
+        `${nearest.toFixed(1)}u`)
+  }
+
+  // THE ONE THAT MATTERS: no stretch of the drive is over open water without
+  // a deck under it. Walked along the road with both kerbs, and every point
+  // has to be on land, on the causeway deck, or on the platform.
+  const onSomething = (x, z) => {
+    if (islandAt(x, z)) return true
+    const f = frame({ x, z })
+    if (Math.abs(f.along) <= halfL && Math.abs(f.across) <= halfW) return true
+    // The causeway deck, in its own frame
+    const dx = x - way.root.x
+    const dz = z - way.root.z
+    const alongDeck = dx * way.dirX + dz * way.dirZ
+    const acrossDeck = Math.abs(dx * way.dirZ - dz * way.dirX)
+    return alongDeck >= -1 && alongDeck <= way.deckLength + 1 &&
+           acrossDeck <= (way.width + CAUSEWAY_DECK_MARGIN) / 2
+  }
+
+  let overWater = 0
+  const pts = drive.points
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i].x - pts[i - 1].x
+    const dz = pts[i].z - pts[i - 1].z
+    const len = Math.hypot(dx, dz) || 1
+    for (const side of [-1, 0, 1]) {
+      const ox = (-dz / len) * side * (drive.width / 2)
+      const oz = (dx / len) * side * (drive.width / 2)
+      if (!onSomething(pts[i].x + ox, pts[i].z + oz)) overWater++
+    }
+  }
+  chk('every part of the drive has something under it', overWater === 0,
+      `${overWater} kerb points over open water`)
+
+  // And it is joined to the rest of the world, not a road on its own.
+  const net = getLaneNetwork()
+  const kinds = {}
+  for (const l of net.lanes) kinds[l.kind] = (kinds[l.kind] || 0) + 1
+  console.log(`   lanes: causeway ${kinds.causeway || 0}, apron ${kinds.apron || 0}`)
+  chk('the causeway carries lanes', (kinds.causeway || 0) >= 2)
+  chk('and so does the loop', (kinds.apron || 0) >= 2)
+
+  // A route out: from a lane on the loop, can a driver reach an island?
+  const seen = new Set()
+  const queue = net.lanes
+    .map((l, i) => ({ l, i }))
+    .filter(o => o.l.kind === 'apron')
+    .map(o => o.i)
+  let reachedLand = false
+  while (queue.length) {
+    const i = queue.shift()
+    if (seen.has(i)) continue
+    seen.add(i)
+    if (net.lanes[i].island) { reachedLand = true; break }
+    for (const n of net.lanes[i].next) queue.push(n)
+  }
+  chk('and you can drive from the airport back to an island', reachedLand)
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

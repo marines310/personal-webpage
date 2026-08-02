@@ -103,16 +103,37 @@ export class VehicleSelector {
     this.el = el
   }
 
-  /** Sit the vehicle in the garage bay, facing the door. */
+  /**
+   * Sit the vehicle in the garage bay, facing the door.
+   *
+   * Through the vehicle's own placeAt(), which brings it properly to rest.
+   * This used to set the translation and the linear velocity by hand and then
+   * assign `vehicle.speed = 0` - and there is no `speed` on a Vehicle, it is
+   * `currentSpeed`. Harmless at the start of a session, when the car is
+   * already stationary; not harmless now that falling in the sea brings you
+   * here at whatever speed you left the road, because the physics velocity was
+   * cleared and the driving model's own speed was not.
+   */
   park() {
     const vehicle = this.game.vehicle
-    if (!vehicle || !vehicle.body) return
+    if (!vehicle || !vehicle.body || !vehicle.placeAt) return
 
     const bay = this.garage.bay
-    vehicle.body.setTranslation({ x: bay.x, y: 2.2, z: bay.z }, true)
-    vehicle.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
-    vehicle.heading = bay.heading
-    vehicle.speed = 0
+    vehicle.placeAt(bay.x, this.bayHeight(), bay.z, bay.heading)
+  }
+
+  /**
+   * How high the bay floor is.
+   *
+   * Asked of the ground rather than written down as 2.2. The garage stands on
+   * the hub island and the hub happens to be near zero, which is why a fixed
+   * height has worked - it is right by coincidence, and it is the habit
+   * worldsanity exists to catch.
+   */
+  bayHeight() {
+    const world = this.game.world
+    const bay = this.garage.bay
+    return (world && world.groundAt ? world.groundAt(bay.x, bay.z) : 0) + 2.2
   }
 
   step(by) {
@@ -173,13 +194,14 @@ export class VehicleSelector {
     const from = this.garage.bay
     const to = this.garage.apron
 
-    vehicle.body.setTranslation({
-      x: from.x + (to.x - from.x) * ease,
-      y: 2.2,
-      z: from.z + (to.z - from.z) * ease
-    }, true)
+    const x = from.x + (to.x - from.x) * ease
+    const z = from.z + (to.z - from.z) * ease
+    const world = this.game.world
+    const y = (world && world.groundAt ? world.groundAt(x, z) : 0) + 2.2
+
+    vehicle.body.setTranslation({ x, y, z }, true)
     vehicle.heading = from.heading
-    vehicle.speed = 0
+    vehicle.currentSpeed = 0
   }
 
   /**
@@ -198,7 +220,10 @@ export class VehicleSelector {
 
     const vehicle = this.game.vehicle
     if (!vehicle || !vehicle.body) return
-    if (Math.abs(vehicle.speed || 0) > 2.5) { this.leftBay = true; return }
+    // getSpeed(), not `vehicle.speed` - which does not exist, so this guard
+    // has never once fired and driving PAST the door at speed would snatch
+    // control away, which is precisely what it was written to prevent.
+    if (vehicle.getSpeed() > 2.5) { this.leftBay = true; return }
 
     const at = vehicle.body.translation()
     const dx = at.x - this.garage.x

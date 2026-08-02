@@ -1,7 +1,9 @@
 import * as THREE from 'three'
 import { Game } from '../core/Game.js'
 import {
-  FALL_LIMIT, spawnPoint, groundSlope, routeToPoint, pointAlong, SIREN_RATE,
+  FALL_LIMIT, SEA_LEVEL, spawnPoint, groundSlope, routeToPoint, pointAlong,
+  SIREN_RATE,
+  getPlayerGarage,
   TRAFFIC_LENGTHS, TRAFFIC_WIDTHS
 } from './islandLayout.js'
 import {
@@ -77,6 +79,30 @@ const STUCK_SECONDS = 3
 /** How far above the road a recovered car is dropped, so it lands rather
  *  than being placed inside the surface. */
 const RECOVER_DROP = 1.6
+
+/**
+ * Under the water, and not coming back.
+ *
+ * FALL_LIMIT is -4.5 and the sea is at -1.4, so there are three units of depth
+ * in which a vehicle is completely submerged and nothing notices. Mike found
+ * one down there - a fire engine sitting under the surface with the city
+ * visible above it, speed zero, no recovery.
+ *
+ * WHAT IT IS NOT: the obvious explanation is a car coming to rest on the
+ * island's underwater slope, and that was measured and ruled out - 28,800
+ * samples of ground around every island and NOT ONE point sits between sea
+ * level and the fall limit. So something else is holding it: a collider on a
+ * quay, a pier, another vehicle. I could not reproduce it to find out which.
+ *
+ * Which is the argument for fixing the CLASS rather than the cause. "Under the
+ * water" is a thing the player can see and a thing no legitimate driving
+ * produces - every road on the map is above the waterline - so it is a sound
+ * trigger whatever put the car there. The depth check runs alongside the fall
+ * check rather than replacing it: a car falling past -4.5 should not have to
+ * wait a second and a half first.
+ */
+const SUBMERGED = SEA_LEVEL - 0.6
+const SUBMERGED_SECONDS = 1.5
 
 // Spawn position comes from the map file, so moving the starting island
 // in islandLayout.js moves the car with it.
@@ -643,6 +669,26 @@ export class Vehicle {
    * the map is the exception: there is no sensible road near the bottom of
    * the sea, so that case asks from the spawn point instead.
    */
+  /**
+   * Is this spot clear of everything else on the road?
+   *
+   * Asked of the traffic's DRAWN positions, which is where the cars visibly
+   * are, rather than of their lane offsets - the two differ by up to a lane
+   * width at a junction, and it is the visible one you would land on.
+   */
+  spotIsClear(x, z, room = 5) {
+    const traffic = this.game.world && this.game.world.traffic
+    if (!traffic) return true
+    for (const other of traffic) {
+      const at = other.drawn
+      if (!at) continue
+      if (Math.hypot(at.x - x, at.z - z) < room + (other.length || 4.4) * 0.4) {
+        return false
+      }
+    }
+    return true
+  }
+
   recoverToRoad(near) {
     if (!this.body) return false
 
@@ -654,10 +700,27 @@ export class Vehicle {
       const route = routeToPoint(world.lanes, at.x, at.z)
       if (route) {
         const lane = world.lanes.lanes[route.lane]
-        // A little way along the lane rather than at its very start, which is
-        // inside a junction and therefore the one place other traffic is
-        // certain to be.
-        const spot = pointAlong(lane, Math.min(lane.length * 0.5, 12))
+
+        // LOOK FOR A GAP, rather than always taking the same spot.
+        //
+        // Mike: "it tends to respawn on top of other cars". It did, and there
+        // was nothing stopping it - this dropped the car twelve units along
+        // the nearest lane every single time, with no idea whether anything
+        // was standing there. On a busy road the one fixed spot is occupied
+        // as often as not, and the traffic's own relocate() has checked for
+        // this since it was written; the player's recovery never did.
+        //
+        // Walked outward from the usual spot in both directions, so a clear
+        // gap near it wins over a clear gap at the far end of the road.
+        let spot = pointAlong(lane, Math.min(lane.length * 0.5, 12))
+        const usual = Math.min(lane.length * 0.5, 12)
+        for (const step of [0, 8, -8, 16, -16, 26, -26, 38, -38, 52, -52]) {
+          const along = usual + step
+          if (along < 3 || along > lane.length - 3) continue
+          const candidate = pointAlong(lane, along)
+          if (this.spotIsClear(candidate.x, candidate.z)) { spot = candidate; break }
+        }
+
         x = spot.x
         z = spot.z
         heading = spot.heading
@@ -668,6 +731,43 @@ export class Vehicle {
       }
     }
 
+    this.placeAt(x, y, z, heading)
+    return true
+  }
+
+  /**
+   * Drive off into the void and you are put back in the garage, with the
+   * picker open.
+   *
+   * Mike's idea, and it is better than anything I had. Every version of "put
+   * the car back on the road" has the same problem: the road belongs to the
+   * traffic, so any spot on it might be occupied, and picking a clear one is a
+   * search that can fail. The garage bay cannot be occupied, cannot be on a
+   * slope, and needs no search - and the flow out of it already exists and is
+   * already right, because it is how every session starts.
+   *
+   * So falling in the sea is not a teleport at all now: it is starting again.
+   * You choose a vehicle and drive out, which is a thing that happens TO you
+   * rather than a thing the game does around you.
+   *
+   * The road recovery stays as the fallback for a world with no garage in it.
+   */
+  respawn() {
+    const selector = this.game.vehicleSelector
+    if (selector && selector.show) {
+      selector.show()
+      // show() gives up quietly if there is no garage, so ask whether it
+      // actually took rather than assuming it did.
+      if (selector.isBusy()) return
+    }
+
+    // From the spawn point, not from where it is: where it is, is the bottom
+    // of the sea, and the nearest lane to that is on the wrong island.
+    this.recoverToRoad({ x: SPAWN.x, z: SPAWN.z })
+  }
+
+  /** Put the car down somewhere, stationary and pointing a given way. */
+  placeAt(x, y, z, heading) {
     this.body.setTranslation({ x, y, z }, true)
     this.body.setRotation(
       { x: 0, y: Math.sin(heading / 2), z: 0, w: Math.cos(heading / 2) }, true)
@@ -678,14 +778,6 @@ export class Vehicle {
     this.stuckFor = 0
     this.heading = heading
     this._lastHeading = heading
-    return true
-  }
-
-  /** Put the car back on the road after driving off into the void. */
-  respawn() {
-    // From the spawn point, not from where it is: where it is, is the bottom
-    // of the sea, and the nearest lane to that is on the wrong island.
-    this.recoverToRoad({ x: SPAWN.x, z: SPAWN.z })
   }
 
   /**
@@ -941,9 +1033,24 @@ export class Vehicle {
     this.updateLights(delta)
     this.updateStuck(delta)
 
-    // Drove off the edge of an island - put the car back on the hub
+    // Drove off the edge of an island - straight back to the garage.
     if (position.y < FALL_LIMIT) {
+      this.underwaterFor = 0
       this.respawn()
+      return
+    }
+
+    // Or is under the water and staying there. Given a moment rather than
+    // acted on instantly, so bouncing through the surface off a ramp does not
+    // count as drowning.
+    if (position.y < SUBMERGED) {
+      this.underwaterFor = (this.underwaterFor || 0) + delta
+      if (this.underwaterFor > SUBMERGED_SECONDS) {
+        this.underwaterFor = 0
+        this.respawn()
+      }
+    } else {
+      this.underwaterFor = 0
     }
   }
 

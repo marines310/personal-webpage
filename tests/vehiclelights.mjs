@@ -416,10 +416,21 @@ chk('and sit on the cab rather than over the back',
 // car is somewhere it cannot drive out of. Two recoveries would be two places
 // to get it wrong, and the fixed spawn point was already getting it wrong -
 // respawning always dropped the car on the hub plaza, on top of the furniture.
-chk('there is one recovery, not two',
-    /recoverToRoad\(near\)/.test(vehicle) &&
-    (vehicle.match(/setTranslation\(\{ x, y, z \}/g) || []).length === 1)
-chk('respawning uses it', /respawn\(\)[\s\S]{0,300}this\.recoverToRoad\(/.test(vehicle))
+// Still one way of putting a vehicle down - placeAt() - even though there are
+// now two ways of CHOOSING where. The garage apron and the nearest clear lane
+// are two answers to "where", not two implementations of "put it there".
+// The thing that must be unique is the whole STOP-AND-PLACE sequence, and the
+// only sound way to count it is the line that brings the car to rest. The
+// constructor also sets a rotation, and the driving model also sets an
+// angular velocity, both legitimately - counting either of those alone
+// measures something else.
+chk('there is one way of putting a vehicle down, not two',
+    /placeAt\(x, y, z, heading\)/.test(vehicle) &&
+    (vehicle.match(/this\.body\.setLinvel\(\{ x: 0, y: 0, z: 0 \}/g) || []).length === 1)
+chk('and the road recovery still ends in it',
+    /recoverToRoad\(near\)[\s\S]{0,3000}this\.placeAt\(/.test(vehicle))
+chk('respawning falls back to it when the apron is blocked',
+    /respawn\(\)[\s\S]{0,1400}this\.recoverToRoad\(/.test(vehicle))
 chk('and so does being wedged', /updateStuck\(delta\)/.test(vehicle))
 
 // STUCK IS MEASURED FROM THE BODY, NOT FROM currentSpeed.
@@ -442,6 +453,70 @@ chk('and not on the speed the model thinks it is doing',
     !/const moving = Math\.abs\(this\.currentSpeed\) > STUCK_SPEED/.test(vehicle))
 chk('the throttle is still required, so a queue is never teleported',
     /const asking = Math\.abs\(inputs\.getInput\(\)\.forward\) > 0\.1/.test(vehicle))
+// RESPAWNING PUTS YOU ON THE GARAGE APRON.
+//
+// Mike: "it tends to respawn on top of other cars". It did, and nothing
+// stopped it - recoverToRoad dropped the car twelve units along the nearest
+// lane every single time, with no idea whether anything was standing there.
+// The traffic's own relocate() has checked for a clear spot since it was
+// written; the player's recovery never did.
+//
+// The apron is the right answer for a reason beyond tidiness: it was CHOSEN
+// when the garage was sited to be clear of every road and big enough for a
+// fire engine, so no lane runs through it and no traffic can ever be on it.
+// Every other spot in the world is somebody's road. Measured over 25 respawns
+// with the city moving between each: nearest vehicle 7.2 units at worst,
+// median 17.8, and nothing landed on anything.
+// FALLING IN THE SEA PUTS YOU BACK IN THE GARAGE, WITH THE PICKER OPEN.
+//
+// Mike's idea, after the apron was still not good enough, and it is better
+// than anything I had. Every version of "put the car back on the road" has the
+// same problem: the road belongs to the traffic, so any spot on it might be
+// occupied and picking a clear one is a search that can fail. The garage bay
+// cannot be occupied, cannot be on a slope, and needs no search - and the flow
+// out of it already exists and is already right, because it is how every
+// session starts. Falling in is not a teleport any more; it is starting again.
+//
+// Driven through the real fall in the browser rather than by calling
+// respawn(): put below FALL_LIMIT at speed, then postPhysicsUpdate. Measured -
+// picker open, input held, car 0.00 from the bay, speed 0, facing the door.
+chk('falling in the sea reopens the vehicle picker',
+    /respawn\(\)[\s\S]{0,600}selector\.show\(\)/.test(vehicle))
+chk('and it checks the picker actually opened before trusting it',
+    /if \(selector\.isBusy\(\)\) return/.test(vehicle))
+chk('with the road recovery kept as the fallback for a world with no garage',
+    /respawn\(\)[\s\S]{0,1400}this\.recoverToRoad\(/.test(vehicle))
+
+// The parking is through the vehicle's own placeAt, which brings it to rest.
+// The selector used to set the translation by hand and then assign
+// `vehicle.speed = 0` - and there is no `speed` on a Vehicle, it is
+// `currentSpeed`. Harmless when the car was already stationary at the start of
+// a session; not harmless once falling in the sea brings you here at whatever
+// speed you left the road.
+const selector = readFileSync(ROOT + 'src/ui/VehicleSelector.js', 'utf8')
+chk('the garage parks the car through the one placement path',
+    /vehicle\.placeAt\(bay\.x, this\.bayHeight\(\), bay\.z, bay\.heading\)/.test(selector))
+// Checked line by line and ignoring comments, because the comment explaining
+// the bug contains the bug: a plain search for the text found its own
+// explanation and reported the fix as missing.
+chk('and nothing assigns to a `speed` field that does not exist',
+    !selector.split('\n').some(line =>
+      /vehicle\.speed\s*=/.test(line) && !/^\s*(\/\/|\*)/.test(line)))
+chk('the bay height asks the ground rather than assuming 2.2',
+    /world\.groundAt\(bay\.x, bay\.z\)/.test(selector))
+// This guard has never once fired: `vehicle.speed` is undefined, so driving
+// PAST the door at speed would snatch control away, which is exactly what it
+// was written to prevent.
+chk('and driving past the door fast no longer reopens the picker',
+    /vehicle\.getSpeed\(\) > 2\.5/.test(selector))
+chk('the nearest-lane recovery now looks for a gap rather than one fixed spot',
+    /for \(const step of \[0, 8, -8/.test(vehicle) &&
+    /this\.spotIsClear\(candidate\.x, candidate\.z\)/.test(vehicle))
+// Asked of where the traffic is DRAWN, which is where you would land on it -
+// its lane offset differs from that by up to a lane width at a junction.
+chk('clearance is judged against where the traffic actually is',
+    /const at = other\.drawn/.test(vehicle))
+
 chk('and the reference moves with the rescue, or it reads as stuck again',
     /recoverToRoad\(\)[\s\S]{0,400}this\._stuckFrom = \{ x: put\.x/.test(vehicle))
 // Deliberately not "speed is low": a car stopped at a junction with no

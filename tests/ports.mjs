@@ -48,7 +48,9 @@ import {
   CONTAINER_LONG,
   CONTAINER_WIDE,
   CONTAINER_ROAD_CLEARANCE,
-  SHED_ROAD_CLEARANCE
+  SHED_ROAD_CLEARANCE,
+  PIER_DECK_Y,
+  groundHeight
 } from '../src/world/islandLayout.js'
 
 let pass = 0, fail = 0
@@ -462,6 +464,60 @@ for (const { port, yard } of yards) {
 }
 chk('every corner of every container and shed is clear of the roads',
     intruding.length === 0, [...new Set(intruding)].slice(0, 6).join(', '))
+
+// ---------------------------------------------------------------------------
+console.log('\nThe deck meets the land it runs onto\n')
+
+/**
+ * A step at the pier root is invisible in every screenshot and fatal to
+ * driving.
+ *
+ * The AI traffic is placed on the ground each frame by a kinematic collider,
+ * so it walks through a step of any height and the quay looks perfectly
+ * usable. The player's chassis is a dynamic cuboid: a vertical face taller
+ * than about a centimetre stops it dead. Mike found this by watching the
+ * town's cars drive out onto a quay he could not get onto.
+ *
+ * So the check is not "does the pier exist" but "do the two surfaces that
+ * have to meet, meet" - measured over the whole span of ground the deck
+ * covers, because the deck is inset into the beach and the beach is not flat.
+ */
+const STEP_LIMIT = 0.08     // a kerb this size is a bump, not a wall
+const steps = []
+
+for (const port of ports) {
+  // Walk the deck's own footprint, root end first, and compare the height of
+  // the ground with the height of the deck at the same point.
+  for (let d = -6; d <= port.length; d += 0.5) {
+    const x = port.root.x + port.dirX * d
+    const z = port.root.z + port.dirZ * d
+    const ground = groundHeight(x, z)
+    // Over the deck you stand on whichever is higher; short of it, on the
+    // ground. The step is what the front wheels have to climb.
+    const rise = PIER_DECK_Y - ground
+    if (d >= 0 && rise > STEP_LIMIT) {
+      steps.push(`${port.id} +${rise.toFixed(2)} at ${d.toFixed(1)}`)
+    }
+  }
+}
+
+chk('no port deck stands proud of the ground it runs onto',
+    steps.length === 0, steps.slice(0, 5).join(', '))
+
+chk('the deck sits on the world\'s sea-level datum',
+    PIER_DECK_Y === 0, `PIER_DECK_Y is ${PIER_DECK_Y}`)
+
+// The datum itself: every shoreline really is at zero, which is the whole
+// reason a deck at zero is the right answer rather than a lucky one.
+const offDatum = []
+for (const port of ports) {
+  const x = port.island.x + port.dirX * port.shore
+  const z = port.island.z + port.dirZ * port.shore
+  if (Math.abs(groundHeight(x, z)) > 1e-6) {
+    offDatum.push(`${port.id} ${groundHeight(x, z).toFixed(3)}`)
+  }
+}
+chk('every shoreline is at exactly zero', offDatum.length === 0, offDatum.join(', '))
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

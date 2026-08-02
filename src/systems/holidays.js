@@ -42,18 +42,48 @@
  * and the Thanksgiving turkeys could not both be half-grown.
  */
 export const DECOR_KINDS = [
-  'eggs', 'bunnies', 'pumpkins', 'turkeys', 'gifts', 'trees'
+  'eggs', 'bunnies', 'pumpkins', 'turkeys', 'gifts', 'trees',
+  // Halloween's own. Mike asked for it to stop borrowing Christmas's
+  // decorations and have its own: jack-o'-lanterns, ghosts, witches,
+  // gravestones, HAPPY HALLOWEEN signs, and a trick-or-treat basket by every
+  // front door.
+  'ghosts', 'witches', 'graves', 'signs', 'baskets'
 ]
 
 /**
- * Everything a holiday can turn on. The scattered props, plus the two things
+ * Everything a holiday can turn on. The scattered props, plus the three things
  * that are not props:
  *
  *   fireworks  how busy the sky is, 0..1
  *   lights     festive lights on the buildings, which ride on the existing
  *              night-emissive list rather than on a second lighting system
+ *   spooky     the same strands, in orange
+ *
+ * TWO AMOUNTS RATHER THAN A COLOUR, and the reason is structural: every value
+ * in a layer is a NUMBER that eases from 0 to 1. A colour cannot ease that
+ * way, and a "which palette" string would be the one field in here that
+ * crossfades by switching rather than by blending. As two amounts, the strand
+ * takes whichever is louder and its tone is the ratio between them - so a
+ * holiday could hand over to another mid-fade and the lights would simply
+ * change colour on the way.
  */
-export const HOLIDAY_KEYS = [...DECOR_KINDS, 'fireworks', 'lights']
+export const HOLIDAY_KEYS = [
+  ...DECOR_KINDS, 'fireworks', 'lights', 'spooky',
+  /**
+   * How much this holiday wants the snowmen gone.
+   *
+   * The one key that takes something AWAY rather than putting it out, and it
+   * earns the exception. Snowmen belong to the season's snow, not to the
+   * calendar - so they are still there if you force winter weather at
+   * Halloween, and a snowman on a Halloween lawn is somebody else's
+   * decoration. Mike asked for it directly.
+   *
+   * Still an amount that eases from 0 to 1, so it fades them out rather than
+   * switching them off, and it composes with everything else in the layer the
+   * same way.
+   */
+  'noSnowmen'
+]
 
 /**
  * The holidays, and where they fall in the year.
@@ -73,53 +103,58 @@ export const HOLIDAY_KEYS = [...DECOR_KINDS, 'fireworks', 'lights']
 export const HOLIDAYS = {
   none: {
     label: 'None', phase: null,
-    eggs: 0, bunnies: 0, pumpkins: 0, turkeys: 0, gifts: 0, trees: 0,
-    fireworks: 0, lights: 0
+    eggs: 0, bunnies: 0, pumpkins: 0, turkeys: 0, gifts: 0, trees: 0, ghosts: 0, witches: 0, graves: 0, signs: 0, baskets: 0,
+    fireworks: 0, lights: 0, spooky: 0, noSnowmen: 0
   },
 
   easter: {
     label: 'Easter', phase: 0.06,
-    eggs: 1, bunnies: 0.8, pumpkins: 0, turkeys: 0, gifts: 0, trees: 0,
-    fireworks: 0, lights: 0
+    eggs: 1, bunnies: 0.8, pumpkins: 0, turkeys: 0, gifts: 0, trees: 0, ghosts: 0, witches: 0, graves: 0, signs: 0, baskets: 0,
+    fireworks: 0, lights: 0, spooky: 0, noSnowmen: 0
   },
 
   independence: {
     label: 'Fourth of July', phase: 0.29,
-    eggs: 0, bunnies: 0, pumpkins: 0, turkeys: 0, gifts: 0, trees: 0,
-    // Fireworks and nothing else. The Fourth is an evening, not a set of
-    // ornaments, and hanging bunting on every building to give the holiday
-    // "something in daylight" would be inventing a tradition to fill a gap
-    // in the table.
-    fireworks: 1, lights: 0.35
+    eggs: 0, bunnies: 0, pumpkins: 0, turkeys: 0, gifts: 0, trees: 0, ghosts: 0, witches: 0, graves: 0, signs: 0, baskets: 0,
+    // Fireworks and nothing else on the ground. The Fourth is an evening,
+    // not a set of ornaments, and hanging bunting on every building to give
+    // the holiday "something in daylight" would be inventing a tradition to
+    // fill a gap in the table.
+    fireworks: 1, lights: 0.35, spooky: 0, noSnowmen: 0
   },
 
   halloween: {
     label: 'Halloween', phase: 0.62,
-    eggs: 0, bunnies: 0, pumpkins: 1, turkeys: 0, gifts: 0, trees: 0,
-    fireworks: 0, lights: 0.8
+    eggs: 0, bunnies: 0, pumpkins: 1, turkeys: 0, gifts: 0, trees: 0, ghosts: 1, witches: 0.55, graves: 0.75, signs: 0.6, baskets: 1,
+    // ORANGE, not red-green-gold. Mike: "don't add the Christmas lights ...
+    // If it's convenient to have decorative lights, make them have orange
+    // colored lights." `lights` stays at zero and `spooky` carries it.
+    fireworks: 0, lights: 0, spooky: 0.95, noSnowmen: 1
   },
 
   thanksgiving: {
     label: 'Thanksgiving', phase: 0.69,
-    eggs: 0, bunnies: 0, pumpkins: 0.45, turkeys: 1, gifts: 0, trees: 0,
+    eggs: 0, bunnies: 0, pumpkins: 0.45, turkeys: 1, gifts: 0, trees: 0, ghosts: 0, witches: 0, graves: 0, signs: 0, baskets: 0,
     // The pumpkins stay on at not quite half. They are a harvest decoration
     // before they are a Halloween one, and a world that strips them out
-    // overnight looks like something failed to load.
-    fireworks: 0, lights: 0.3
+    // overnight looks like something failed to load. The lighting stays warm
+    // for the same reason - autumn is orange either side of the 31st.
+    fireworks: 0, lights: 0, spooky: 0.3, noSnowmen: 0
   },
 
   christmas: {
     label: 'Christmas', phase: 0.77,
-    eggs: 0, bunnies: 0, pumpkins: 0, turkeys: 0, gifts: 1, trees: 1,
-    fireworks: 0, lights: 1
+    eggs: 0, bunnies: 0, pumpkins: 0, turkeys: 0, gifts: 1, trees: 1, ghosts: 0, witches: 0, graves: 0, signs: 0, baskets: 0,
+    fireworks: 0, lights: 1, spooky: 0, noSnowmen: 0
   },
 
   newyear: {
     label: 'New Year', phase: 0.79,
-    eggs: 0, bunnies: 0, pumpkins: 0, turkeys: 0, gifts: 0.3, trees: 0.8,
-    fireworks: 1, lights: 0.9
+    eggs: 0, bunnies: 0, pumpkins: 0, turkeys: 0, gifts: 0.3, trees: 0.8, ghosts: 0, witches: 0, graves: 0, signs: 0, baskets: 0,
+    fireworks: 1, lights: 0.9, spooky: 0, noSnowmen: 0
   }
 }
+
 
 /** The picker's order: none first, then the year as it actually runs. */
 export const HOLIDAY_ORDER = [

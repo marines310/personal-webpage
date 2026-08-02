@@ -2017,13 +2017,384 @@ HTTP, and checks every asset the published site requests actually returns
     `0x225c30` to `0x2d7a3c` as well, because unlit at night the old green
     went almost to black and the tree read as a hole in the snow.
 
-**Still open after 1 August:**
+54. **Two "it didn't go back" bugs, both from Mike, both measured.** 1 August.
 
-- **Make the airport drivable.** No causeway to it, so it is something you fly
-  past. The site is already constrained to sit within `AIRPORT_MAX_SPAN` of
-  land precisely so a crossing is possible.
-- **The short-lane rule in `stepTraffic()`**, which unblocks item 32 and with
-  it a bigger fleet.
+    **The Christmas lights that would not leave.** They did leave - and the
+    CALENDAR put them straight back. `phaseForSeason('winter')` is 0.75;
+    Christmas sits at 0.77 with a half-window of 0.025. So **the very first
+    instant of winter is inside Christmas, at 74% strength**. Turn the holiday
+    off and then click Winter, or press "back to the automatic cycle", and the
+    decorations return - which reads as them refusing to go.
+
+    The rule that makes it predictable: **the calendar drives holidays only
+    while the calendar is driving the season.** Pick a season by hand and you
+    get that season and nothing else; pick a holiday as well and you get both.
+    Nothing arrives that you did not ask for, and "back to auto" hands both
+    back at once.
+
+    Also tidied while in there: `growField` now snaps to exactly 0 below the
+    visibility threshold. The easing is exponential and never reaches zero, so
+    a field that had been turned off sat at 0.003 for ever - invisible, but
+    with its state saying "very slightly on", which is the sort of almost-off
+    that eventually gets read as on by something else.
+
+    **The grass that would not go green again.** It did, eventually - the end
+    state was always exactly `#5fa84e`. The problem was how long: measured at
+    **65.2 seconds** for the snow to melt off it, so a minute after clicking
+    Summer the grass was still `#62a951`.
+
+    Snow's own clock is right for weather - a flurry blows through and its
+    dusting lingers, which is what stops five seconds of sleet whitewashing an
+    island - and wrong for a menu. Picking a season by hand now hurries the
+    snow: **5.6 seconds** instead of 65.2.
+
+    The hurry is a CAP with a condition, not a duration. A fixed ten seconds
+    was tried first and expired while the WEATHER was still easing out of
+    snowing, so the target was still high when the hurry stopped and the last
+    of it melted at the slow rate anyway. It now ends when the snow has caught
+    up with the season, which is the thing actually being waited for.
+
+55. **Halloween gets its own decorations.** 1 August. Mike: *"don't add the
+    Christmas lights - add more distinctly halloween decorations."* He was
+    right that it was borrowing: Halloween had pumpkins and a red-green-gold
+    strand, which reads as somebody having left the Christmas ones up.
+
+    Now: jack-o'-lanterns with carved faces that glow, sheet ghosts, witches
+    with brooms, gravestones in the grass, HAPPY HALLOWEEN signs, and a
+    trick-or-treat basket on every doorstep. Measured in the running game: 80
+    lanterns, 66 ghosts, 20 witches, 44 graves, 16 signs, 89 baskets.
+
+    **One set of strands, two tones.** The lighting is two AMOUNTS - `lights`
+    and `spooky` - rather than a colour, because every value in a layer has to
+    be a number that eases from 0 to 1 and a colour cannot. The strand takes
+    whichever is louder and its tone is the ratio between them, so a handover
+    changes colour on the way rather than snapping. Building a second set of
+    orange bulbs would have been four and a half thousand more instances
+    holding a copy of something already there.
+
+    The signs are a **canvas texture**, because a sign has to say something and
+    there is no low-poly way to spell. One canvas, one material, shared by
+    every sign - and on the festive list, so it is readable at night instead of
+    being the one Halloween decoration you cannot see at Halloween.
+
+    **Three mistakes worth keeping:**
+
+    - **The baskets never appeared, and nothing threw.** They hang off
+      `doorSites`, which `createFestiveLights()` collects while walking the
+      buildings - and they were being built before that ran, so the list was
+      empty and `if (length)` was simply false. The quietest way an ordering
+      mistake can present: no error, no warning, just an absent decoration.
+    - **The decorations were placed at absolute heights.** `b.height` is
+      measured from the building's own base and `addBuilding()` puts that base
+      at `groundAt(x, z)` - so every light, wreath and basket needed that
+      offset. Without it the whole set is right only where the terrain happens
+      to be at zero: on a slope they float over the roof at the top of the hill
+      and sink into the wall at the bottom. It slipped in because the town I
+      was looking at was flat.
+    - **A probe measured a stale build.** The first Halloween run reported the
+      ghosts, witches, graves and signs as missing entirely; they were fine,
+      and `dist/` predated the density table they needed. Rebuild before
+      measuring, or the measurement is of something else.
+
+    And the thing Mike has now asked for twice, checked properly: turning the
+    holiday off leaves NOTHING. The test walks the full field list rather than
+    the ones I remembered to wire up, because a decoration that stays behind is
+    exactly a decoration nobody connected to the layer.
+
+56. **Respawning on top of other cars, and Halloween snowmen.** 1 August.
+
+    **The respawn.** Mike: *"it tends to respawn on top of other cars"*. It
+    did, and nothing stopped it: `recoverToRoad()` dropped the car twelve units
+    along the nearest lane every single time, with no idea whether anything was
+    standing there. The traffic's own `relocate()` has checked for a clear spot
+    since the day it was written - the player's recovery never did, which is
+    what happens when two things that do the same job are written years apart.
+
+    Falling in the sea now puts you on the **garage apron**, and the reason is
+    better than tidiness: that patch of ground was CHOSEN, when the garage was
+    sited, to be clear of every road and big enough to hold a fire engine. No
+    lane runs through it, so no traffic can ever be on it. Every other spot in
+    the world is somebody's road. It is also where you started, so falling in
+    the sea reads as being put back at the beginning.
+
+    The nearest-lane recovery is still the fallback and now walks outward from
+    its usual spot looking for a gap. Clearance is judged against where the
+    traffic is DRAWN rather than its lane offset - the two differ by up to a
+    lane width at a junction, and the drawn one is what you would land on.
+
+    Measured over 25 respawns with the city moving between each: nearest
+    vehicle 7.2 units at worst, median 17.8, **nothing landed on anything**.
+
+    `placeAt()` came out of it - one stop-and-place, used by both. There are
+    two answers to "where" now and still one implementation of "put it there".
+
+    **No snowmen at Halloween**, also asked for directly. They belong to the
+    season's snow rather than to the calendar, so the only way to get one is to
+    force winter weather at Halloween - which the conditions panel lets you do,
+    and a snowman on a Halloween lawn is somebody else's decoration.
+    `noSnowmen` is the one key in a holiday layer that takes something away
+    rather than putting it out, and it earns the exception by still being an
+    amount that eases: it fades them rather than switching them off.
+    `setSeason` records the snow, `setHolidayLayer` records the veto, and one
+    function combines them - called from both, because either can change the
+    answer and neither knows the other's number.
+
+57. **"There are still snowmen" - and there weren't.** 1 August. Mike sent a
+    photograph of an autumn Halloween street with a field of white figures on
+    it. The snowman field measured **amount 0, not drawn**. They were the
+    GHOSTS.
+
+    The veto from item 56 was working perfectly and the report was still
+    completely right, which is the part worth keeping: **"it looks like X" is a
+    bug even when the logic says Y.** A white sphere on a white cone, standing
+    on the grass with two dark dots on its face, IS a snowman. Nothing about it
+    said ghost except my intention.
+
+    Five changes, each of them something a snowman cannot do: it FLOATS with a
+    gap underneath, it TAPERS downward to a tattered hem instead of bulging out
+    at the base, it has ARMS, it has an open MOUTH as well as eyes, and you can
+    see through it. Measured: the ghost floats 0.17 clear and goes 0.80 wide at
+    the top to 0.17 at the bottom; the snowman sits at -0.02 and goes 0.84 to
+    0.52. Their number came down from 66 to 32 as well - sixty-six on one
+    island read as an installation rather than as decorations.
+
+    **And everything tall was oversized**, which the same photograph showed and
+    no test had ever asked about. The site size (1.9-2.5) exists because an
+    Easter egg at true scale is one pixel from a moving car; every kind then
+    inherited it, including the ones that were never small. Measured in world
+    units against a 3-unit storey and a 4.4-unit car: a witch **6.1** tall, a
+    snowman 5.0, a ghost 4.5, a headstone 2.9. `DECOR_SCALE` now gives each
+    kind its own size and the site size goes back to being what it was for -
+    the variation between one instance and the next. Ghost 2.6, witch 2.8,
+    snowman 2.6, tree 3.6, headstone 1.4.
+
+    Worth noting how it was found: the picture said "too big", and a picture
+    cannot answer "how big" - a prop photographed from six units away always
+    looks enormous. The measurement that settled it was world height against
+    two things whose size is not in question.
+
+58. **Falling in the sea puts you back in the garage.** 1 August, Mike's idea
+    after the apron still was not good enough - and it is better than anything
+    I had.
+
+    Every version of "put the car back on the road" has the same problem: the
+    road belongs to the traffic, so any spot on it might be occupied, and
+    picking a clear one is a search that can fail. The garage bay cannot be
+    occupied, cannot be on a slope, and needs no search - **and the flow out of
+    it already exists and is already right, because it is how every session
+    starts.** So falling in is not a teleport at all now: it is starting again.
+    You pick a vehicle and drive out, which is something that happens to you
+    rather than something the game does around you.
+
+    Worth noticing as a pattern: three attempts were spent making a placement
+    algorithm better, and the answer was to stop placing and reuse a flow that
+    was already correct. The road recovery stays as the fallback for a world
+    with no garage in it.
+
+    **Two latent bugs in the garage came out with it**, both from the same
+    root - the selector was written against fields that do not exist:
+
+    - `park()` assigned `vehicle.speed = 0`, and a Vehicle has `currentSpeed`.
+      Harmless while the car was always stationary at the start of a session;
+      not harmless once falling in the sea brings you here at whatever speed
+      you left the road, because the physics velocity was cleared and the
+      driving model's own speed was not. It goes through `placeAt()` now, the
+      one stop-and-place path.
+    - `checkEntered()` guarded on `Math.abs(vehicle.speed || 0) > 2.5` to stop
+      driving PAST the door snatching control away. Same missing field, so the
+      guard has never once fired.
+
+    The bay height also asked for a flat 2.2 rather than the ground - right by
+    coincidence, because the hub is near zero.
+
+    Driven through the real fall in the browser rather than by calling
+    `respawn()`: put below FALL_LIMIT at speed, then `postPhysicsUpdate`.
+    Measured - picker open, input held, car 0.00 from the bay, speed 0, facing
+    the door.
+
+    And one about the test: `!/vehicle\.speed = 0/` reported the fix as missing,
+    because the COMMENT explaining the bug contains the bug. It checks line by
+    line ignoring comments now.
+
+59. **A vehicle under the water that nothing noticed.** 1 August. Mike
+    photographed a fire engine sitting below the surface, city visible above
+    it, speed zero, no recovery.
+
+    **The gap:** `FALL_LIMIT` is -4.5 and `SEA_LEVEL` is -1.4. There are three
+    units of depth in which a vehicle is completely submerged and no check
+    exists. The fall test only ever asked "has it gone past -4.5".
+
+    **What it is NOT:** the obvious cause is a car settling on the island's
+    underwater slope, and that was measured and ruled out - 28,800 samples of
+    ground around every island, and **not one point** sits between sea level
+    and the fall limit. So something else was holding it: a quay collider, a
+    pier, another vehicle. I could not reproduce it to find out which.
+
+    Which is the argument for fixing the CLASS rather than the cause. "Under
+    the water" is something the player can see and something no legitimate
+    driving produces - every road on the map is above the waterline - so it is
+    a sound trigger whatever put the car there. Submerged for a second and a
+    half and you go back to the garage. The depth check runs ALONGSIDE the fall
+    check rather than replacing it, so a car falling past -4.5 does not have to
+    wait first. Measured in the browser: held at y = -3, rescued at 1.5s, back
+    in the bay.
+
+60. **The run to the cells.** 1 August, Mike's addition to the pursuit:
+    catching the car is not the end of it. You have the suspect in the back and
+    a station to drive to, the same second half the ambulance run has - and for
+    the same reason, that arriving somewhere is a thing you can DO, where the
+    chase ended the instant you touched the car.
+
+    **It deliberately has no clock.** The ambulance's two minutes exist because
+    a patient is dying; nothing is dying in the back of a police car, and a
+    timer here would be jeopardy invented to match a shape rather than because
+    the fiction asks for one. The pursuit already had its pressure - it was the
+    pursuit. So this half is a delivery, not a race.
+
+    Four cases that needed deciding rather than defaulting:
+
+    - **No station in the world at all** - the arrest ends there rather than
+      opening a leg that cannot be completed.
+    - **Getting out of the police car mid-delivery** - SUSPECT HANDED OVER. The
+      arrest already happened; losing it would punish a change of vehicle.
+    - **Never delivering him** - `ABANDON_CUSTODY`, for the same reason the
+      fire has a burn limit: the game must not end up holding a chase that can
+      never finish.
+    - **No new chase starts while you are holding somebody**, which falls out
+      of the custody branch sitting ahead of the pursuit branch.
+
+    Verified end to end in the browser: PURSUIT IN PROGRESS, caught, SUSPECT
+    APPREHENDED with the arrow swung round to the nearest station to the catch,
+    TAKE HIM IN while driving, SUSPECT BOOKED on arrival.
+
+**Added 2 August.**
+
+61. **The quay you could watch other cars drive onto.** Mike: *"weren't we
+    supposed to be able to drive onto the docks as well? I see the
+    environment's cars being able to however I am unable to."*
+
+    He was right, and the reason is the best example this project has produced
+    of why a proxy is not a measurement.
+
+    **`PIER_DECK_Y` was 0.3.** Zero is the world's sea-level datum:
+    `groundHeight()` returns it for every point that is not on an island, and
+    `coastFactor()` takes every island's terrain to exactly zero at its own
+    shoreline. Every road therefore arrives at zero where it meets the water,
+    and the bridge decks are built with their top face at zero for that reason.
+    The quays were the one structure that disagreed, which put a 30cm vertical
+    face across the full width of the pier exactly where the road ran onto it.
+
+    **Why only the player noticed.** A traffic vehicle's collider is kinematic
+    and is placed at `groundAt() + height/2` every frame, so it walks straight
+    THROUGH a step of any height. The player's chassis is a dynamic cuboid, and
+    a cuboid against a vertical face is stopped dead. So the town's cars drove
+    out onto a quay Mike could not reach, which is exactly what he described.
+
+    Measured by driving it in the browser rather than by reading the geometry:
+    before, the nose came to rest 2.2 units short of the pier root - half a car
+    length - with the throttle open and the speedometer reading 18. After, it
+    reaches the head of every pier tested.
+
+    `tests/ports.mjs` now walks the deck's whole footprint and compares the
+    height of the ground with the height of the deck at the same point, and
+    asserts the shorelines really are at zero - which is what makes zero the
+    right answer rather than a lucky one.
+
+62. **The airport causeway, and the platform that had no room for a road.**
+
+    The link is the easy half: a crossing from the nearest island to a service
+    road that runs right round the platform. The loop is not decoration - the
+    runway lies down the middle of the deck with the terminal on the far side
+    of it, so any road heading straight for the terminal from the landward side
+    would cross the runway. Round the outside does not, and the seaward leg
+    passes seven units off the terminal's front door, so the perimeter road is
+    the forecourt too and there is no dead end anywhere on it.
+
+    **Three things had to be fixed before a road would fit at all.**
+
+    - **The platform was 25 units too narrow.** `airportFootprint()` summed the
+      width from the pieces and then added `AIRPORT_EDGE` on top, and the sum
+      double-counted: 93 units of deck against 90 units of content, so the
+      runway's landward edge finished ONE unit from the edge of the deck. Every
+      screenshot looked fine - a runway fills its platform in a photograph -
+      and nothing measured it, because every existing check was about the
+      stands and the stands are nowhere near the outside.
+    - **The causeway wanted the same coast as the quay.** A port picks the
+      bearing with the most open water in front of it, and so, in effect, does
+      the airport. Left alone the crossing came ashore on BLOG 9.8 units from
+      the pier root at 5.6 degrees to it. The lane network agreed and rather
+      more loudly: the two roads' lanes shared tarmac, the de-duplication
+      dropped one of each pair, a lane whose opposite has been dropped has no
+      U-turn, and blog's quay became the map's only dead end. `clearOfPort()`
+      samples the whole crossing against the whole pier - a bearing tells you
+      nothing, because five degrees is nothing at the beach and thirty units at
+      the pier head.
+    - **A closed segment's seam.** `getLaneNetwork()` cuts a closed segment at
+      each junction on it and runs the last piece to the end of the polyline,
+      so the stretch between the polyline's start and its first junction
+      belongs to no lane. On an island ring that is a few units nobody notices.
+      The loop is deliberately started AT the causeway junction, so its one cut
+      lands exactly on the seam - and a billionth of floating point decided
+      whether it was found at nought or at 623.9, giving one piece of zero
+      length and **an airport with no lanes at all, while every existing test
+      went on passing.** Folded to the start now.
+
+    The apron loop goes into the network as two open halves rather than one
+    closed loop, so the airport has two junctions instead of one and the
+    distance between decisions is 300 units instead of 600.
+
+    Verified by driving it: from SKILLS, across 63 units of water, onto the
+    platform at a constant 18 units a second, y never below 0.44.
+
+63. **The short-lane rule.** The one item 32 was waiting on.
+
+    **Do not pull into a stretch you cannot stand on if the light at the far
+    end of it is against you.** Don't-block-the-box, moved one junction back.
+    The box rule looks at the VEHICLES in the entrance ahead; this looks at the
+    road itself, because a short lane blocks the box whether or not anyone else
+    is on it - the vehicle's own tail is what does the blocking.
+
+    `laneHolds(lane, v)` is asked of the vehicle, not of the lane. A lane that
+    holds a sedan may not hold a fire engine, and a single `lane.short` flag
+    would be the same mistake as one turning circle for a bus and a saloon.
+
+    **The version that did not ship** treated a short lane as part of the
+    junction and let a vehicle already on one carry through the red rather than
+    stop across the box behind it. Tidy sentence; eighteen red lights in five
+    minutes. A blocked box clears in one cycle; a vehicle crossing traffic that
+    has the green is a crash. The whole rule is now about not going in.
+
+    `orderedNext()` carries the matching penalty, applied AFTER the random draw
+    exactly like `INCIDENT_PENALTY`, so the lane a vehicle picks and the reason
+    it slowed down cannot disagree.
+
+    **Measured with the rule off and on, same map, same fleet:**
+
+    | | turns onto a shut short lane | frames sitting on one | relocations |
+    |---|---|---|---|
+    | off | 8 | 7,378 | 40 |
+    | on | 1 | 4,438 | 36 |
+
+    Not zero, and it should not be: when every onward lane is a shut short one,
+    or the preferred one is blocked and the collision veto falls through, the
+    shut short lane is still the only way out.
+
+**The new traffic baseline, 2 August.** The airport is on the road network now,
+so the numbers in items 30 and 31 no longer reproduce - a different lane
+network is a different roll of the same dice, and there is no seed to hold.
+121 lanes, 45 junctions, 94 vehicles, five minutes:
+
+| | slowest | median | max | relocations | worst stop |
+|---|---|---|---|---|---|
+| 1 August (113 lanes) | 97 | 704 | 2,448 | 37 | - |
+| 2 August | 24 | 736 | 3,835 | 36 | 39.0s |
+
+`traffic.mjs` still fails the same three checks it has failed since the fleet
+went to 94, and the slowest vehicle is on the hub ring, nowhere near the new
+roads. `stations.mjs` went the other way and is now **1 failure instead of 3** -
+the welded pair from item 30 is gone.
+
+**Still open after 2 August:**
 - **The 19 structural failures** behind the parked density work, including
   `streetedit` showing street take-over is no longer invisible - a broken
   invariant, not a threshold.

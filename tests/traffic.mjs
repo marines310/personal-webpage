@@ -36,7 +36,10 @@ import {
   TRAFFIC_LENGTHS,
   BUS_DWELL,
   STUCK_LIMIT,
-  LANE_MIN_LENGTH
+  LANE_MIN_LENGTH,
+  laneHolds,
+  SHORT_LANE_CLEAR,
+  SHORT_LANE_PENALTY
 } from '../src/world/islandLayout.js'
 
 let pass = 0, fail = 0
@@ -560,6 +563,95 @@ chk('every lamp, wheel and trim is within the bodywork', proud.length === 0,
 chk(`the player's car is a sedan (${CAR_LENGTH} x ${CAR_WIDTH})`,
     CAR_LENGTH === 4.4 && CAR_WIDTH === TRAFFIC_WIDTHS.sedan,
     `${CAR_LENGTH} x ${CAR_WIDTH} vs 4.4 x ${TRAFFIC_WIDTHS.sedan}`)
+
+// ---------------------------------------------------------------------------
+console.log('\n9. The short-lane rule')
+
+/**
+ * `stepTraffic()` has always assumed a lane is somewhere you can queue. Four
+ * of this map's lanes are too short for a bus; on the denser street grid the
+ * count goes to fifty-one, and each one is a plug - a vehicle stops with its
+ * nose on the line and its tail lying across the crossroads it came out of,
+ * and everything with a green through THAT junction waits for a light it
+ * cannot see.
+ *
+ * The rule is one sentence: do not pull into a stretch you cannot stand on if
+ * the light at the far end of it is against you. It is "don't block the box"
+ * moved one junction back.
+ */
+chk('a lane long enough for a sedan may still be too short for a bus',
+    laneHolds({ stopLine: 8, length: 20 }, { length: 4.4 }) &&
+    !laneHolds({ stopLine: 8, length: 20 }, { length: 11 }))
+
+chk('the answer is about the stop line, not the whole lane',
+    !laneHolds({ stopLine: 4, length: 40 }, { length: 4.4 }))
+
+chk('an unsignalled lane is judged on its own length',
+    laneHolds({ length: 40 }, { length: 11 }) &&
+    !laneHolds({ length: 6 }, { length: 11 }))
+
+chk('and the margin is real, so a tail exactly on the boundary does not count',
+    !laneHolds({ stopLine: 11 + SHORT_LANE_CLEAR - 0.01, length: 30 }, { length: 11 }))
+
+// The penalty has to beat everything else in orderedNext's score, or the
+// choice and the hold would disagree - the same reasoning as INCIDENT_PENALTY.
+chk('the penalty outweighs the wander, which tops out near 1.6',
+    SHORT_LANE_PENALTY > 1.6)
+chk('and outweighs a couple of hops of the going-home table (10 each)',
+    SHORT_LANE_PENALTY > 20)
+chk('but is finite, so the only way out is still a way out',
+    Number.isFinite(SHORT_LANE_PENALTY))
+
+// THE MEASUREMENT. Not "does the constant exist" but "does anything actually
+// drive onto a shut lane it cannot stand on", asked of a five-minute run by
+// watching for the frame a vehicle changes lane.
+const shortRun = (() => {
+  const fleet = makeTraffic(net, TRAFFIC_FLEET, stops)
+  const wasOn = fleet.map(v => v.lane)
+  let entered = 0
+  let onOne = 0
+
+  for (let step = 0; step < seconds / dt; step++) {
+    const t = step * dt
+    // The state BEFORE the step, which is what the vehicle would have been
+    // deciding against.
+    const shut = new Set()
+    net.lanes.forEach((l, i) => {
+      if (l.signal && signalState(l.signal, l.signalGroup, t) !== 'green') shut.add(i)
+    })
+
+    stepTraffic(net, fleet, dt, t)
+
+    fleet.forEach((v, i) => {
+      const lane = net.lanes[v.lane]
+      if (!laneHolds(lane, v) && shut.has(v.lane)) onOne++
+      if (v.lane !== wasOn[i]) {
+        // A relocation is a teleport, not a turn - it lands anywhere and is
+        // the valve's business, not this rule's.
+        if (v.at < 6 && !laneHolds(lane, v) && shut.has(v.lane)) entered++
+        wasOn[i] = v.lane
+      }
+    })
+  }
+  return { entered, onOne }
+})()
+
+console.log(`   turns onto a shut lane too short to stand on: ${shortRun.entered}`)
+console.log(`   vehicle-frames sitting on one: ${shortRun.onOne}`)
+
+// NOT ZERO, and it should not be. The rule is a preference, like the incident
+// avoidance: when every onward lane is a shut short one, or the preferred lane
+// is blocked by a vehicle and the collision veto falls through to the next
+// option, the shut short lane is still the only way out - and a vehicle parked
+// at a junction for ever is worse than one blocking a box for a cycle.
+//
+// The same run with the rule switched off - penalty zero, hold removed - gives
+// 8 turns and 7,378 frames. These thresholds are set to catch a return to
+// that, not to bless the numbers below them.
+chk('almost nothing turns into a stretch it could not stand on while shut',
+    shortRun.entered <= 2, `${shortRun.entered}`)
+chk('and the time spent sitting on one is well down on leaving it to chance',
+    shortRun.onOne < 6000, `${shortRun.onOne}`)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

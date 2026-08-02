@@ -225,7 +225,22 @@ export function emptyView() {
  * would swing through whatever lies on the straight line between white and
  * green while the amount was still high.
  */
-export function easeView(current, target, delta, rate = 0.5) {
+/**
+ * How fast snow settles, melts, and how fast it does either when you have just
+ * picked a season by hand.
+ *
+ * The slow rates are right for weather: a flurry blows through and its dusting
+ * takes a while to go, which is what snow does and what stops five seconds of
+ * sleet whitewashing an island. They are wrong for a menu. Measured: a minute
+ * after switching from winter to summer the grass was still #63aa52 against
+ * its true #5fa84e, because 0.027 of snow was still lying on it - Mike's
+ * "the grass doesn't turn as green as the beginning".
+ */
+export const SNOW_SETTLE = 0.14
+export const SNOW_MELT = 0.06
+export const SNOW_HURRY = 0.7
+
+export function easeView(current, target, delta, rate = 0.5, hurry = false) {
   const k = 1 - Math.exp(-delta * rate)
 
   for (const role of SEASON_ROLES) {
@@ -246,7 +261,10 @@ export function easeView(current, target, delta, rate = 0.5) {
   // so and takes longer than that to melt, which is both what snow does and
   // what stops a five-second flurry from whitewashing the island.
   const settling = target.snow > current.snow
-  const ks = 1 - Math.exp(-delta * (settling ? 0.14 : 0.06))
+  const snowRate = hurry
+    ? SNOW_HURRY
+    : (settling ? SNOW_SETTLE : SNOW_MELT)
+  const ks = 1 - Math.exp(-delta * snowRate)
   current.snow += (target.snow - current.snow) * ks
 
   current.label = target.label
