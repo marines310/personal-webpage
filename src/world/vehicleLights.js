@@ -40,6 +40,23 @@ export function blinkOn(elapsed, phase = 0) {
 }
 
 /**
+ * Which half of the two-tone an emergency vehicle is on right now.
+ *
+ * THE FLASH AND THE SOUND ARE ONE CLOCK. This expression existed three times -
+ * once in `Vehicle.js` for the player's roof bar, once in `updateTraffic()` for
+ * everybody else's, and it was about to exist a fourth time for the siren.
+ * Every one of them said the same thing, which is exactly the shape of the bug
+ * this file was written to end: two implementations of one fact drift, and you
+ * find out when a police car's lights and its siren fall out of step.
+ *
+ * `rate` is `SIREN_RATE`, and the two halves are the two sides of the roof bar
+ * and the two notes of the siren. Nothing else needs to know that.
+ */
+export function sirenBeat(elapsed, rate) {
+  return Math.floor(elapsed * rate) % 2 === 0
+}
+
+/**
  * How dark it is, as far as headlights are concerned: 0 broad daylight,
  * 1 pitch black.
  *

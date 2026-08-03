@@ -15,6 +15,7 @@ import {
   islandOutline,
   islandReach,
   inlandDistance,
+  islandAt,
   getIslandJunctions,
   getTownPlots,
   getRoadsidePlots,
@@ -132,7 +133,7 @@ export const GROUND_SINK = 0.7
 export const GRASS_ABOVE_SAND = 0.3
 import { mixHex, SNOW_COLOUR, SNOW_TAKE } from '../systems/seasons.js'
 import { DECOR_KINDS, emptyLayer } from '../systems/holidays.js'
-import { lampBrightness, blinkOn, gloomLevel, sideOfVehicle } from './vehicleLights.js'
+import { lampBrightness, blinkOn, gloomLevel, sideOfVehicle, sirenBeat } from './vehicleLights.js'
 import { newFireState, stepFire, smokeStrength, fireHud, RESPONDERS } from './fireGame.js'
 import {
   newPoliceState, stepPolice, policeHud, chooseRobber, ROBBER_SPEED
@@ -3206,7 +3207,7 @@ export class World {
 
     // One flash cycle for the whole city, so the emergency lights beat
     // together rather than each one drifting
-    const beat = Math.floor(this.elapsed * SIREN_RATE) % 2 === 0
+    const beat = sirenBeat(this.elapsed, SIREN_RATE)
 
     // How dark it is, worked out once for the whole fleet rather than a
     // hundred times. Weather as well as night: the traffic used to light up
@@ -7639,6 +7640,67 @@ export class World {
       policeHud(this.police, kind === 'police', robbers),
       ambulanceHud(this.ambulance, kind === 'ambulance')
     ])
+  }
+
+  /**
+   * Everything the sound needs, gathered from wherever it actually lives.
+   *
+   * The mix itself is in `systems/audioMix.js`, which has no THREE in it and
+   * knows nothing about any of this - the same split the seasons, the holidays
+   * and the three mission games have. This method is the join, and it belongs
+   * here because World is already the one place that can reach the vehicle,
+   * the weather, the picker and the coastline at once.
+   *
+   * Every field is allowed to be missing. `mix()` reads an absent field as
+   * "none of that" and returns a silent world rather than throwing, which
+   * matters because this is called on the very first frame, before some of
+   * these systems have finished arriving.
+   */
+  audioState() {
+    const vehicle = this.game.vehicle
+    const selector = this.game.vehicleSelector
+    const weather = this.game.environment ? this.game.environment.current : null
+    const at = vehicle ? vehicle.getPosition() : null
+
+    // A siren is not "this vehicle has a roof bar". Police cars, ambulances
+    // and fire engines flash their beacons the whole time they are on the
+    // road - that is what the light bar does - but a siren running for the
+    // entire session because you happened to pick the ambulance would be
+    // unbearable within a minute. It sounds when there is a callout to sound
+    // it for, which is the same question the HUD asks.
+    const mission = this.activeMission()
+    const emergency = vehicle && vehicle.mesh &&
+                      vehicle.mesh.userData && vehicle.mesh.userData.beacons
+
+    return {
+      speed: vehicle ? vehicle.getSignedSpeed() : 0,
+      topSpeed: vehicle && vehicle.params ? vehicle.params.maxForwardSpeed : 18,
+      // In the garage with the picker open you are not driving anything.
+      running: !!vehicle && !(selector && selector.isBusy()),
+      siren: !!(emergency && mission && mission.active),
+      elapsed: this.elapsed,
+      sirenRate: SIREN_RATE,
+      indicator: vehicle ? vehicle.indicator : 0,
+      // The same blink the lamps use, so the tick and the flash are one thing.
+      blink: blinkOn(this.elapsed, 0),
+      wind: weather ? weather.wind : 0,
+      rain: weather ? weather.rain : 0,
+      flake: weather ? weather.flake : 0,
+      toShore: at ? this.distanceInland(at.x, at.z) : 0
+    }
+  }
+
+  /**
+   * How far inland a point is, in world coordinates - 0 anywhere over water.
+   *
+   * Asked of the island's real outline rather than of a radius, for the reason
+   * this file keeps rediscovering: the coastlines are arbitrary polygons and a
+   * circle is wrong about all of them. It is what tells the sea how loud to be.
+   */
+  distanceInland(x, z) {
+    const island = islandAt(x, z)
+    if (!island) return 0
+    return Math.max(0, inlandDistance(island, x - island.x, z - island.z))
   }
 
   // -------------------------------------------------------------

@@ -6,6 +6,7 @@ import { Inputs } from '../systems/Inputs.js'
 import { Camera } from '../systems/Camera.js'
 import { Assets } from '../systems/Assets.js'
 import { Environment } from '../systems/Environment.js'
+import { Audio } from '../systems/Audio.js'
 import { World } from '../world/World.js'
 import { VehicleSelector } from '../ui/VehicleSelector.js'
 import { Vehicle } from '../world/Vehicle.js'
@@ -104,6 +105,11 @@ export class Game {
     this.vehicleSelector = new VehicleSelector()
     this.updateLoadingProgress(92)
 
+    // 7b. Sound. Silent, and without a context: a browser will not let a page
+    //     make a noise before the visitor has done something, so the graph is
+    //     built by the first click on the speaker button and not before.
+    this.audio = new Audio()
+
     // 8. Create zone manager
     this.zoneManager = new ZoneManager()
     this.updateLoadingProgress(96)
@@ -152,6 +158,12 @@ export class Game {
 
     // 50: UI
     this.ticker.on('tick', (delta) => this.ui.update(delta), 50)
+
+    // 55: Sound, after the world has moved and before the frame is drawn, so
+    // the mix is made from the same state the picture is.
+    this.ticker.on('tick', (delta) => {
+      this.audio.update(delta, this.world.audioState())
+    }, 55)
 
     // 100: Render (always last)
     this.ticker.on('tick', () => this.render(), 100)

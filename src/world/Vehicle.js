@@ -7,7 +7,7 @@ import {
   TRAFFIC_LENGTHS, TRAFFIC_WIDTHS
 } from './islandLayout.js'
 import {
-  lampBrightness, blinkOn, gloomLevel,
+  lampBrightness, blinkOn, gloomLevel, sirenBeat,
   steerIndicator, resolveIndicator, stalkCancels, turnAmount
 } from './vehicleLights.js'
 // World imports Vehicle nowhere, so this is not a cycle - and taking the
@@ -505,8 +505,8 @@ export class Vehicle {
     // vehicle you would pick to see them.
     const beacons = this.mesh.userData.beacons
     if (!beacons) return
-    const beat = Math.floor(
-      (this.game.world ? this.game.world.elapsed : 0) * SIREN_RATE) % 2 === 0
+    const beat = sirenBeat(
+      this.game.world ? this.game.world.elapsed : 0, SIREN_RATE)
     for (const beacon of beacons) {
       beacon.material.emissiveIntensity = ((beacon.side === 1) === beat) ? 2.4 : 0.05
     }

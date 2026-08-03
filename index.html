@@ -119,12 +119,25 @@
       </div>
     </div>
 
+    <!-- Sound. Off until it is asked for: this is a CV, and somebody may well
+         open it in an open-plan office. The click that turns it on is also the
+         user gesture a browser insists on before a page may make any noise at
+         all, so the two requirements happen to be the same button. -->
+    <div id="sound-box">
+      <button id="sound-toggle" type="button" aria-pressed="false"
+              title="Sound (M)">
+        <span class="sound-icon" id="sound-icon">&#128263;</span>
+        <span class="sound-label">Sound</span>
+        <span class="sound-state" id="sound-state">off</span>
+      </button>
+    </div>
+
     <!-- Controls hint -->
     <div id="controls-hint">
       <p>WASD or Arrow Keys to drive</p>
       <p>SHIFT to boost &middot; SPACE to brake</p>
       <p>Drag to look &middot; scroll to zoom &middot; C to re-centre</p>
-      <p>&#44; and &#46; to indicate</p>
+      <p>&#44; and &#46; to indicate &middot; <b>M</b> for sound</p>
     </div>
 
     <!-- What is going on right now: the fire, and later the other callouts.

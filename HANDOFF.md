@@ -2394,6 +2394,66 @@ went to 94, and the slowest vehicle is on the hub ring, nowhere near the new
 roads. `stations.mjs` went the other way and is now **1 failure instead of 3** -
 the welded pair from item 30 is gone.
 
+64. **Sound.** 2 August. Mike chose synthesised-only, and default off.
+
+    **No files.** Six voices out of oscillators and filtered noise: engine,
+    tyres, siren, wind, sea, rain. Nothing to license, nothing added to the 3.4
+    MB deploy, no loader to get wrong - and it is the same principle as the
+    rest of the world, which stores no positions and derives everything.
+
+    **The split is the usual one and it matters more here than anywhere else.**
+    `audioMix.js` is a pure function from the frame's state to a set of gains
+    and frequencies, with no Web Audio and no THREE in it; `Audio.js` is the
+    node graph and contains no decisions at all. Sound is the ONE part of this
+    project a screenshot cannot check - there is no picture to look at and no
+    geometry to ask - so every claim about it has to be a claim about a
+    function a test can run. If you find yourself writing an `if` about the
+    world in `Audio.js`, it belongs in the mix.
+
+    **Three things worth keeping:**
+
+    - **The gears.** A single tone rising from idle to top speed is a vacuum
+      cleaner; what makes an engine an engine is the shift. Five of them, at
+      boundaries that are NOT evenly spaced - first gear covers 8% of the speed
+      range and top gear 30%, which is why the changes come quickly as you pull
+      away and then space out. `tests/audio.mjs` walks the whole speed range in
+      0.05 steps and counts the points where the note falls: four, one per
+      shift. Sampling at the boundaries would have missed a shift that landed
+      between two samples, which is a shift nobody hears.
+    - **`sirenBeat()`.** The expression `Math.floor(elapsed * SIREN_RATE) % 2`
+      existed twice - the player's roof bar and the traffic's - and was about
+      to exist a third time for the siren. It is now one function in
+      `vehicleLights.js`, used by all three, so the lights and the siren cannot
+      drift out of step. That is the only thing anybody would ever notice about
+      either of them.
+    - **A siren is a callout, not a roof bar.** Emergency vehicles flash their
+      beacons the whole time they are on the road; a siren doing the same would
+      be unbearable within a minute of picking the ambulance. It sounds when
+      `activeMission()` says there is something to sound it for. Verified in
+      the browser: police car parked, `siren: false`; CHASE MODE live,
+      `siren: true`.
+
+    **The NaN sweep is the test that earns its keep.** One non-finite value in
+    an AudioParam throws, the frame's update aborts part-built, and every voice
+    after it in the loop is left where it was - a graph that dies silently, mid
+    drive, and stays dead. Ten bad values across ten fields, every gain and
+    every frequency checked finite and non-negative.
+
+    **Off by default, and the browser agrees.** A page cannot make a sound
+    before the visitor has done something, so the AudioContext is built by the
+    first click on the speaker button and not before - which means the one
+    control the feature needs is also the gesture it needs. Confirmed by probe:
+    `ctxBuiltBeforeClick: false`. The preference is kept in localStorage; a
+    remembered "on" still waits for any gesture before it makes a noise.
+
+    Proved to make an actual sound rather than merely to build a graph: an
+    AnalyserNode on the master, RMS 0.068 pulling away and 0.10 at speed, and
+    **exactly 0 when muted.**
+
+    Not done, and cheap if wanted: a horn (no key is free), a chime when a
+    callout completes (risks being annoying), and doppler on the traffic (would
+    need a voice per vehicle, which is a different order of cost).
+
 **Still open after 2 August:**
 - **The 19 structural failures** behind the parked density work, including
   `streetedit` showing street take-over is no longer invisible - a broken

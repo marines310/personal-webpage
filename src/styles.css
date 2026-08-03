@@ -473,6 +473,60 @@ body {
 /* Nothing to reset to, so don't offer it. */
 #camera-box.is-default .cam-reset { display: none; }
 
+/* ---------------------------------------------------------------
+   Sound
+   Under the camera box and built from the same parts, because it is the
+   same kind of thing: a switch you touch once and then forget. It has no
+   panel, so it is the button on its own.
+   --------------------------------------------------------------- */
+#sound-box {
+  position: fixed;
+  top: 70px;
+  right: 20px;
+  pointer-events: auto;
+  text-align: right;
+}
+
+#sound-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  padding: 8px 12px;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+#sound-toggle:hover {
+  background: rgba(0, 0, 0, 0.56);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+#sound-box .sound-icon { font-size: 0.9rem; opacity: 0.75; }
+
+#sound-box .sound-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+}
+
+#sound-box .sound-state {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+/* On is the state worth seeing at a glance, because it is the one that can
+   embarrass somebody. Off is the quiet default in every sense. */
+#sound-box.is-on .sound-state { color: #8fe3b0; }
+#sound-box.is-on .sound-icon { opacity: 1; }
+
 /* The season sits under the weather and quieter than it: it changes once
    every ten minutes rather than every minute, so it should not shout. */
 #conditions .cond-season {

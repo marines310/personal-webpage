@@ -1695,6 +1695,60 @@ dates, how long each lasts, and the fireworks.
 
 ---
 
+## Sound
+
+**Off until somebody asks for it.** There is a speaker button under the camera
+box, and `M` does the same thing; the choice is remembered. That is a decision,
+not a default: this world is a CV, and a visitor may well open it in an
+open-plan office. It also happens to solve the browser's own rule for free — a
+page cannot make a sound until the visitor has done something, so the one
+control the feature needs is also the gesture it needs.
+
+**Nothing is recorded. Every sound is synthesised** out of oscillators and
+filtered noise, so there are no files, nothing to license, and nothing added to
+the deploy. That is the same principle as the rest of the world: the airport is
+a search rather than a pair of coordinates, and a siren is two numbers and a
+clock rather than an .mp3.
+
+Six voices:
+
+| Voice | What drives it |
+|---|---|
+| Engine | Speed, through five gears |
+| Tyres | Speed, past a threshold — louder *and* brighter with it |
+| Siren | A live callout, in the vehicle that can answer it |
+| Wind | The weather's wind, plus your own speed |
+| Sea | How far inland you are — audible within `SEA_REACH` of any coast |
+| Rain | How hard it is raining, and how much of that is snow |
+
+**The gears are what make it an engine.** A single tone rising from idle to top
+speed is a vacuum cleaner; what you recognise is the *shift*. The gear
+boundaries are not evenly spaced (`GEAR_CURVE`), because real ones are not:
+first gear covers a small slice of the speed range and top gear a big one,
+which is why the changes come quickly as you pull away and then space out.
+
+**The siren and the light bar are one clock.** `sirenBeat()` in
+`vehicleLights.js` had been written out by hand three times — the player's roof
+bar, the traffic's, and nearly a fourth for the siren. Two halves of the roof
+bar, two notes of the siren, one expression. They cannot drift.
+
+**A siren is a callout, not a roof bar.** Police cars, ambulances and fire
+engines flash their beacons the whole time they are on the road. A siren
+running for the entire session because you happened to pick the ambulance would
+be unbearable inside a minute, so it sounds when there is something to sound it
+for — the same question the HUD asks.
+
+**Snow is nearly silent** (`SNOW_QUIET`), and that is the detail that sells a
+winter storm: the wind is still there, the tyres are still there, and the hiss
+of rain simply is not.
+
+`audioMix.js` holds every decision and has no Web Audio in it, so a test can
+run it — same split as the seasons, the holidays and the three mission games.
+`Audio.js` is the plumbing and contains no decisions at all. If you find
+yourself writing an `if` about the world in `Audio.js`, it belongs in the mix.
+
+---
+
 ## Falling in
 
 Drive into the sea and you are put back in the garage with the picker open, so
@@ -1728,6 +1782,8 @@ again rather than as being teleported.
 | Day length, weather | `src/systems/Environment.js` |
 | Season colours, snow, leaves, flowers | `src/systems/seasons.js` |
 | Holiday decorations and fireworks | `src/systems/holidays.js` |
+| What the world sounds like | `src/systems/audioMix.js` |
+| The oscillators and filters that play it | `src/systems/Audio.js` |
 | 3D model files | `public/models/` — see `MODELS.md` |
 | The airport and its aircraft | `src/world/islandLayout.js` → `AIRPORT_*`, `PLANE_*` |
 | Helipads and helicopters | `src/world/islandLayout.js` → `HELIPAD_*`, `HELI_*` |

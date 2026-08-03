@@ -71,6 +71,11 @@ export class UI {
     this.camToggle = document.getElementById('cam-toggle')
     this.camState = document.getElementById('cam-state')
 
+    this.soundEl = document.getElementById('sound-box')
+    this.soundToggle = document.getElementById('sound-toggle')
+    this.soundIcon = document.getElementById('sound-icon')
+    this.soundState = document.getElementById('sound-state')
+
     // Cached once - the map doesn't change at runtime
     this.mapExtent = getMapExtent()
 
@@ -78,6 +83,72 @@ export class UI {
     this.setupMinimap()
     this.setupConditions()
     this.setupCamera()
+    this.setupSound()
+  }
+
+  /**
+   * The speaker button, and M.
+   *
+   * OFF BY DEFAULT, and that is a decision rather than a default. This world is
+   * Mike's CV, and a visitor may well open it in an open-plan office; a page
+   * that starts making engine noises is a page they close. The choice is
+   * remembered in localStorage, so the second visit is whatever the first one
+   * settled on.
+   *
+   * It also happens to solve the browser's requirement for free. A page cannot
+   * play audio until the visitor has done something, so the AudioContext is
+   * built by this click and not before - which means the one control the
+   * feature needs is also the gesture it needs.
+   */
+  setupSound() {
+    if (!this.soundToggle) return
+
+    // A stored preference is the only thing that may start it on, and even
+    // then the context is not built until this click - see Audio.start().
+    let want = false
+    try { want = window.localStorage.getItem('sound') === 'on' } catch (err) { want = false }
+
+    const apply = (on) => {
+      const took = this.game.audio ? this.game.audio.setEnabled(on) : false
+      this.soundEl.classList.toggle('is-on', took)
+      this.soundToggle.setAttribute('aria-pressed', took ? 'true' : 'false')
+      this.soundIcon.innerHTML = took ? '&#128266;' : '&#128263;'
+      this.soundState.textContent = took ? 'on' : 'off'
+      try { window.localStorage.setItem('sound', took ? 'on' : 'off') } catch (err) { /* private mode */ }
+      return took
+    }
+
+    this.toggleSound = () => apply(!(this.game.audio && this.game.audio.enabled))
+
+    this.soundToggle.addEventListener('click', () => this.toggleSound())
+
+    // M, the same as every other single-letter shortcut here - and ignored
+    // while something is being typed into, which nothing currently is but
+    // will be the moment the editor grows a name field.
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== 'm' && e.key !== 'M') return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const el = document.activeElement
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+      this.toggleSound()
+    })
+
+    // Reflect the stored preference in the button now; the sound itself waits
+    // for the click, because a browser will not have it any other way.
+    if (want) {
+      this.soundEl.classList.add('is-on')
+      this.soundIcon.innerHTML = '&#128266;'
+      this.soundState.textContent = 'on'
+      this.soundToggle.setAttribute('aria-pressed', 'true')
+      // One gesture - any gesture - is enough to honour it.
+      const wake = () => {
+        apply(true)
+        window.removeEventListener('pointerdown', wake)
+        window.removeEventListener('keydown', wake)
+      }
+      window.addEventListener('pointerdown', wake)
+      window.addEventListener('keydown', wake)
+    }
   }
 
   /**
