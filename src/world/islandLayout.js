@@ -43,6 +43,7 @@ import {
   terracePads,
   nearestOnPath,
   PAD_MARGIN,
+  PAD_BLEND,
   ROAD_SHOULDER,
   ROAD_BLEND
 } from './terrain.js'
@@ -113,8 +114,35 @@ export const ROAD_POINT_SPACING = 2.2
  * island's reach. Bigger pulls the loop tighter to the middle.
  * Islands can override with `ringInset` (world units), or opt out with
  * `noRing: true`.
+ *
+ * It was 0.34, which put the ring at 68% of the way to the coast on average
+ * and left roughly half of every island as empty grass behind the beach.
+ * Mike's request was to use more land, and this is the half of it that is one
+ * number: at 0.2 the loop reaches 82%, and because the town grid is clipped to
+ * the ring, everything inside it gets the room too.
+ *
+ * The number is not the whole rule. See RING_SHORE_CLEAR.
  */
-export const RING_INSET_FRACTION = 0.34
+export const RING_INSET_FRACTION = 0.2
+
+/**
+ * However far out the fraction would put it, the ring keeps this much land
+ * beyond its OUTER KERB - the pavement's edge, not the centre line.
+ *
+ * A fraction on its own is the wrong shape of rule for the wrong reason. It
+ * keeps the loop in step with the coastline, which is exactly what it is for,
+ * but the coastlines here are 'crescent', 'triangle' and 'long', and a fifth
+ * of a long bearing is a lot of land while a fifth of a short one is not
+ * enough to stand a road on. Sweeping the fraction alone from 0.34 down to 0.2
+ * took ABOUT's tightest clearance from 8.5 units to 2.6 while the hub still
+ * had 7.
+ *
+ * So the fraction says where the ring would like to be and this says where it
+ * may not go, applied per bearing and re-applied after every smoothing pass -
+ * because smoothing averages neighbouring radii, and averaging across a bay
+ * pushes the loop back out over the water it was just pulled out of.
+ */
+export const RING_SHORE_CLEAR = 4
 
 /**
  * Streets inside a town are narrower than the ring road and the bridge
@@ -122,13 +150,6 @@ export const RING_INSET_FRACTION = 0.34
  * streets within.
  */
 export const DEFAULT_STREET_WIDTH = 5.5
-
-/**
- * How far apart the streets of a town grid run. This is the block size,
- * so it has to fit two rows of buildings back to back plus their gardens
- * - about 34 units for 8-deep buildings.
- */
-export const DEFAULT_BLOCK_SIZE = 34
 
 /** Shorter than this and a clipped street is a stub, not a road. */
 export const MIN_STREET_LENGTH = 18
@@ -140,6 +161,40 @@ export const PAVEMENT_WIDTH = 2.4
 export const DEFAULT_PLOT_WIDTH = 9
 export const DEFAULT_PLOT_DEPTH = 8
 export const PLOT_GAP = 2.5
+
+/** Back gardens: the strip between two rows of buildings back to back. */
+export const BLOCK_GARDEN = 2
+
+/**
+ * How far apart the streets of a town grid run.
+ *
+ * DERIVED, and from the LARGEST thing that has to fit in a block, which is not
+ * the houses.
+ *
+ * It was a flat 34 with a comment saying it "has to fit two rows of buildings
+ * back to back plus their gardens - about 34 units for 8-deep buildings". The
+ * houses come to 28.3, so the comment was six units out - and setting the
+ * block to 28.3 immediately took the world from seven stations to four, with no
+ * hospital anywhere in it, which quietly ends the ambulance run because there
+ * is nowhere to take the patient. A 24-wide hospital wants 24 plus its
+ * clearance both sides plus the street: 35.5.
+ *
+ * So 34 was right, for a reason nothing had written down. It is written down
+ * now, and derived, so shrinking a station or widening a street moves the
+ * streets to suit instead of silently emptying the town of fire engines.
+ *
+ * The density Mike asked for comes from the ring reaching 82% of the way to
+ * the coast instead of 68%, and from four islands having street grids instead
+ * of two - not from packing the streets tighter than the buildings.
+ *
+ * An island can still override it with `blockSize`.
+ */
+export const BLOCK_FOR_HOUSES =
+  DEFAULT_STREET_WIDTH + PAVEMENT_WIDTH * 2 + DEFAULT_PLOT_DEPTH * 2 + BLOCK_GARDEN
+
+export const BLOCK_FOR_CIVIC = 24 + 3 * 2 + DEFAULT_STREET_WIDTH
+
+export const DEFAULT_BLOCK_SIZE = Math.max(BLOCK_FOR_HOUSES, BLOCK_FOR_CIVIC)
 
 /**
  * How thinly buildings are spread along the roads of an island that isn't a
@@ -663,15 +718,36 @@ export const BUS_DWELL = 6
  * So if you want busier streets, widen or lengthen the short pieces first -
  * or accept the jams. `tests/traffic.mjs` will tell you which you got.
  */
+/**
+ * How many of each, and why it is not the number Mike first asked for.
+ *
+ * He asked for 94 - 30 sedans, 10 convertibles, 10 pickups, 20 SUVs, 8 police,
+ * 6 ambulances, 6 fire, 4 buses. These are those proportions at about 0.73,
+ * which is what the road network carries. Measured over five simulated
+ * minutes, the whole fleet running:
+ *
+ *   94 vehicles  slowest covers 131, median  975, 13 given up on
+ *   81           slowest covers 215, median  986,  9 given up on
+ *   68           slowest covers 591, median 1194,  3 given up on
+ *
+ * "Given up on" is the patience valve teleporting a vehicle that has been
+ * stuck too long - a crude escape hatch, and the number to watch, because it
+ * hides jams rather than reporting them.
+ *
+ * Raise these again once the network carries more. The lanes doubled with the
+ * denser street grid (190 now, from 113) and the ceiling went up with them;
+ * task 94 - junctions the traffic lights already treat as one - is the next
+ * thing that would lift it further.
+ */
 export const TRAFFIC_FLEET = {
-  sedan: 30,
-  convertible: 10,
-  pickup: 10,
-  suv: 20,
-  police: 8,
-  ambulance: 6,
-  fire: 6,
-  bus: 4
+  sedan: 22,
+  convertible: 7,
+  pickup: 7,
+  suv: 15,
+  police: 6,
+  ambulance: 4,
+  fire: 4,
+  bus: 3
 }
 
 /** How long each kind of vehicle is, for headway and for the meshes. */
@@ -1585,13 +1661,30 @@ export function getIslandRing(island) {
   const STEPS = 96
   const radii = []
 
+  // How far the ring may reach on each bearing, whatever the fraction says.
+  // The kerb is what has to stay on land, not the centre line: half a road
+  // plus a pavement, and then RING_SHORE_CLEAR of grass beyond that.
+  const kerb = DEFAULT_ROAD_WIDTH / 2 + PAVEMENT_WIDTH
+  const limit = []
+
   for (let i = 0; i < STEPS; i++) {
     const angle = (i / STEPS) * Math.PI * 2
     const shore = rayDistanceToBoundary(outline, Math.cos(angle), Math.sin(angle))
     const pulled = island.ringInset !== undefined
       ? shore - island.ringInset
       : shore * (1 - fraction)
-    radii.push(Math.max(DEFAULT_ROAD_WIDTH, pulled))
+    limit.push(shore - kerb - RING_SHORE_CLEAR)
+    radii.push(Math.max(DEFAULT_ROAD_WIDTH, Math.min(pulled, limit[i])))
+  }
+
+  // The cap has to be re-applied, not merely applied. Smoothing averages
+  // neighbouring radii, and averaging across a bay pushes the loop straight
+  // back out over the water it was just pulled off - which is the whole reason
+  // this is a function rather than one line above.
+  const cap = () => {
+    for (let i = 0; i < STEPS; i++) {
+      radii[i] = Math.max(DEFAULT_ROAD_WIDTH, Math.min(radii[i], limit[i]))
+    }
   }
 
   // Smooth the radius around the loop so bays and headlands become gentle
@@ -1621,6 +1714,7 @@ export function getIslandRing(island) {
       return prev * 0.25 + r * 0.5 + after * 0.25
     })
     radii.splice(0, STEPS, ...next)
+    cap()
     ring = toPoints()
   }
 
@@ -1711,6 +1805,16 @@ export function getTownGrid(island) {
         // And reject anything meeting the ring at a glancing angle
         if (meetsTooShallow(candidate, ring)) continue
 
+        // Or crossing a district.
+        //
+        // A plaza is a square, and a street through the middle of one is not a
+        // street, it is a square with a road in it. On the hub it is also
+        // where the player's garage goes: `getPlayerGarage()` sweeps the plaza
+        // for a spot whose whole footprint is off the roads, and the first
+        // time the hub had a grid there was no such spot anywhere - the game
+        // came up with nowhere to start.
+        if (crossesDistrict(island, candidate)) continue
+
         streets.push(candidate)
       }
     }
@@ -1726,6 +1830,40 @@ export function getTownGrid(island) {
   // nowhere. Generate the full grid, then hide what's been claimed.
   const claimed = takenOverStreets(island)
   return claimed.size ? streets.filter(s => !claimed.has(s.key)) : streets
+}
+
+/**
+ * Does this street run through one of the island's districts?
+ *
+ * Walked rather than solved: a district is an axis-aligned box and a street is
+ * a straight line, so the algebra is easy enough - but the box is expanded by
+ * the paving blend and the street has a width, and sampling gets both without
+ * two more terms to get wrong.
+ */
+function crossesDistrict(island, candidate) {
+  const districts = island.districts || []
+  if (!districts.length) return false
+
+  const [from, to] = candidate.points
+  const length = Math.hypot(to.x - from.x, to.z - from.z)
+  if (length < 1e-6) return false
+
+  const steps = Math.max(2, Math.ceil(length / 3))
+
+  for (const d of districts) {
+    const half = (d.size || 14) / 2 + PAD_BLEND + candidate.width / 2
+    const dx = d.x || 0
+    const dz = d.z || 0
+
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps
+      const x = from.x + (to.x - from.x) * t
+      const z = from.z + (to.z - from.z) * t
+      if (Math.abs(x - dx) < half && Math.abs(z - dz) < half) return true
+    }
+  }
+
+  return false
 }
 
 /**
@@ -1759,7 +1897,10 @@ export function takenOverStreets(island) {
  */
 export function getTownPlots(island) {
   if (!isTown(island)) return []
-  return roadsidePlots(island, getIslandRoads(island).filter(r => r.street || r.ring))
+  const all = getIslandRoads(island)
+  return roadsidePlots(island,
+    all.filter(r => r.street || r.ring),
+    all.filter(r => r.street || r.ring || r.auto || r.spur))
 }
 
 /**
@@ -1780,14 +1921,27 @@ export function getRoadsidePlots(island) {
   const every = ROADSIDE_DENSITY[island.theme] || 0
   if (!every) return []
 
-  const roads = getIslandRoads(island).filter(r => r.ring || r.street || r.spur)
+  const all = getIslandRoads(island)
+  const roads = all.filter(r => r.ring || r.street || r.spur)
   if (!roads.length) return []
 
-  return roadsidePlots(island, roads).filter((_, i) => i % every === 0)
+  return roadsidePlots(island, roads,
+    all.filter(r => r.street || r.ring || r.auto || r.spur))
+    .filter((_, i) => i % every === 0)
 }
 
-/** Plots along a given set of roads. The shared half of both of the above. */
-function roadsidePlots(island, streets) {
+/**
+ * Plots along a given set of roads. The shared half of both of the above.
+ *
+ * `streets` are the roads plots FRONT; `avoid` is every road they have to keep
+ * off, which is not the same list. The two were one list, and the difference
+ * is the bridge approaches: they are marked `auto` because they are drawn as
+ * part of the continuous bridge run rather than separately, so they never
+ * appeared in either - and a building cannot front a bridge approach, but it
+ * certainly should not be built in one. Nobody noticed while the hub had no
+ * town on it. It has five bridges.
+ */
+function roadsidePlots(island, streets, avoid = streets) {
   if (!streets.length) return []
 
   const outline = getOutline(island)
@@ -1855,13 +2009,26 @@ function roadsidePlots(island, streets) {
         // On land, clear of the coast
         if (distanceToEdge(outline, x, z) < depth) continue
 
+        // And clear of a district.
+        //
+        // A plaza is a paved area that claims its ground, and the claim runs
+        // PAD_BLEND past its edge so the paving can meet the grass without a
+        // step. A building standing inside that skirt gets a moat: the grass
+        // has ducked to let paving through and the paving does not reach that
+        // far. It only appeared when the hub got a street grid - the plaza has
+        // been there since the first map with nothing to collide with.
+        if ((island.districts || []).some(d => {
+          const half = (d.size || 14) / 2 + PAD_BLEND + depth / 2
+          return Math.abs(x - (d.x || 0)) < half && Math.abs(z - (d.z || 0)) < half
+        })) continue
+
         // Clear of every OTHER road, not just the one it fronts.
         //
         // Without this, plots near an intersection sit almost on the
         // cross street - they measured 6.9 units from its centre line
         // against a 9.9 setback, so they'd be built halfway into it and
         // face the wrong way relative to the road you'd see them from.
-        const others = streets.filter((_, k) => k !== roadIndex)
+        const others = avoid.filter(r => r !== road)
         if (others.length &&
             distanceToNearestRoad(others, x, z) < depth / 2 + PAVEMENT_WIDTH) {
           continue
@@ -2214,9 +2381,29 @@ export function getLaneNetwork() {
       // link at a dead end pointed 67 units away.
       const piece = pieces++
 
-      lanes.push(makeLane(centre, offset, seg, from.nodeIndex, to.nodeIndex, piece))
-      lanes.push(makeLane(centre.slice().reverse(), offset, seg,
-                          to.nodeIndex, from.nodeIndex, piece))
+      const one = makeLane(centre, offset, seg, from.nodeIndex, to.nodeIndex, piece)
+      const other = makeLane(centre.slice().reverse(), offset, seg,
+                             to.nodeIndex, from.nodeIndex, piece)
+
+      // MEASURED AFTER THE OFFSET, not before it.
+      //
+      // A lane sits a quarter of the road's width to the right of the centre
+      // line, so on a bend the inside one is shorter than the piece it came
+      // from - and the length test above is on the piece. An eleven-unit piece
+      // on a tight junction curve produced a 10.45-unit lane, which is shorter
+      // than a lane is allowed to be and shorter than some of the vehicles
+      // meant to queue on it. It only surfaced once the denser grid started
+      // cutting the ring at more places.
+      //
+      // Both or neither: a piece with one direction and not the other is a
+      // one-way street nobody asked for.
+      if (one.length < LANE_MIN_LENGTH || other.length < LANE_MIN_LENGTH) {
+        pieces--
+        continue
+      }
+
+      lanes.push(one)
+      lanes.push(other)
     }
   })
 
@@ -2507,9 +2694,24 @@ export function getStations(network = getLaneNetwork()) {
     .sort((a, b) => islandReach(b) - islandReach(a))
   const others = ISLANDS.filter(i => !isTown(i) && i.theme !== 'plain')
 
-  for (const island of towns) {
-    wanted.push({ island, kind: 'fire' }, { island, kind: 'police' },
-                { island, kind: 'hospital' })
+  // ROUND-ROBIN, and rotated per island, because the order stations are asked
+  // for is the order they get the good sites.
+  //
+  // It used to be fire, police, hospital on the first island, then the same
+  // three on the next. Every island's fire station took the best frontage, and
+  // STATION_SPACING then pushed the other two into whatever was left - so with
+  // four towns instead of two the world came out with five fire stations, two
+  // police stations and ONE hospital, which is an ambulance run across the
+  // map. Nothing is wrong with any of those placements individually; the bias
+  // is entirely in the order of the list.
+  //
+  // Three passes, with the kind rotated by the island's position, so no kind
+  // is systematically last and no island is systematically served.
+  const KINDS = ['fire', 'police', 'hospital']
+  for (let round = 0; round < KINDS.length; round++) {
+    towns.forEach((island, i) => {
+      wanted.push({ island, kind: KINDS[(round + i) % KINDS.length] })
+    })
   }
   others.forEach((island, i) => {
     wanted.push({ island, kind: ['police', 'fire', 'hospital'][i % 3] })
@@ -2558,12 +2760,37 @@ export const STATION_KINDS = {
   }
 }
 
-/** How far a station stands back from the kerb, leaving room for its bays. */
-export const STATION_SETBACK = 15
-
 /** Clear ground a station keeps from any road, and from another station. */
 export const STATION_ROAD_CLEARANCE = 3
 export const STATION_SPACING = 55
+
+/**
+ * How far a station stands back from the kerb, leaving room for its bays.
+ *
+ * DERIVED FROM THE BLOCK, because a station has to fit in one. It was a flat
+ * 15, which was fine while a block was 34 units deep and stopped being fine at
+ * 28.3: a 16-deep hospital set back 15 puts its back wall 27.4 units from the
+ * lane it fronts, and the next street's kerb is at 25.6. Every candidate site
+ * on every town island failed "clear of every road", and the world went from
+ * seven stations to four with no hospital anywhere in it - which quietly ends
+ * the ambulance run, because there is nowhere to take the patient.
+ *
+ * The sum is the block, less half the street behind, less the clearance, less
+ * half the deepest station, less the pavement and the lane's own offset in
+ * front. Floored at 8, which is what the bays and the apron in front need: if
+ * the blocks are ever made smaller than a station, the answer has to be a
+ * smaller station rather than one built into the next street.
+ */
+const DEEPEST_STATION = Math.max(
+  ...Object.values(STATION_KINDS).map(s => s.depth))
+
+export const STATION_SETBACK = Math.max(8,
+  DEFAULT_BLOCK_SIZE
+    - DEFAULT_STREET_WIDTH / 2
+    - STATION_ROAD_CLEARANCE
+    - DEEPEST_STATION / 2
+    - PAVEMENT_WIDTH
+    - DEFAULT_ROAD_WIDTH / 4)
 
 /**
  * Somewhere on this island to put one, beside a lane and off the road.
@@ -2825,11 +3052,32 @@ export function makeTraffic(network, fleet = TRAFFIC_FLEET, stops = null,
   // for the lanes it hasn't used yet, and the inner one shadowed this - so
   // every vehicle looked up its bay in a list of lane indices, found nothing,
   // and not one of fifty-two got a home.
+  // Round-robin means ONE BAY FROM EACH station, then the next bay from each -
+  // not every bay of the first station and then every bay of the second. The
+  // comment above has always said round-robin; the code piled them up by
+  // station, so with eight police cars and three police stations of four bays,
+  // the first two stations took all eight and the third never saw a vehicle.
+  // A station nobody comes home to looks exactly like a broken station.
   const spareBays = {}
+  const byKind = {}
+
   for (const station of stations || []) {
     const kind = station.vehicle
-    spareBays[kind] = spareBays[kind] || []
-    for (const bay of station.bays) spareBays[kind].push({ station, bay })
+    byKind[kind] = byKind[kind] || []
+    byKind[kind].push(station)
+  }
+
+  for (const [kind, list] of Object.entries(byKind)) {
+    spareBays[kind] = []
+    const deepest = Math.max(...list.map(s => s.bays.length))
+
+    for (let slot = 0; slot < deepest; slot++) {
+      for (const station of list) {
+        if (station.bays[slot]) {
+          spareBays[kind].push({ station, bay: station.bays[slot] })
+        }
+      }
+    }
   }
 
   let seed = 424242
@@ -5062,11 +5310,29 @@ export function getPortRoad(island) {
 
   const points = []
 
-  // Start on the ring if there is one, so the junction is real
+  // Start where the PORT'S OWN BEARING crosses the ring, not at the ring point
+  // nearest the pier root.
+  //
+  // The two are almost the same thing while the ring is well inland, and stop
+  // being the same thing as it moves out. The nearest point is off the pier's
+  // line by however much the ring is curving there, so the road left the ring,
+  // kinked at the root, and ran out to sea - and once the ring reached 82% of
+  // the way to the coast that kink was a 2.9-unit bend on a 6.5-unit road,
+  // which is a ribbon folded through itself. `islandroads.mjs` caught it.
+  //
+  // Taken on the bearing instead, the ring crossing, the root and the head are
+  // collinear by construction and the road has no bend in it at all. The only
+  // corner left is where it leaves the ring, and that is what a junction patch
+  // is for.
   const ring = getIslandRing(island)
   if (ring) {
-    const on = nearestOnPath(ring, port.localRoot.x, port.localRoot.z)
-    if (on) points.push({ x: on.x, z: on.z })
+    const out = rayDistanceToBoundary(ring, port.dirX, port.dirZ)
+    if (out > 0) {
+      points.push({ x: port.dirX * out, z: port.dirZ * out })
+    } else {
+      const on = nearestOnPath(ring, port.localRoot.x, port.localRoot.z)
+      if (on) points.push({ x: on.x, z: on.z })
+    }
   }
 
   // If there's no ring, start at the island centre - something has to
@@ -6506,10 +6772,57 @@ export function getTrafficSignals(island) {
     }
   }
 
+  // THEN SETTLE THEM, because one greedy pass does not.
+  //
+  // Adding a member moves the cluster's centre, and a centre that has moved can
+  // finish inside SIGNAL_MERGE_DISTANCE of a cluster it was outside when it
+  // was formed. On the sparse map that never happened - the junctions were
+  // nowhere near each other. On the denser one the hub ended with two signals
+  // 18.6 units apart, and "signals no closer than the distance at which two
+  // junctions are one junction" is the whole meaning of the constant.
+  //
+  // Merged pairwise until nothing moves, which terminates because every pass
+  // that changes anything removes a cluster.
+  for (let pass = 0; pass < 40; pass++) {
+    let merged = false
+
+    for (let i = 0; i < clusters.length && !merged; i++) {
+      for (let k = i + 1; k < clusters.length && !merged; k++) {
+        const a = clusters[i]
+        const b = clusters[k]
+        if (Math.hypot(a.x - b.x, a.z - b.z) >= SIGNAL_MERGE_DISTANCE) continue
+
+        a.members.push(...b.members)
+        a.x = a.members.reduce((s, m) => s + m.x, 0) / a.members.length
+        a.z = a.members.reduce((s, m) => s + m.z, 0) / a.members.length
+        a.radius = Math.max(a.radius, b.radius)
+        clusters.splice(k, 1)
+        merged = true
+      }
+    }
+
+    if (!merged) break
+  }
+
   const signals = []
 
   for (const cluster of clusters) {
     const arms = []
+
+    // LIGHTS BELONG ON ARTERIALS, and nowhere else.
+    //
+    // A signal at every place two side streets cross is not how a town works
+    // and it is not how this one drove. When the grid went from nine streets
+    // to twenty-eight the signal count went from 22 to 65, and the ones that
+    // appeared were the worst of them: minor crossroads where two streets meet
+    // at whatever angle the sweep happened to produce, close enough together
+    // that a car clearing one arrived at the next on a red.
+    //
+    // The ring, the bridge approaches and the road out to the quay are the
+    // arterials - everything a driver crossing the island is actually on. A
+    // junction with none of them in it is a give-way junction, which the
+    // traffic already handles, and which is what a real minor crossroads is.
+    let arterial = false
 
     for (const road of roads) {
       let nearest = Infinity
@@ -6519,6 +6832,8 @@ export function getTrafficSignals(island) {
         if (d < nearest) { nearest = d; index = i }
       })
       if (nearest > cluster.radius + SIGNAL_MERGE_DISTANCE * 0.7) continue
+
+      if (road.ring || road.auto || road.spur) arterial = true
 
       const tan = tangentAt(road.points, cluster.x, cluster.z)
       if (!tan) continue
@@ -6531,13 +6846,38 @@ export function getTrafficSignals(island) {
       const terminates = !road.closed &&
         Math.min(fromStart, fromEnd) < road.points.length * 0.12
 
-      if (terminates) {
-        // Point back along the road, away from the junction
-        const sign = fromStart < fromEnd ? -1 : 1
-        arms.push({ x: tan.x * sign, z: tan.z * sign })
-      } else {
-        arms.push({ x: tan.x, z: tan.z })
-        arms.push({ x: -tan.x, z: -tan.z })
+      // The road comes with the arm. An arm is an approach, an approach is a
+      // road, and everything downstream - the pole, the stop line, the zebra
+      // crossing - is about that road rather than about a bearing. Carrying it
+      // is what lets the crossing be placed ON the road instead of at an
+      // offset along a direction that may or may not still be on one.
+      const sides = terminates
+        ? [fromStart < fromEnd ? -1 : 1]
+        : [1, -1]
+
+      for (const sign of sides) {
+        // Pick the side using the tangent at the junction, then TAKE THE
+        // DIRECTION FROM WHERE THE CROSSING ACTUALLY IS.
+        //
+        // `tangentAt(road, cluster)` is the road's direction at the cluster's
+        // CENTRE, and a merged cluster's centre is a centroid - it is not on
+        // any of its roads. On a curving ring that centre can be metres from
+        // the kerb, so the tangent came from a point further round the loop
+        // than the approach it was meant to describe: ABOUT and EXPERIENCE
+        // both produced arms 70 to 83 degrees off the carriageway their own
+        // crossing was painted across, and both roads involved were the ring.
+        //
+        // Re-derived here, the arm's direction is the road's direction at the
+        // point the approach is measured from, so the two cannot disagree -
+        // and the merge below, the pole, the phase and the stop line all get
+        // the better number for free.
+        const seed = { x: tan.x * sign, z: tan.z * sign, road }
+        const at = crossingSpot(cluster, seed)
+        const there = tangentAt(road.points, at.x, at.z) || tan
+        const away = (at.x - cluster.x) * there.x + (at.z - cluster.z) * there.z
+        const flip = away >= 0 ? 1 : -1
+
+        arms.push({ x: there.x * flip, z: there.z * flip, road, at })
       }
     }
 
@@ -6566,7 +6906,7 @@ export function getTrafficSignals(island) {
       if (pole) withPoles.push({ ...arm, pole })
     }
 
-    if (withPoles.length >= 3) {
+    if (arterial && withPoles.length >= 3) {
       // Two phases: arms roughly in line with the first one share a phase,
       // everything else takes the other. That's what makes the crossing
       // flows complementary rather than decorative.
@@ -6592,6 +6932,83 @@ export function getTrafficSignals(island) {
   }
 
   return signals
+}
+
+/** How far past the junction patch a crossing is painted. */
+export const CROSSING_SETBACK = 2.6
+
+/**
+ * Where an approach's zebra crossing goes: ON THE ROAD THAT APPROACH IS,
+ * just clear of the junction patch.
+ *
+ * It used to be `cluster + arm * (radius + setback)` - a fixed step along a
+ * bearing - and on a sparse map that was the same thing, because six units
+ * from a junction there was only one road to be on. On the denser grid it
+ * stopped being the same thing: several roads pass within a few units of a
+ * junction, so the point landed on a road the arm had nothing to do with. The
+ * town test measured an arm 88 degrees off the carriageway its own crossing
+ * was painted across.
+ *
+ * Walked along the road instead, outward from the junction in the arm's
+ * direction, until far enough out. The crossing is then on that road by
+ * construction whatever the road does, and the stripes - which take their
+ * angle from the road - are square to it for the same reason.
+ *
+ * Falls back to the old offset when an arm has no road, which happens only if
+ * a caller builds one by hand.
+ */
+function crossingSpot(cluster, arm) {
+  const want = cluster.radius + CROSSING_SETBACK
+  const road = arm.road
+
+  if (!road || !road.points || road.points.length < 2) {
+    return { x: cluster.x + arm.x * want, z: cluster.z + arm.z * want }
+  }
+
+  // WHERE THE ROAD CROSSES A CIRCLE of radius `want` about the junction,
+  // taking the crossing that lies the way the arm points.
+  //
+  // Walking the vertices outward from the nearest one was tried first and is
+  // wrong on a ring, which is closed and has no outward: the walk runs off the
+  // end of the array and stops at whichever vertex that happens to be. A road
+  // passing a junction crosses that circle twice - once on each side - and the
+  // arm is precisely the thing that says which of the two is this approach.
+  let found = null
+  let bestDot = -Infinity
+
+  for (let i = 1; i < road.points.length; i++) {
+    const a = road.points[i - 1]
+    const b = road.points[i]
+    const da = Math.hypot(a.x - cluster.x, a.z - cluster.z)
+    const db = Math.hypot(b.x - cluster.x, b.z - cluster.z)
+    if ((da < want) === (db < want)) continue      // no crossing on this span
+
+    const t = Math.abs(db - da) < 1e-9 ? 0 : (want - da) / (db - da)
+    const p = {
+      x: a.x + (b.x - a.x) * t,
+      z: a.z + (b.z - a.z) * t
+    }
+
+    const len = Math.hypot(p.x - cluster.x, p.z - cluster.z) || 1
+    const dot = ((p.x - cluster.x) / len) * arm.x + ((p.z - cluster.z) / len) * arm.z
+    if (dot > bestDot) { bestDot = dot; found = p }
+  }
+
+  // Nothing crossed it: the road ends inside the circle, which makes it a stub
+  // off this junction. Its far end is the best a crossing can do.
+  if (!found) {
+    let far = road.points[0]
+    let best = -1
+    for (const p of road.points) {
+      const d = Math.hypot(p.x - cluster.x, p.z - cluster.z)
+      const len = d || 1
+      const dot = ((p.x - cluster.x) / len) * arm.x + ((p.z - cluster.z) / len) * arm.z
+      if (dot > 0 && d > best) { best = d; far = p }
+    }
+    return { x: far.x, z: far.z }
+  }
+
+  return found
 }
 
 /**

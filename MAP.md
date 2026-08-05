@@ -173,6 +173,22 @@ by a district:
 | `mixed` | a bit of everything |
 | `plain` | nothing — you're placing things yourself with districts |
 
+**`grid` overrides the theme for streets.** The theme governs the planting; a
+street grid is a separate question, and the two were tied together for no
+reason. The hub is `plain` and carries five of the six bridges, and it had no
+streets at all — a bare ring round a plaza, and the first thing every visitor
+sees. `grid: true` gives it a town; CONTACT (`mixed`) has one for the same
+reason. Four islands have street grids now instead of two, which was most of
+why the world read empty.
+
+**`blockSize` is derived, and from the largest thing that has to fit in a
+block — which is not the houses.** Two rows of houses back to back come to
+28.3; a 24-wide hospital with its clearances and a street comes to 35.5, and
+35.5 is what `DEFAULT_BLOCK_SIZE` is. Setting it to 28.3 took the world from
+seven stations to four with no hospital anywhere in it, which quietly ends the
+ambulance run because there is nowhere to take the patient. The old flat 34 was
+right for a reason nothing had written down.
+
 ### `buildings` — placing individual buildings
 
 For real control over a town, place buildings one at a time instead of
@@ -507,6 +523,20 @@ Each island gets a loop set in from the coast, and the bridge roads run a
 short way inland and join it. Before this, every bridge road drove to the
 island centre, so hub — with five bridges — had five roads converging on a
 single point.
+
+**It reaches 82% of the way to the coast** (`RING_INSET_FRACTION`), up from
+68%. That is the "use more land" half of Mike's request, and because the town
+grid is clipped to the ring, everything inside it gets the room too.
+
+The fraction on its own is the wrong shape of rule. It keeps the loop in step
+with the coastline, which is exactly what it is for, but these coastlines are
+`crescent`, `triangle` and `long` — a fifth of a long bearing is plenty of land
+and a fifth of a short one is not enough to stand a road on. So
+`RING_SHORE_CLEAR` caps it per bearing: however far out the fraction would put
+it, the ring keeps four units of land beyond its **outer kerb**. The cap is
+re-applied after every smoothing pass, because smoothing averages neighbouring
+radii, and averaging across a bay pushes the loop straight back out over the
+water it was just pulled off.
 
 Select an island and you get, in the panel:
 
@@ -874,6 +904,26 @@ so do the drivers, so they cannot disagree. It used to be implemented twice,
 once in `World.js` for the lamps and once in the test, and the offset of each
 junction came from the renderer's random number generator - which meant
 nothing outside the renderer could know whether a light was green.
+
+**Lights belong on arterials.** A junction with no ring, bridge approach or
+port road in it gets no signals - it is a give-way junction, which is what a
+minor crossroads is and what the give-way rules are for. Signalling every place
+two side streets cross took the world from 22 signals to 65 the moment the
+grid got denser, and the ones that appeared were the worst of them.
+
+**An arm carries its road.** An approach *is* a road, so the pole, the stop
+line and the zebra crossing are all about that road rather than about a
+bearing. `crossingSpot()` puts the crossing where the road crosses a circle
+about the junction, taking the side the arm points - so the crossing is on that
+road by construction and the stripes are square to it for the same reason. The
+old version stepped a fixed distance along the arm and then asked which road
+was nearest the result, which on a dense grid answers "the widest one" and
+painted a street's crossing across the ring at 85 degrees.
+
+**And clusters are settled, not merged in one pass.** Adding a junction moves
+a cluster's centre, and a centre that has moved can end up inside
+`SIGNAL_MERGE_DISTANCE` of a cluster it was outside when it formed. Merged
+pairwise until nothing moves.
 
 ### When two of them do jam
 

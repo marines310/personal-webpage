@@ -123,14 +123,32 @@ for (const port of ports) {
   const road = getPortRoad(port.island)
   chk(`${port.id}: there is a port road`, !!road)
 
-  // It has to start on the ring, or the quay is an island of tarmac
+  // It has to start on the ring, or the quay is an island of tarmac.
+  //
+  // Measured against the ring's SEGMENTS, not its vertices. The vertex version
+  // was a proxy and it failed the moment the port road stopped starting at a
+  // vertex: the road now joins where the port's own bearing crosses the loop,
+  // which is a point between two of them, and "0.58 units from the nearest
+  // vertex" was reported as off the ring when it was exactly on it. A road is
+  // on a road when it is on the tarmac, not when it is near a stored point.
   const ring = getIslandRing(port.island)
   if (ring && road) {
+    const start = road.points[0]
     let onRing = Infinity
-    for (const p of ring) {
+
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i]
+      const b = ring[(i + 1) % ring.length]
+      const dx = b.x - a.x
+      const dz = b.z - a.z
+      const lenSq = dx * dx + dz * dz
+      if (lenSq < 1e-12) continue
+      let t = ((start.x - a.x) * dx + (start.z - a.z) * dz) / lenSq
+      t = Math.max(0, Math.min(1, t))
       onRing = Math.min(onRing,
-        Math.hypot(p.x - road.points[0].x, p.z - road.points[0].z))
+        Math.hypot(start.x - (a.x + dx * t), start.z - (a.z + dz * t)))
     }
+
     chk(`${port.id}: and it starts on the ring road (${onRing.toFixed(2)})`,
         onRing < 0.5, `${onRing}`)
   }

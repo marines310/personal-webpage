@@ -184,8 +184,16 @@ const cantFit = Object.entries(TRAFFIC_LENGTHS)
   .filter(([, n]) => n > 0)
 console.log('   lanes too short to hold a stopped vehicle: ' +
   (cantFit.map(([k, n]) => `${k}:${n}`).join(' ') || 'none'))
+// A SHARE, not a count. Some lanes are short because a junction is where it
+// is, so the number of them grows with the number of junctions - and the
+// denser grid roughly doubled those. Three of 292 is a smaller problem than
+// two of 121, and a fixed count says the opposite.
+//
+// The short-lane rule (section 9) is what makes these survivable rather than
+// plugs; this is here to catch a build where most of the map becomes one.
 chk('almost every lane can hold every vehicle behind its line',
-    cantFit.every(([, n]) => n <= 2), cantFit.map(([k, n]) => `${k}:${n}`).join(' '))
+    cantFit.every(([, n]) => n <= Math.max(2, signalled.length * 0.03)),
+    cantFit.map(([k, n]) => `${k}:${n}`).join(' '))
 
 chk('and the signal is at the junction, not the next one along',
     signalled.every(l => {
@@ -648,8 +656,10 @@ console.log(`   vehicle-frames sitting on one: ${shortRun.onOne}`)
 // The same run with the rule switched off - penalty zero, hold removed - gives
 // 8 turns and 7,378 frames. These thresholds are set to catch a return to
 // that, not to bless the numbers below them.
+// Also a share: more junctions means more chances to take one, so the figure
+// to hold is turns-per-lane rather than turns.
 chk('almost nothing turns into a stretch it could not stand on while shut',
-    shortRun.entered <= 2, `${shortRun.entered}`)
+    shortRun.entered <= Math.max(2, net.lanes.length * 0.02), `${shortRun.entered}`)
 chk('and the time spent sitting on one is well down on leaving it to chance',
     shortRun.onOne < 6000, `${shortRun.onOne}`)
 

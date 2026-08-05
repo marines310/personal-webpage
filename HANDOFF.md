@@ -2454,15 +2454,144 @@ the welded pair from item 30 is gone.
     callout completes (risks being annoying), and doppler on the traffic (would
     need a voice per vehicle, which is a different order of cost).
 
-**Still open after 2 August:**
-- **The 19 structural failures** behind the parked density work, including
-  `streetedit` showing street take-over is no longer invisible - a broken
-  invariant, not a threshold.
-- **Push the rings outward.** SKILLS reaches 66% of the way to its coast, the
-  hub 76%. The "use more land" half of Mike's request is untouched.
-- The helicopter model is crude and reads as a blue wedge at distance; the pads
-  could be more obvious from the ground. Both want Mike's eye, not more
-  measurement.
+**Added 3 August.**
+
+65. **The rings pushed outward, and the towns made denser.** Both halves of
+    Mike's "busier, more urbanised cities using more land", done together
+    because measuring the traffic twice would have been measuring nothing.
+
+    **The rings reach 82% of the way to the coast, up from 68%.**
+    `RING_INSET_FRACTION` 0.34 -> 0.2, with a new per-bearing cap
+    (`RING_SHORE_CLEAR`) because a fraction on its own is the wrong shape of
+    rule on a `crescent` or a `long`: a fifth of a long bearing is plenty of
+    land, a fifth of a short one is not enough to stand a road on. Sweeping the
+    fraction alone took ABOUT's tightest clearance from 8.5 units to 2.6 while
+    the hub still had 7. The cap is re-applied after every smoothing pass -
+    smoothing averages neighbouring radii, and averaging across a bay pushes
+    the loop straight back over the water.
+
+    **Four islands have street grids instead of two.** `grid: true` on the hub
+    and on CONTACT. The theme governs the planting and `grid` governs the
+    streets, and tying the two together was why the island every visitor starts
+    on - and which carries five of the six bridges - was a bare ring round a
+    plaza. That, not the block size, was most of why the world read empty.
+
+    **The block size is now derived, and NOT from the houses.** Two rows back
+    to back come to 28.3. I set it there, and the world went from seven
+    stations to four with **no hospital anywhere in it** - which quietly ends
+    the ambulance run, because there is nowhere to take the patient. A 24-wide
+    hospital plus its clearances plus a street is 35.5, and that is what a
+    block has to be. The old flat 34 was right for a reason nothing had written
+    down; it is written down now.
+
+    **The result, measured. This is the headline:**
+
+    | | slowest | median | max | relocations | worst stop | overlaps | lanes |
+    |---|---|---|---|---|---|---|---|
+    | 2 Aug | 24 | 736 | 3,835 | 36 | 39.0s | 0 | 121 |
+    | 3 Aug | **131** | **975** | 3,411 | **13** | **35.1s** | 0 | 190 |
+
+    Better on every number, and `stations.mjs` went from three failures to one
+    while the world gained two stations (7 -> 9). Item 31 concluded that "94
+    vehicles is more than this world holds, whatever the layout" - and that was
+    true of the layout it was measured on, where the median never left 528-704
+    across six configurations. A denser town is not more traffic in the same
+    space, it is more places to go, and with the short-lane rule (item 63)
+    keeping the short pieces from plugging, it is what the fleet needed.
+
+    Still failing, and still the same three that have failed since the fleet
+    went to 94: slowest 131 against 150, median 975 against 1,000, relocations
+    13 against 6. All three are closer than they have ever been and none of
+    them is a new fault.
+
+    **A tension worth knowing about.** At a 28.3 block the traffic is better
+    still - 290 lanes, slowest 621, median 1,097, 14 relocations - but no civic
+    building fits between two cross streets, so the world has no fire stations,
+    police stations or hospitals at all. If the stations are ever made smaller,
+    or allowed to span a block, the smaller block is waiting.
+
+    Five other things had to be fixed on the way, each of which had been true
+    all along and had nothing to collide with:
+
+    - **The port road kinked.** It joined the ring at the ring point nearest
+      the pier root; on a ring at 82% that is off the pier's line, and the bend
+      came out at 2.9 units on a 6.5-unit road - a ribbon folded through
+      itself. It joins where the port's own bearing crosses the ring now, so
+      the ring crossing, the root and the head are collinear.
+    - **Building plots stood in the bridge approaches.** The "clear of every
+      other road" test was run against the roads plots FRONT, and an approach
+      is marked `auto` because it is drawn as part of the bridge run, so it was
+      in neither list. Nobody noticed while the hub had no town on it.
+    - **And in the plaza's skirt.** A district claims its ground and the claim
+      runs `PAD_BLEND` past its edge; a building inside that gets a moat.
+    - **A lane could be shorter than the minimum.** The length test is on the
+      piece and a lane sits a quarter of the road's width off it, so on a bend
+      the inside lane is shorter - an 11-unit piece gave a 10.45-unit lane.
+    - **Stations were asked for island by island**, so every island's fire
+      station took the best frontage and the rest got what was left: five fire
+      stations, two police, one hospital. Round-robin, rotated per island, now.
+    - **A street ran through the plaza**, and `getPlayerGarage()` sweeps the
+      plaza for a footprint clear of every road. The first time the hub had a
+      grid there was no such spot anywhere, so the game had nowhere to start.
+      A square with a road through it is not a square either.
+
+**Still open after 3 August:**
+
+- **The last three traffic failures**, all long-standing: slowest 131 against
+  150, median 975 against 1,000, relocations 13 against 6.
+- **The 19 structural failures** behind the old density work, including
+  `streetedit` showing street take-over is no longer invisible.
+- **The helicopter model**, which reads as a blue wedge at distance.
+
+66. **A DRIVABLE MONORAIL - Mike's, 3 August, not started.**
+
+    *"I also want to add a new drivable vehicle - the Monorail. This however
+    will require a new mechanic or thinking to selecting and driving vehicles,
+    as well as changing vehicles again."*
+
+    He is right that it is not another entry in the vehicle picker, and it is
+    worth writing down why before anyone starts.
+
+    **Everything about driving assumes a road.** The player's car is a
+    kinematic bicycle model on a dynamic cuboid, steered by yaw and held down
+    by gravity, and it recovers by being put back on a lane. A train has no
+    steering, cannot leave its beam, and is a distance along a loop - which is
+    exactly what `stepMonorailTrain()` already models and what the AI trains
+    already are. So the driving is not a variant of `Vehicle`; it is the train
+    simulation with the throttle taken off the timetable and given to the
+    player.
+
+    **The questions that need answering first, in the order they bite:**
+
+    - **How do you get in?** The picker is a garage: you choose and drive out.
+      A train is at a station, sixteen units up, and you reach the platform by
+      the stair tower. Does driving to a station and stopping put you in the
+      cab? Does the picker gain a monorail entry that teleports you? The first
+      is far better and costs a new mechanic - "leave the car, become the
+      train" - which is the thing Mike is pointing at.
+    - **What are the controls?** Throttle and brake, no steering. The camera
+      wants to be different too: a train driver looks along the beam.
+    - **What happens to the AI train you displaced?** Either you take one over
+      - and the timetable has to cope with a train that stops where it likes -
+      or a fourth train is added for you, and the headway rule has to cope with
+      one that does not keep its slot.
+    - **How do you get out?** At a station, presumably, and back onto the
+      platform - which means the stair tower has to be walkable, or the car has
+      to be waiting where you left it.
+    - **And what is it FOR?** Every other vehicle here has a job: the fire
+      engine fights fires, the ambulance runs to the hospital, the police car
+      chases. A train that only goes round is scenery you are sitting in. The
+      obvious answer is passengers - stop at each station, dwell, move on, and
+      a score for keeping to time - and it would want designing rather than
+      assuming.
+
+    **What already exists and should be reused rather than rewritten:**
+    `getMonorailRoute()` (the loop, its stations and their distances),
+    `stepMonorailTrain()` (speed from where the train is, not from a timer,
+    with braking and headway), `monorailPointAt()`, and `World.updateMonorail()`
+    which already moves meshes from those numbers. `tests/monorail.mjs` is 77
+    checks that a player-driven train must not break.
+- The pads could be more obvious from the ground.
 
 **Also open, from earlier:**
 

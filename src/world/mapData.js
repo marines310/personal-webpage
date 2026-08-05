@@ -39,6 +39,14 @@ export const ISLANDS = [
     z: 0,
     radius: 80,
     theme: 'plain',
+    // A town on the hub, which is not what 'plain' would give it.
+    //
+    // This is the island every visitor starts on and the one that carries five
+    // of the six bridges, and it had no streets at all - a bare ring round a
+    // plaza. Two of six islands having a street grid was most of why the world
+    // read empty, and the emptiest of them was the first thing anybody saw.
+    // The theme still governs the planting; `grid` governs the streets.
+    grid: true,
     accent: 0xffffff,
     name: '',
     palms: 14,
@@ -123,6 +131,11 @@ export const ISLANDS = [
     z: 65.6,
     radius: 84,
     theme: 'mixed',
+    // 'mixed' means some town and some jungle, and it was being read as
+    // neither: no grid, and the roadside scatter that stands in for one on a
+    // wild island. A mixed island should look like a small town losing its
+    // grip on the landscape, which needs streets to lose.
+    grid: true,
     accent: 0xf472b6,
     name: 'CONTACT',
     palms: 12,

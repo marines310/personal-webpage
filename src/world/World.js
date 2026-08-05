@@ -1489,32 +1489,32 @@ export class World {
     })
 
     for (const arm of signal.arms) {
-      // Just outside the junction, on the approach itself
-      const along = signal.radius + 2.6
-      const lx = signal.x + arm.x * along
-      const lz = signal.z + arm.z * along
-
-      // Which road is this, and how wide? A crossing has to span the
-      // carriageway it's painted on, not a fixed guess.
-      let road = null
-      let best = Infinity
-      for (const r of roads) {
-        if (!r.street && !r.ring && !r.auto && !r.spur) continue
-        const d = distanceToPath(r.points, lx, lz) - r.width / 2
-        if (d < best) { best = d; road = r }
-      }
-
-      // Nothing here. This is what put zebra stripes on the sand: the old
-      // version laid them on both sides of every arm, so a road that ENDS
-      // at the junction got a crossing painted out into the grass beyond.
-      if (!road || best > 0.5) continue
-
-      // Square the crossing to the ROAD IT LANDS ON, not to the arm.
+      // WHERE THE LAYOUT PUT IT, and on the road the layout says it is on.
       //
-      // Approaches within 40 degrees of each other get merged into one, so
-      // the surviving arm can point up to 40 degrees away from the road the
-      // crossing is actually painted on - which is why some of them sat
-      // diagonally across the carriageway.
+      // Both used to be worked out again here: step `radius + 2.6` along the
+      // arm's bearing, then ask which road is nearest the result. That was two
+      // guesses, and on a dense grid both of them miss. Several roads pass
+      // within a few units of a junction, so "nearest" resolved to whichever
+      // is widest - the ring, every time - and a street's crossing was painted
+      // across the ring at 85 degrees to the approach it belonged to.
+      //
+      // getTrafficSignals() knows which road each arm IS, because an arm is
+      // made from one. See crossingSpot().
+      const road = arm.road
+      if (!road || !arm.at) continue
+
+      const lx = arm.at.x
+      const lz = arm.at.z
+
+      // Still checked, because a road that ENDS at the junction has nothing
+      // to paint on beyond it - which is what once put zebra stripes on the
+      // sand.
+      if (distanceToPath(road.points, lx, lz) - road.width / 2 > 0.5) continue
+
+      // Square to that road, taken where the crossing is rather than where the
+      // junction is: a merged cluster's centre is a centroid and sits on none
+      // of its roads, so the tangent there is the road's direction somewhere
+      // else entirely.
       const tan = this.tangentOfPath(road.points, lx, lz)
       if (!tan) continue
 
