@@ -18,7 +18,7 @@ prints PASS/FAIL lines and exits non-zero if anything failed.
 | `islandroads.mjs` | Every road on every island holds up |
 | `cont.mjs` | Bridge roads run ring to ring with no gaps and stay on the deck |
 | `approach.mjs` | Editable bridge approaches stay pinned at the shore |
-| `network.mjs` | The road graph: what connects to what, and whether you can drive everywhere |
+| `network.mjs` | The road graph: what connects to what, whether you can drive everywhere, and that no road has two junctions close enough to leave a one-vehicle stub between them |
 | `stress.mjs` | 3,000 deliberately awful hand-drawn roads — hairpins, zigzags, paths doubling back |
 | `town.mjs` | Street grids, buildings squared to the kerb, junction patches, signal placement, crossings, pavements, walkways |
 | `worldsanity.mjs` | `World.js` read statically — it needs a browser, so it can't be run. Methods, list shapes, palette colours, model keys, layout imports, and every constant **and function** it uses |
@@ -29,7 +29,7 @@ prints PASS/FAIL lines and exits non-zero if anything failed.
 | `ports.mjs` | Piers start on land and end in water, the quay is drivable and in the road network, no shipping lane crosses an island, and the fleet sails 15 simulated minutes without a hull ever standing on land |
 | `monorail.mjs` | The loop closes and never crosses itself, platforms stand on land near each island's middle, no pier in a carriageway, nothing under the beam reaches it, and the trains run 400 simulated seconds calling everywhere |
 | `windows.mjs` | The windows in the building models, read out of the real `.glb` files and the real texture atlas: every building has 4-8 panes, none on a roof, the walls stay clear of the darkness threshold, and the glass lands on the model at the model's own scale |
-| `stations.mjs` | Fire, police and hospital: no corner of a building in a road, a garage door wider than the engine with a run-in square to it, every bay promised to one vehicle, and ten simulated minutes in which they actually come and go from their own bays |
+| `stations.mjs` | Fire, police and hospital: no corner of a building in a road, a garage door wider than the engine with a run-in square to it, every station somebody's home, and ten simulated minutes in which they actually come and go from their own bays |
 
 **The editor**
 

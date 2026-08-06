@@ -466,6 +466,43 @@ chk('the ladder points from the truck to the fire rather than assuming',
 chk('the effects are built once, not per fire',
     /createFireEffects\(\)/.test(world))
 
+// --- Fire out of the windows -----------------------------------------------
+//
+// The roof plume says where the fire is from the next island. It does not say
+// the BUILDING is alight - a column of smoke off a rooftop reads as a bonfire
+// on the roof. So the openings burn too, and they are the model's own
+// openings: the same ones windows.js finds and lights at night.
+//
+// Every failure mode here is one windows.js already has a paragraph about, so
+// these check that the same answer is reused rather than a second, disagreeing
+// one being worked out alongside it.
+chk('the windows burn as well as the roof',
+    /this\.windowFlames\b/.test(world) && /updateWindowFire\(/.test(world))
+chk('and the openings come from the model, not from a guessed grid',
+    /windowVents\(/.test(world) && /buildingVents\(/.test(world))
+chk('the building itself is recorded, so its windows can be found',
+    /model: this\._builtModel \|\| null/.test(world))
+chk('the vents are cached against the geometry every building shares',
+    /this\._windowVents/.test(world))
+chk('and against the building, so a fire costs no texture read per frame',
+    /if \(building\.vents\) return building\.vents/.test(world))
+chk('which windows burn is settled once per incident, not per frame',
+    /if \(fire\.windowVents\) return fire\.windowVents/.test(world))
+
+// The ground floor is left alone on purpose: that is the height an engine
+// parks at, and a flame there puts the truck you drove to the fire inside it.
+chk('the ground floor does not burn, because that is where the engine parks',
+    /WINDOW_FIRE_FLOOR/.test(world) &&
+    /const upper = all\.filter\(v => v\.y >= cutoff\)/.test(world))
+// Same rule as the smoke column and the roof flames: the group sits on the
+// ground under the building and everything in it is measured from there.
+chk('and the flames are measured from the group, not from absolute zero',
+    /vent\.y - base/.test(world))
+chk('a flame leans out of its window rather than lying across the street',
+    /WINDOW_FIRE_LEAN/.test(world) && /setFromUnitVectors/.test(world))
+chk('the openings are scaled out of model units before they are used',
+    /vent\.width \* spread/.test(world))
+
 // ---------------------------------------------------------------------------
 // The aerial, from Mike's photographs of tower ladders. Four things, each of
 // which was wrong in the first version and each of which was then MEASURED in

@@ -21,8 +21,9 @@
  * someone swaps the models for better ones, this fails loudly rather than
  * lighting nothing and looking fine.
  */
-import { findWindowFaces, windowGeometry, luminance, WINDOW_MAX_LUMINANCE }
-  from '../src/world/windows.js'
+import {
+  findWindowFaces, windowGeometry, windowVents, luminance, WINDOW_MAX_LUMINANCE
+} from '../src/world/windows.js'
 import { readPNG, samplerFor } from './pngread.mjs'
 import { primitives } from './glbread.mjs'
 import { fileURLToPath } from 'url'
@@ -222,6 +223,83 @@ chk('and every pane is pushed clear of the wall by exactly the offset',
 // as the panes themselves.
 chk('the models are around one unit, so a world-unit offset would be absurd',
     bounds[0][1] - bounds[0][0] < 2, `${(bounds[0][1] - bounds[0][0]).toFixed(2)}`)
+
+// ---------------------------------------------------------------------------
+console.log('\n4. The same windows, as holes something can come out of\n')
+
+// The fire uses these. A flame is one object per opening, so it needs a
+// centre, a facing and a size - not the triangles the glass is made from.
+//
+// The trap this section exists for is the same one the whole file exists for:
+// these numbers are in MODEL units, where a whole building is about one unit
+// across. Anything that reads them as world units puts a flame the size of an
+// island in a window the size of a postage stamp.
+
+const oneWindow = findWindowFaces(wall)
+const oneVent = windowVents(oneWindow, wall.position)
+
+chk('one vent per window, not per triangle', oneVent.length === 1,
+    `${oneVent.length}`)
+
+// The known quad runs x 3..5, y 0..2, at z 0 - so its centre is (4, 1, 0)
+// and it is 2 by 2. Averaging the six triangle corners instead of the four
+// distinct ones would drag the centre towards the shared edge.
+chk('the centre is the middle of the opening',
+    Math.abs(oneVent[0].center[0] - 4) < 1e-9 &&
+    Math.abs(oneVent[0].center[1] - 1) < 1e-9 &&
+    Math.abs(oneVent[0].center[2]) < 1e-9,
+    oneVent[0].center.join(','))
+
+chk('and the size is the size of the opening',
+    Math.abs(oneVent[0].width - 2) < 1e-9 &&
+    Math.abs(oneVent[0].height - 2) < 1e-9,
+    `${oneVent[0].width} x ${oneVent[0].height}`)
+
+chk('it faces the way its window faces',
+    Math.abs(Math.abs(oneVent[0].normal[2]) - 1) < 1e-9,
+    oneVent[0].normal.join(','))
+
+// Up the opening, in its plane. Needed because a flame is tilted from
+// vertical towards the normal, and a bad up-vector leans it sideways.
+chk('and up the opening is up',
+    Math.abs(oneVent[0].up[1] - 1) < 1e-6, oneVent[0].up.join(','))
+
+chk('the up vector is square to the normal',
+    Math.abs(oneVent[0].up[0] * oneVent[0].normal[0] +
+             oneVent[0].up[1] * oneVent[0].normal[1] +
+             oneVent[0].up[2] * oneVent[0].normal[2]) < 1e-9)
+
+// And on the real models
+const vents = windowVents(modelWindows, model.position)
+
+chk('every window of a real building gives a vent',
+    vents.length === modelWindows.length,
+    `${vents.length} of ${modelWindows.length}`)
+
+let ventsOutside = 0
+for (const vent of vents) {
+  for (let axis = 0; axis < 3; axis++) {
+    if (vent.center[axis] < bounds[axis][0] - 1e-6 ||
+        vent.center[axis] > bounds[axis][1] + 1e-6) ventsOutside++
+  }
+}
+chk('and every one of them is inside the building', ventsOutside === 0,
+    `${ventsOutside}`)
+
+chk('none is a zero-sized opening',
+    vents.every(v => v.width > 1e-6 && v.height > 1e-6))
+
+// The units check, stated as loudly as it is for windowGeometry: a real
+// window on these models is a small fraction of a unit. If one ever measures
+// in whole units the model has been rebuilt at world scale and everything
+// downstream of here is wrong by a factor of a hundred.
+const biggest = Math.max(...vents.map(v => Math.max(v.width, v.height)))
+console.log(`   largest opening ${biggest.toFixed(3)} model units`)
+chk('the openings are in model units, not world units', biggest < 1,
+    `${biggest.toFixed(3)}`)
+
+chk('every vent faces roughly horizontally, like the wall it is in',
+    vents.every(v => Math.abs(v.normal[1]) < 0.5))
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

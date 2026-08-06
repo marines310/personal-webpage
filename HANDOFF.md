@@ -319,6 +319,17 @@ HTTP, and checks every asset the published site requests actually returns
   Three.js but illuminate nothing, so the road stayed black)
 - **Street dressing**: shopfronts that light at night, benches, bins,
   planters, street trees, parked cars in six colours
+- **Station signage**: FIRE STATION, POLICE and HOSPITAL lettered over the
+  doors with a badge each (Maltese cross, shield-and-star, cross), one
+  canvas per kind, lit after dark like the monorail station names. Where
+  the board hangs is `stationSignBoard()` in the layout, not a number in
+  the renderer — a fire station has 1.3 units of wall between its door head
+  and its roof band, and a board sized for the hospital covers the opening
+  the engine drives out of
+- **Fire out of the windows**: the burning building shows flame in the
+  model's own window openings — the same ones `windows.js` finds and lights
+  at night — as well as the roof plume. Ground floor is left dark on
+  purpose; that is the height an engine parks at
 - Deployed, auto-publishing on push
 
 **Open — agreed order, 29 July:**

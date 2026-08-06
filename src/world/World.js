@@ -38,6 +38,7 @@ import {
   groundHeight,
   getStations,
   STATION_SETBACK,
+  stationSignBoard,
   makeTraffic,
   stepTraffic,
   trafficPosition,
@@ -88,7 +89,7 @@ import {
   PLAZA_FOUNTAIN_OFFSET,
   routeToPoint
 } from './islandLayout.js'
-import { findWindowFaces, windowGeometry } from './windows.js'
+import { findWindowFaces, windowGeometry, windowVents } from './windows.js'
 import {
   subdivideTriangles,
   GROUND_MESH_EDGE
@@ -208,17 +209,36 @@ export const SHELTER_DEPTH = 1.9
 export const STATION_LOOKS = {
   fire: {
     height: 8.5, wall: 0xb9433a, trim: 0x8f3229,
-    door: 0xe8e2d4, sign: 0xffcf6b
+    door: 0xe8e2d4, sign: 0xffcf6b,
+    label: 'FIRE STATION', badge: 'maltese'
   },
   police: {
     height: 9.5, wall: 0x2f4f7a, trim: 0x223b5d,
-    door: 0xdfe6ee, sign: 0x7fc8ff
+    door: 0xdfe6ee, sign: 0x7fc8ff,
+    label: 'POLICE', badge: 'shield'
   },
   hospital: {
     height: 14, wall: 0xf1ece1, trim: 0xd8d0c0,
-    door: 0xbfd8e4, sign: 0xff7d7d
+    door: 0xbfd8e4, sign: 0xff7d7d,
+    label: 'HOSPITAL', badge: 'cross'
   }
 }
+
+/**
+ * The signboard over each station's doors.
+ *
+ * Painted onto one canvas - badge and lettering together - rather than built
+ * as geometry. Extruded lettering is a lot of triangles for something read
+ * from thirty units away, and the badges are the sort of shape (a Maltese
+ * cross, a shield) that is two lines of canvas path and a small pile of
+ * boxes. The hub sign and the monorail station names already work this way;
+ * this is the same trick a third time.
+ *
+ * 4:1, because the words are the long part and a badge sits square at one
+ * end of them.
+ */
+export const STATION_SIGN_W = 1024
+export const STATION_SIGN_H = 256
 
 /** How long a garage door takes to go all the way up, in seconds. */
 export const GARAGE_DOOR_TIME = 2.4
@@ -331,6 +351,34 @@ export const PALETTE = {
 export const SMOKE_COUNT = 130
 export const SMOKE_LIFE = 5.5
 export const SMOKE_RISE = 46
+
+/**
+ * Fire out of the windows.
+ *
+ * The roof plume says WHERE from the next island; the windows say the
+ * building is alight rather than its chimney is. Both, then - the plume is
+ * what you navigate by and it stays.
+ *
+ * The openings are the model's own, found by windows.js: the same triangles
+ * that get glass over them at night. Nothing here guesses a grid, for exactly
+ * the reason written at the top of that file - a guessed grid put glass in
+ * the sky beside the buildings, and a guessed grid here would put flames
+ * there too.
+ */
+export const WINDOW_FIRE_MAX = 8
+
+/**
+ * Only the upper part of the building burns visibly.
+ *
+ * Fires vent upward, and lighting a ground-floor window puts flame at the
+ * height a fire engine parks - so the truck you drove there is inside it.
+ * 0.35 keeps the lowest flame clear of the apron and still lets a two-storey
+ * house have windows on fire at all.
+ */
+export const WINDOW_FIRE_FLOOR = 0.35
+
+/** How far out of the opening a flame leans, as a fraction of its width. */
+export const WINDOW_FIRE_LEAN = 0.45
 
 /**
  * The fire engine's aerial - a tower ladder, built from Mike's photographs.
@@ -1299,10 +1347,23 @@ export class World {
         // intersection - two of them crossing made a pale X over the
         // junction. Testing against the other road's actual surface is
         // exact, and stops the kerb precisely where it should.
+        //
+        // A DRIVEWAY COUNTS. It is asphalt you drive across, and the list
+        // here was written before there were any - so the street's kerb ran
+        // straight over the mouth of the player's drive, a raised pale slab
+        // across the one place the car has to cross. Driving out, the car
+        // met it at the wheels and the body sank into it: the collider
+        // follows the ground, the kerb is drawn above the ground, and
+        // nothing had told the kerb to stop.
+        //
+        // The tell that it was the kerb and not the terrain: the height
+        // field is dead flat at 0.000 for the whole length of the drive.
+        // Nothing was wrong with the ground at all.
         let onAnotherRoad = false
         for (const other of allRoads) {
           if (other === road) continue
-          if (!other.street && !other.ring && !other.auto && !other.spur) continue
+          if (!other.street && !other.ring && !other.auto && !other.spur &&
+              !other.driveway) continue
           const d = distanceToPath(other.points, mx - island.x, mz - island.z)
           if (d < other.width / 2 + 0.2) { onAnotherRoad = true; break }
         }
@@ -1375,10 +1436,27 @@ export class World {
       // green, so the traffic couldn't obey it.
       signals.push({
         group: arm.group,
+        // FACING THE TRAFFIC IT GOVERNS, which is +arm and not -arm.
+        //
+        // An arm points AWAY from the junction, back down the road it
+        // governs - `flip` in getTrafficSignals() guarantees it, and the pole
+        // is placed at `cluster + arm * reach`, out along the approach. So a
+        // driver on that arm is further out still and travelling towards the
+        // junction, in the direction -arm. The lenses sit on the group's
+        // local +Z, so the head has to be turned to +arm for them to be
+        // pointing at that driver.
+        //
+        // It was -arm, which turned every head to face into the middle of
+        // the junction. The effect is subtle enough to survive a long time:
+        // every junction still had the right number of poles in the right
+        // places, and each one showed its lamps to the road OPPOSITE the one
+        // it was controlling. Mike found it by standing at a stop line and
+        // seeing an unlit black box, with the only visible lamps belonging to
+        // a signal across the junction facing him.
         lamps: this.addTrafficLight(
           island.x + arm.pole.x,
           island.z + arm.pole.z,
-          Math.atan2(-arm.x, -arm.z)
+          Math.atan2(arm.x, arm.z)
         )
       })
     }
@@ -2995,28 +3073,46 @@ export class World {
     band.position.set(0, height - 1.2, deep + 0.35)
     group.add(band)
 
-    const sign = new THREE.Mesh(
-      new THREE.BoxGeometry(Math.min(9, station.width * 0.5), 1.4, 0.25),
-      new THREE.MeshStandardMaterial({
-        color: look.sign, emissive: look.sign, emissiveIntensity: 0.35,
-        roughness: 0.5, flatShading: true
-      }))
-    sign.position.set(0, height - 3, deep + 0.4)
-    group.add(sign)
-    this.registerNightLight(sign.material, 1.1)
+    // The signboard: the station's name and its badge, on one canvas.
+    //
+    // Where it goes is stationSignBoard()'s answer, not a number picked here.
+    // A fire station has a strip of wall 1.3 units tall between its door head
+    // and its roof band, and every other kind has three times that - a board
+    // sized to look right on the hospital hangs across the opening the engine
+    // drives out of.
+    const board = stationSignBoard(station, height, doorHeight)
+    if (board) {
+      const plate = new THREE.Mesh(
+        new THREE.BoxGeometry(board.width + 0.3, board.height + 0.25, 0.2),
+        new THREE.MeshStandardMaterial({
+          color: look.trim, roughness: 0.7, flatShading: true
+        }))
+      plate.position.set(0, board.y, deep + 0.36)
+      group.add(plate)
 
-    // A hospital gets a cross; a fire station gets its bay numbers implicitly
-    // in the door pattern. Cheap, and it reads instantly from the road.
+      const sign = new THREE.Mesh(
+        new THREE.PlaneGeometry(board.width, board.height),
+        this.stationSignMaterial(station.kind))
+      sign.position.set(0, board.y, deep + 0.47)
+      group.add(sign)
+    }
+
+    // A hospital keeps its cross as well. It is the one badge that has to
+    // read from an angle the sign cannot be seen from - you look for a
+    // hospital while driving towards it with a patient in the back.
     if (station.kind === 'hospital') {
       const cross = new THREE.MeshStandardMaterial({
         color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.4,
         roughness: 0.6
       })
+      // Half height rather than 0.62: the signboard now hangs under the roof
+      // band, and at 0.62 the top arm of the cross ran into it.
+      const at = height * 0.5
       const bar = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.9, 0.2), cross)
-      bar.position.set(0, height * 0.62, deep + 0.4)
+      bar.position.set(0, at, deep + 0.4)
       group.add(bar)
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.9, 3.4, 0.2), cross)
-      post.position.set(0, height * 0.62, deep + 0.4)
+      post.position.set(0, at, deep + 0.4)
       group.add(post)
       this.registerNightLight(cross, 1.2)
     }
@@ -3036,6 +3132,147 @@ export class World {
 
     this.buildStationYard(station)
     station.mesh = group
+  }
+
+  /**
+   * One signboard face: badge on the left, lettering beside it.
+   *
+   * Cached per kind. There are seven stations and three kinds, so drawing it
+   * per station is four wasted canvases - and, more to the point, four extra
+   * materials for registerNightLight to walk at dusk.
+   *
+   * Emissive from its own map, like the monorail station names: at night the
+   * lettering and the badge light and the dark plate behind them does not,
+   * which is what a real illuminated sign does. A flat emissive colour makes
+   * the whole board glow like a lightbox.
+   */
+  stationSignMaterial(kind) {
+    this._stationSigns = this._stationSigns || new Map()
+    if (this._stationSigns.has(kind)) return this._stationSigns.get(kind)
+
+    const look = STATION_LOOKS[kind] || STATION_LOOKS.fire
+
+    const canvas = document.createElement('canvas')
+    canvas.width = STATION_SIGN_W
+    canvas.height = STATION_SIGN_H
+    const ctx = canvas.getContext('2d')
+
+    // The plate
+    ctx.fillStyle = '#141a21'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+    const accent = '#' + (look.sign || 0xffffff).toString(16).padStart(6, '0')
+    ctx.fillStyle = accent
+    ctx.fillRect(0, canvas.height - 12, canvas.width, 12)
+    ctx.fillRect(0, 0, canvas.width, 6)
+
+    // The badge, square, at the left-hand end
+    const pad = 18
+    const badgeSize = canvas.height - pad * 2
+    this.drawStationBadge(
+      ctx, look.badge, pad + badgeSize / 2, canvas.height / 2, badgeSize / 2,
+      accent)
+
+    // And the words in what is left. Measured and shrunk to fit rather than
+    // set at a size that happens to suit 'POLICE': 'FIRE STATION' is twice as
+    // long and would run off the end of the board.
+    const from = pad * 2 + badgeSize
+    const room = canvas.width - from - pad
+    const text = (look.label || kind || '').toUpperCase()
+
+    let size = 132
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    do {
+      ctx.font = `bold ${size}px Helvetica, Arial, sans-serif`
+      if (ctx.measureText(text).width <= room) break
+      size -= 4
+    } while (size > 40)
+
+    ctx.fillStyle = 'rgba(255,255,255,0.96)'
+    ctx.fillText(text, from + room / 2, canvas.height / 2 + 2)
+
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.anisotropy = 8
+
+    const material = new THREE.MeshStandardMaterial({
+      map: texture, roughness: 0.55,
+      emissive: new THREE.Color(0xffffff), emissiveMap: texture,
+      emissiveIntensity: 0
+    })
+    this.registerNightLight(material, 1.1)
+
+    this._stationSigns.set(kind, material)
+    return material
+  }
+
+  /**
+   * The badges: a Maltese cross for the fire service, a shield for the
+   * police, a plain cross for the hospital.
+   *
+   * Drawn as paths rather than modelled, because at the size a station sign
+   * is read from the road the difference is invisible and the cost is not:
+   * a Maltese cross is eight curves and would be a few hundred triangles
+   * apiece across seven stations.
+   */
+  drawStationBadge(ctx, badge, cx, cy, r, accent) {
+    ctx.save()
+    ctx.translate(cx, cy)
+
+    if (badge === 'shield') {
+      // A shield, point down, with a star in it
+      ctx.beginPath()
+      ctx.moveTo(-r * 0.82, -r * 0.9)
+      ctx.lineTo(r * 0.82, -r * 0.9)
+      ctx.lineTo(r * 0.82, r * 0.1)
+      ctx.quadraticCurveTo(r * 0.72, r * 0.78, 0, r)
+      ctx.quadraticCurveTo(-r * 0.72, r * 0.78, -r * 0.82, r * 0.1)
+      ctx.closePath()
+      ctx.fillStyle = accent
+      ctx.fill()
+
+      ctx.beginPath()
+      for (let i = 0; i < 10; i++) {
+        const reach = i % 2 ? r * 0.22 : r * 0.52
+        const angle = -Math.PI / 2 + (i * Math.PI) / 5
+        const x = Math.cos(angle) * reach
+        const y = Math.sin(angle) * reach - r * 0.08
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)
+      }
+      ctx.closePath()
+      ctx.fillStyle = '#141a21'
+      ctx.fill()
+      ctx.restore()
+      return
+    }
+
+    if (badge === 'maltese') {
+      // Four arms, each narrow at the centre and forked at the tip. One arm
+      // drawn and rotated four times, so they cannot come out uneven.
+      ctx.fillStyle = accent
+      for (let arm = 0; arm < 4; arm++) {
+        ctx.save()
+        ctx.rotate((arm * Math.PI) / 2)
+        ctx.beginPath()
+        ctx.moveTo(0, 0)
+        ctx.lineTo(-r * 0.62, -r * 0.98)
+        ctx.lineTo(-r * 0.2, -r * 0.72)
+        ctx.lineTo(r * 0.2, -r * 0.72)
+        ctx.lineTo(r * 0.62, -r * 0.98)
+        ctx.closePath()
+        ctx.fill()
+        ctx.restore()
+      }
+      ctx.restore()
+      return
+    }
+
+    // A plain cross, which is also the fallback: an unknown kind gets a mark
+    // rather than a blank square where its badge should be.
+    ctx.fillStyle = accent
+    ctx.fillRect(-r * 0.9, -r * 0.28, r * 1.8, r * 0.56)
+    ctx.fillRect(-r * 0.28, -r * 0.9, r * 0.56, r * 1.8)
+    ctx.restore()
   }
 
   /**
@@ -5610,7 +5847,11 @@ export class World {
         // option is a ring of something, which is what a first pass did and
         // it read as bunting on a roundabout.
         rotation: rotation || 0,
-        height: built
+        height: built,
+        // The model itself, so a fire can put flames in its real windows.
+        // Only the .glb path sets this; a box building leaves it null and
+        // buildingVents() works the openings out from the footprint instead.
+        model: this._builtModel || null
       })
     }
   }
@@ -6061,6 +6302,12 @@ export class World {
    * @param {object} opts { rotation, width, depth, floors, model, colour }
    */
   addBuilding(x, z, opts = {}) {
+    // The thing that was actually built, for whoever asked for it. Only the
+    // return value - the height - is part of the contract; this is a side
+    // channel, cleared first so a caller can never read the last building's
+    // model when this one falls through to the box shape.
+    this._builtModel = null
+
     const modelKey = opts.model ||
       this.pick(['building_a', 'building_b', 'building_c'])
     const rotation = opts.rotation !== undefined
@@ -6129,6 +6376,10 @@ export class World {
         footprint.x, footprint.y, footprint.z,
         rotation
       )
+      // Kept so a fire can find this building's real window openings rather
+      // than guessing a grid on its bounding box. See buildingVents().
+      this._builtModel = model
+
       // The height it actually came out at, so a fire knows where the roof is.
       return footprint.y
     }
@@ -6359,6 +6610,168 @@ export class World {
     }
 
     if (lit) this.registerNightLight(glass, this.randRange(0.8, 1.5))
+  }
+
+  /**
+   * Every window on one building as a hole something can come out of, in
+   * WORLD coordinates.
+   *
+   * The same openings that get glass over them at night, read back off the
+   * model with `windowVents` and pushed through the mesh's own world matrix -
+   * so the answer is right whatever the building was scaled or turned to,
+   * without this method knowing either number.
+   *
+   * Cached twice over. The model-space vents are cached against the geometry,
+   * which ninety buildings share three of; the world-space list is cached on
+   * the building, which never moves. A fire is rare, but it should not cost a
+   * texture read on the frame it starts.
+   */
+  buildingVents(building) {
+    if (!building) return []
+    if (building.vents) return building.vents
+
+    const vents = []
+    const model = building.model
+
+    if (model) {
+      model.updateWorldMatrix(true, true)
+
+      const meshes = []
+      model.traverse((part) => {
+        if (part.isMesh && part.geometry) meshes.push(part)
+      })
+
+      const point = new THREE.Vector3()
+      const direction = new THREE.Vector3()
+      const normalMatrix = new THREE.Matrix3()
+      const scale = new THREE.Vector3()
+      const spare = new THREE.Vector3()
+      const spin = new THREE.Quaternion()
+
+      for (const mesh of meshes) {
+        const geometry = mesh.geometry
+        const position = geometry.attributes.position
+        const uv = geometry.attributes.uv
+        const index = geometry.index
+        if (!position || !uv || !index) continue
+        if (uv.itemSize !== 2 || uv.isInterleavedBufferAttribute) continue
+        if (position.itemSize !== 3 || position.isInterleavedBufferAttribute) continue
+
+        const sample = this.textureSampler(mesh.material)
+        if (!sample) continue
+
+        // Shared with addLitWindows on purpose: the windows a building lights
+        // up at night and the windows it burns out of are the same windows,
+        // and finding them twice would be two chances to disagree.
+        this._windowFaces = this._windowFaces || new Map()
+        let windows = this._windowFaces.get(geometry)
+        if (!windows) {
+          windows = findWindowFaces({
+            position: position.array,
+            uv: uv.array,
+            index: index.array,
+            sample
+          })
+          this._windowFaces.set(geometry, windows)
+        }
+        if (!windows.length) continue
+
+        this._windowVents = this._windowVents || new Map()
+        let local = this._windowVents.get(geometry)
+        if (!local) {
+          local = windowVents(windows, position.array)
+          this._windowVents.set(geometry, local)
+        }
+
+        normalMatrix.getNormalMatrix(mesh.matrixWorld)
+        mesh.matrixWorld.decompose(spare, spin, scale)
+
+        // The openings are measured in model units, where a whole building is
+        // about one unit across. A window "0.08 wide" is a metre and a half
+        // once the world has scaled the model up, and a flame built to the
+        // unscaled figure is invisible.
+        const spread =
+          (Math.abs(scale.x) + Math.abs(scale.y) + Math.abs(scale.z)) / 3
+
+        for (const vent of local) {
+          point.set(vent.center[0], vent.center[1], vent.center[2])
+            .applyMatrix4(mesh.matrixWorld)
+          direction.set(vent.normal[0], vent.normal[1], vent.normal[2])
+            .applyMatrix3(normalMatrix).normalize()
+
+          vents.push({
+            x: point.x, y: point.y, z: point.z,
+            nx: direction.x, ny: direction.y, nz: direction.z,
+            width: vent.width * spread,
+            height: vent.height * spread
+          })
+        }
+      }
+    }
+
+    // A box building has no atlas to read, and neither does a world whose
+    // models failed to load. Rather than quietly having no window fire at
+    // all, lay the openings out on the footprint - which is a guess, and is
+    // only ever reached when there is nothing better to ask.
+    if (!vents.length) vents.push(...this.footprintVents(building))
+
+    building.vents = vents
+    return vents
+  }
+
+  /**
+   * Windows worked out from a building's footprint, for the shapes that have
+   * no model to read.
+   *
+   * Two per floor per face, inset from the corners. Deliberately plain: this
+   * is the fallback, and anything cleverer would invite trusting it.
+   */
+  footprintVents(building) {
+    const height = building.height || 6
+    const width = building.width || 6
+    const depth = building.depth || 6
+    const rotation = building.rotation || 0
+    const ground = this.groundAt(building.x, building.z)
+
+    const floors = Math.max(1, Math.round(height / 2.5))
+    const cos = Math.cos(rotation)
+    const sin = Math.sin(rotation)
+
+    const faces = [
+      { n: [0, 0, 1], out: depth / 2, span: width },
+      { n: [0, 0, -1], out: depth / 2, span: width },
+      { n: [1, 0, 0], out: width / 2, span: depth },
+      { n: [-1, 0, 0], out: width / 2, span: depth }
+    ]
+
+    const out = []
+
+    for (const face of faces) {
+      // Along the face, square to its normal
+      const tan = [face.n[2], 0, -face.n[0]]
+
+      for (let floor = 0; floor < floors; floor++) {
+        const y = ground + (floor + 0.55) * (height / floors)
+
+        for (const side of [-0.28, 0.28]) {
+          const lx = face.n[0] * face.out + tan[0] * face.span * side
+          const lz = face.n[2] * face.out + tan[2] * face.span * side
+
+          out.push({
+            x: building.x + lx * cos + lz * sin,
+            y,
+            z: building.z - lx * sin + lz * cos,
+            nx: face.n[0] * cos + face.n[2] * sin,
+            ny: 0,
+            nz: -face.n[0] * sin + face.n[2] * cos,
+            width: Math.min(1.6, face.span * 0.24),
+            height: Math.min(1.8, (height / floors) * 0.5)
+          })
+        }
+      }
+    }
+
+    return out
   }
 
   /**
@@ -6755,6 +7168,27 @@ export class World {
       this.fireGroup.add(flame)
     }
 
+    // --- Windows: flame leaning out of the openings the model already has ---
+    //
+    // Same pool-and-reuse as the roof flames, and the same reason: a fire
+    // starts on the frame you are looking at it, so nothing may be built
+    // then. Where they go is decided in updateWindowFire(); here they are
+    // only made and parked.
+    this.windowFlameMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffa33a, transparent: true, opacity: 0,
+      depthWrite: false, side: THREE.DoubleSide, fog: false
+    })
+    this.windowFlames = []
+    for (let i = 0; i < WINDOW_FIRE_MAX; i++) {
+      // A unit cone, so the scale below reads directly as the size of the
+      // opening rather than as a factor of some arbitrary built size.
+      const flame = new THREE.Mesh(
+        new THREE.ConeGeometry(0.5, 1, 5), this.windowFlameMaterial)
+      flame.visible = false
+      this.windowFlames.push(flame)
+      this.fireGroup.add(flame)
+    }
+
     // A real light, so the fire lights the street it is in. One, not seven.
     this.fireLight = new THREE.PointLight(0xff7a20, 0, 46, 1.6)
     this.fireGroup.add(this.fireLight)
@@ -6998,6 +7432,89 @@ export class World {
     if (stowed) stowed.visible = show
   }
 
+  /**
+   * Which windows of the burning building are showing flame.
+   *
+   * Worked out once per incident and kept on the fire, because the answer
+   * cannot change while one building burns and the alternative is a texture
+   * read every frame.
+   *
+   * The lowest windows are left alone. A fire vents upward, and a flame in a
+   * ground-floor window is at the height an engine parks - so the truck you
+   * drove there ends up standing in it.
+   */
+  windowFireVents(fire) {
+    if (fire.windowVents) return fire.windowVents
+
+    const all = this.buildingVents(fire.building)
+    const base = this.groundAt(fire.x, fire.z)
+    const cutoff = base + (fire.top || 6) * WINDOW_FIRE_FLOOR
+
+    // A bungalow has nothing above the cutoff. Better its one window burns
+    // than that a whole class of building never shows any fire at all.
+    const upper = all.filter(v => v.y >= cutoff)
+    const pool = upper.length ? upper : all
+
+    fire.windowVents = pool
+      .slice()
+      .sort((a, b) => b.y - a.y)
+      .slice(0, WINDOW_FIRE_MAX)
+
+    return fire.windowVents
+  }
+
+  /**
+   * Flame in each of those windows, leaning out and up.
+   *
+   * The lean is the whole difference between this and a cone parked in a
+   * hole: fire out of a window goes up the wall above it, so each flame is
+   * tilted from vertical towards the way its window faces and no further -
+   * pointing it straight out would lay it flat across the street.
+   */
+  updateWindowFire(fire, base, strength) {
+    if (!this.windowFlames || !this.windowFlames.length) return
+
+    const showing = strength > 0.05
+    this.windowFlameMaterial.opacity = 0.95 * strength
+
+    const vents = showing ? this.windowFireVents(fire) : []
+
+    this._ventLean = this._ventLean || new THREE.Vector3()
+    this._ventSpin = this._ventSpin || new THREE.Quaternion()
+    this._ventUp = this._ventUp || new THREE.Vector3(0, 1, 0)
+
+    for (let i = 0; i < this.windowFlames.length; i++) {
+      const flame = this.windowFlames[i]
+      const vent = vents[i]
+
+      if (!vent) { flame.visible = false; continue }
+
+      const flicker = 0.65 + 0.35 * Math.sin(this.elapsed * (6.5 + i * 0.7) + i * 1.7)
+
+      // The group sits on the ground under the building, so everything in it
+      // is measured from there - the same rule the roof flames follow, and
+      // the one worldsanity exists to enforce.
+      flame.position.set(
+        vent.x - fire.x + vent.nx * vent.width * WINDOW_FIRE_LEAN,
+        vent.y - base,
+        vent.z - fire.z + vent.nz * vent.width * WINDOW_FIRE_LEAN
+      )
+
+      this._ventLean
+        .set(vent.nx * 0.55, 1, vent.nz * 0.55)
+        .normalize()
+      this._ventSpin.setFromUnitVectors(this._ventUp, this._ventLean)
+      flame.quaternion.copy(this._ventSpin)
+
+      const across = Math.max(0.6, vent.width) * 1.25
+      const tall = Math.max(0.8, vent.height) * 1.9
+
+      flame.scale.set(
+        across * strength, tall * flicker * strength, across * strength)
+      flame.visible = true
+    }
+  }
+
   updateFireEffects(delta, fire, player) {
     if (!this.fireGroup) return
 
@@ -7034,6 +7551,10 @@ export class World {
     this.flameMaterial.opacity = 0.9 * strength
     this.fireLight.position.set(0, roof + 2, 0)
     this.fireLight.intensity = 26 * strength
+
+    // And out of the windows, which is what says the building is alight
+    // rather than something on its roof is.
+    this.updateWindowFire(fire, base, strength)
 
     // Smoke: straight up, spreading, blown by whatever wind there is
     const env = this.game.environment

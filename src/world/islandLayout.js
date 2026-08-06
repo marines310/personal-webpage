@@ -42,6 +42,7 @@ import {
   roadNetworkProfile,
   terracePads,
   nearestOnPath,
+  rectanglesOverlap,
   PAD_MARGIN,
   PAD_BLEND,
   ROAD_SHOULDER,
@@ -254,6 +255,41 @@ export const MIN_JUNCTION_ANGLE = 32
  * it gets one set of lights.
  */
 export const SIGNAL_MERGE_DISTANCE = 22
+
+/**
+ * How close two road ends have to be before they are the same junction.
+ *
+ * buildNetwork() uses this to decide whether an end landing near another
+ * road joins it, and the street generator uses it to tell a junction it has
+ * landed ON from one it has landed NEXT TO. Those two have to be the same
+ * number: a street that stops three units from a bridge approach makes one
+ * four-armed crossroads, and a rule that read it as two junctions would
+ * demolish a perfectly good street to separate them.
+ */
+export const NODE_MERGE_TOLERANCE = DEFAULT_ROAD_WIDTH * 0.75
+
+/**
+ * How far apart two junctions on the same road have to be.
+ *
+ * NOT the same question as SIGNAL_MERGE_DISTANCE, though it started out
+ * sharing that number. That one is about what looks like one intersection to
+ * a driver. This one is about what a vehicle can queue on, and the traffic
+ * has more to say about it than the eye does:
+ *
+ *   - the stretch between them becomes a lane, and a lane is measured after
+ *     the quarter-width offset, so on the inside of a bend it comes out
+ *     shorter than the gap between the junctions - 22.2 became 21.2 on the
+ *     CONTACT ring
+ *   - a vehicle holds back for anything within JUNCTION_GUARD (13) of a
+ *     junction it is entering, so on a lane much under 26 a car waiting at
+ *     one end is already inside the guard of the other, and the two junctions
+ *     take turns refusing each other
+ *
+ * At 22 a sedan on the CONTACT ring covered 113 units in five minutes -
+ * crawling, not stopped, which is why the stuck-vehicle backstop never fired.
+ * Measured: 22 gave that, 26 clears it.
+ */
+export const JUNCTION_SPACING = 26
 
 /**
  * Approaches within this many degrees of each other count as one.
@@ -707,37 +743,43 @@ export const BUS_STOP_CLEARANCE = 22
 export const BUS_DWELL = 6
 
 /**
- * How many of each kind are on the roads.
- *
- * A measured number, not a guess. Over five simulated minutes this fleet has
- * every vehicle covering at least 800 units and the median around 1,500. Push
- * it to 42 and the median halves and one vehicle covers 26 units: the road
- * network has a handful of 12-unit ring pieces, and once several vehicles are
- * queued across those the give-way rules have nothing left to give.
- *
- * So if you want busier streets, widen or lengthen the short pieces first -
- * or accept the jams. `tests/traffic.mjs` will tell you which you got.
- */
-/**
  * How many of each, and why it is not the number Mike first asked for.
  *
  * He asked for 94 - 30 sedans, 10 convertibles, 10 pickups, 20 SUVs, 8 police,
- * 6 ambulances, 6 fire, 4 buses. These are those proportions at about 0.73,
- * which is what the road network carries. Measured over five simulated
- * minutes, the whole fleet running:
+ * 6 ambulances, 6 fire, 4 buses. These are those proportions at about 0.72.
  *
- *   94 vehicles  slowest covers 131, median  975, 13 given up on
- *   81           slowest covers 215, median  986,  9 given up on
- *   68           slowest covers 591, median 1194,  3 given up on
+ * AND IT DID NOT GO UP when the junctions were fixed, which was the whole
+ * point of fixing them. That is worth writing down rather than quietly
+ * leaving as a number.
+ *
+ * The junction work removed every stub lane - the shortest lane on the map
+ * went from 12.1 to 19.7 - and at 68 the traffic is measurably better for it
+ * (slowest vehicle covers 731 units in five minutes against 591 before,
+ * median 1403 against 1194). But pushing past 68 does not hold:
+ *
+ *   fleet   relocations in 5 min   note
+ *      68           4              clean
+ *      72          15              and the crash test jams: 5 cars at the wreck
+ *      75           5              clean here, but 4 cars sitting at the wreck
+ *      81           7              one vehicle stuck 52s
+ *
+ * Two things to take from that. The simulation is chaotic - 72 is worse than
+ * 75, which is worse than 81 on relocations - so a single run at a single
+ * fleet is a sample, not a capacity, and picking the largest number that
+ * passes is reading noise. And the binding constraint is no longer stub
+ * lanes: it is that the map has few ALTERNATIVE routes, so shutting one lane
+ * (which `tests/incident.mjs` does deliberately) backs up everything behind
+ * it. More lanes will not fix that; more ways round will.
+ *
+ * Where the ceiling has actually come from:
+ *
+ *   113 lanes, 42 junctions   the sparse map                 fleet 52
+ *   190 lanes, 65 junctions   the denser street grid          fleet 68
+ *   163 lanes, 54 junctions   junctions no longer doubled up  fleet 68
  *
  * "Given up on" is the patience valve teleporting a vehicle that has been
  * stuck too long - a crude escape hatch, and the number to watch, because it
  * hides jams rather than reporting them.
- *
- * Raise these again once the network carries more. The lanes doubled with the
- * denser street grid (190 now, from 113) and the ceiling went up with them;
- * task 94 - junctions the traffic lights already treat as one - is the next
- * thing that would lift it further.
  */
 export const TRAFFIC_FLEET = {
   sedan: 22,
@@ -1416,32 +1458,121 @@ function tightestRadius(path) {
 }
 
 export function getIslandRoads(island) {
-  const roads = []
+  const roads = baseIslandRoads(island)
 
-  const ring = getIslandRing(island)
-  if (ring && !island.noAutoRoad) {
+  // The player's drive out of the garage. Last, so it cannot affect where
+  // anything else went - and see getGarageDriveway() for why it is a road at
+  // all rather than a special case everything has to know about.
+  const drive = getGarageDriveway()
+  if (drive && drive.island === island.id) {
     roads.push({
-      points: ring,
-      width: DEFAULT_ROAD_WIDTH,
-      ring: true,
-      closed: true
+      points: smoothRoad(drive.points, drive.width),
+      width: drive.width,
+      driveway: true
     })
   }
 
+  return roads
+}
+
+/**
+ * Every road on the island EXCEPT the player's drive.
+ *
+ * The drive is worked out from where the garage ended up, and the garage is
+ * sited against the roads - so the two would ask each other for an answer
+ * forever. This is the list the garage is allowed to see.
+ */
+function baseIslandRoads(island) {
+  const fixed = getFixedRoads(island)
+
+  // The ring first, then the generated streets, then everything else - the
+  // order other code has always seen. getTownGrid() needs the same list
+  // minus the streets, which is what getFixedRoads() is for: a street has
+  // to fit around the ring, the quay road and the bridge approaches, and it
+  // cannot ask for getIslandRoads() to find out where they are without
+  // asking for itself.
+  const roads = fixed.ring ? [fixed.ring] : []
+
+  const keys = []
+  const streets = []
   for (const street of getTownGrid(island)) {
-    roads.push({
+    keys.push(street.key)
+    streets.push({
       points: smoothRoad(street.points, street.width),
       width: street.width,
       street: true
     })
   }
 
+  // A street you took over keeps its PLACE IN THE ROW, not just its shape.
+  //
+  // It is stored in `island.roads`, so the obvious thing is to emit it there,
+  // at the end. That reorders the streets, and getTownPlots() walks them in
+  // order and drops a frontage that would land on one already placed - so the
+  // island quietly gains or loses a building the moment you click a street.
+  // Putting it back where its key says it belongs makes the take-over what it
+  // claims to be: a change of who is in charge of the shape, and nothing else.
+  for (const road of fixed.claimed) {
+    let at = keys.findIndex(k => afterStreetKey(k, road.streetKey))
+    if (at < 0) at = streets.length
+    keys.splice(at, 0, road.streetKey)
+    streets.splice(at, 0, road)
+  }
+
+  roads.push(...streets, ...fixed.auto, ...fixed.placed)
+  return roads
+}
+
+/**
+ * Does street key `a` come after key `b` in the order getTownGrid() emits?
+ *
+ * Keys are `s{axis}.{line}.{run}` and the generator sweeps axis, then line,
+ * then run - so the ordering is the three numbers, in that order.
+ */
+function afterStreetKey(a, b) {
+  const parts = (key) => String(key).slice(1).split('.').map(Number)
+  const one = parts(a)
+  const other = parts(b)
+  for (let i = 0; i < 3; i++) {
+    if (one[i] !== other[i]) return one[i] > other[i]
+  }
+  return false
+}
+
+/**
+ * Every road on an island except the generated street grid, in two piles.
+ *
+ * `ring` and `auto` - the quay road and the bridge approaches - are the
+ * island's fixed infrastructure. A bridge lands where the bridge lands and
+ * the quay road runs where the water is, so the grid is the part that has
+ * to move out of the way, and getTownGrid() lays itself out around these.
+ *
+ * `placed` is what you drew by hand, and the grid deliberately IGNORES it.
+ *
+ * That last one is a decision, not an oversight. Taking a generated street
+ * over puts a copy of it in `island.roads`, and the promise made when that
+ * was built is that taking one over changes nothing but who is in charge of
+ * its shape. Let the grid see `placed` and it stops being true: the copy is
+ * visible to candidates that come before the street itself, so a different
+ * street somewhere else gets laid out differently, and touching one road
+ * silently moves another. `tests/streetedit.mjs` measures exactly this.
+ */
+function getFixedRoads(island) {
+  const auto = []
+  const placed = []
+  const claimed = []
+
+  const loop = getIslandRing(island)
+  const ring = loop && !island.noAutoRoad
+    ? { points: loop, width: DEFAULT_ROAD_WIDTH, ring: true, closed: true }
+    : null
+
   // The road out to the quay. An ordinary road as far as everything else
   // is concerned, but flagged so the pavements and the signals treat it as
   // a through route rather than as something to lay a kerb across.
   const portRoad = getPortRoad(island)
   if (portRoad && !island.noAutoRoad) {
-    roads.push({
+    auto.push({
       points: smoothRoad(sampleSpline(portRoad.points, {
         samplesPerSpan: ROAD_SMOOTHNESS
       }), portRoad.width),
@@ -1463,7 +1594,7 @@ export function getIslandRoads(island) {
       island, landing.dirX, landing.dirZ, landing.def
     )
 
-    roads.push({
+    auto.push({
       points: smoothRoad(
         sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS })
       ),
@@ -1495,17 +1626,21 @@ export function getIslandRoads(island) {
     const width = road.width
       || (road.streetKey ? DEFAULT_STREET_WIDTH : DEFAULT_ROAD_WIDTH)
 
-    roads.push({
+    const entry = {
       points: smoothRoad(sampleSpline(controls, {
         samplesPerSpan: ROAD_SMOOTHNESS,
         closed: !!road.closed
       }), width),
       width,
       ...(road.streetKey ? { street: true, streetKey: road.streetKey } : {})
-    })
+    }
+
+    // A taken-over street goes back among the streets, in its own place -
+    // see getIslandRoads(). Everything else is a road you drew.
+    ;(road.streetKey ? claimed : placed).push(entry)
   }
 
-  return roads
+  return { ring, auto, placed, claimed }
 }
 
 /**
@@ -1765,6 +1900,51 @@ export function getTownGrid(island) {
   const span = Math.hypot(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ)
   const streets = []
 
+  // The roads a street has to fit around, and every junction they already
+  // make with each other. Both grow as streets are accepted, because a
+  // street is a road to the ones that come after it.
+  const fixed = getFixedRoads(island)
+  const settled = [
+    ...(fixed.ring ? [fixed.ring] : []),
+    ...fixed.auto.filter(r => r.points && r.points.length >= 2)
+  ]
+  const junctions = settled.map(() => [])
+
+  for (let a = 0; a < settled.length; a++) {
+    for (let b = a + 1; b < settled.length; b++) {
+      for (const p of roadCrossings(settled[a], settled[b])) {
+        junctions[a].push(p)
+        junctions[b].push(p)
+      }
+    }
+  }
+
+  // Every reason a street can be wrong, in one place - because a street that
+  // gets MOVED has to face all of them again, on where it ended up.
+  //
+  // Half-applying this cost an afternoon. The junction rule swings a street's
+  // end along the ring, which rotates the whole street; re-testing only the
+  // angle let one come to rest running alongside the ring, where its lane and
+  // the ring's lane occupied the same tarmac and the cars on them
+  // interpenetrated for 477 frames out of ten minutes. Same list, twice.
+  const acceptable = (street) =>
+    // Not running alongside a road already there. The ring is the usual
+    // culprit: a grid line clipped near the edge of the island can shadow it
+    // for most of its length, leaving two carriageways with a sliver of
+    // pavement between them.
+    !crowdsAnother(street, [{ points: ring, width: DEFAULT_ROAD_WIDTH }, ...streets]) &&
+    // Not meeting the ring at a glancing angle.
+    !meetsTooShallow(street, ring) &&
+    // Not crossing a district.
+    //
+    // A plaza is a square, and a street through the middle of one is not a
+    // street, it is a square with a road in it. On the hub it is also where
+    // the player's garage goes: `getPlayerGarage()` sweeps the plaza for a
+    // spot whose whole footprint is off the roads, and the first time the hub
+    // had a grid there was no such spot anywhere - the game came up with
+    // nowhere to start.
+    !crossesDistrict(island, street)
+
   // Two sets of parallel lines at right angles, swept across the island
   for (const axis of [0, 1]) {
     const dirX = axis ? Math.cos(angle) : -Math.sin(angle)
@@ -1794,28 +1974,29 @@ export function getTownGrid(island) {
           key: `s${axis}.${i}.${runIndex}`
         }
 
-        // Reject anything running alongside a road already there. The
-        // ring is the usual culprit: a grid line clipped near the edge of
-        // the island can shadow it for most of its length, leaving two
-        // carriageways with a sliver of pavement between them.
-        if (crowdsAnother(candidate, [{ points: ring, width: DEFAULT_ROAD_WIDTH }, ...streets])) {
-          continue
+        // Shadowing another road, grazing the ring, or cutting through a
+        // district - see acceptable() above for what each of those costs.
+        if (!acceptable(candidate)) continue
+
+        // Or landing its junctions on top of ones already there. Returns the
+        // street moved or shortened, or null if there is nothing left of it
+        // worth keeping - and whatever comes back has been through
+        // acceptable() again, on where it ended up.
+        const fitted = spaceJunctions(candidate, settled, junctions, acceptable)
+        if (!fitted) continue
+
+        streets.push(fitted)
+
+        // It is a road now, so the next candidate has to fit around it too.
+        settled.push(fitted)
+        const mine = []
+        for (let a = 0; a < settled.length - 1; a++) {
+          for (const p of roadCrossings(settled[a], fitted)) {
+            junctions[a].push(p)
+            mine.push(p)
+          }
         }
-
-        // And reject anything meeting the ring at a glancing angle
-        if (meetsTooShallow(candidate, ring)) continue
-
-        // Or crossing a district.
-        //
-        // A plaza is a square, and a street through the middle of one is not a
-        // street, it is a square with a road in it. On the hub it is also
-        // where the player's garage goes: `getPlayerGarage()` sweeps the plaza
-        // for a spot whose whole footprint is off the roads, and the first
-        // time the hub had a grid there was no such spot anywhere - the game
-        // came up with nowhere to start.
-        if (crossesDistrict(island, candidate)) continue
-
-        streets.push(candidate)
+        junctions.push(mine)
       }
     }
   }
@@ -1830,6 +2011,306 @@ export function getTownGrid(island) {
   // nowhere. Generate the full grid, then hide what's been claimed.
   const claimed = takenOverStreets(island)
   return claimed.size ? streets.filter(s => !claimed.has(s.key)) : streets
+}
+
+/**
+ * Where two roads meet, at the tolerance their widths call for.
+ *
+ * The same rule getIslandJunctions() lays its asphalt patches by, so the
+ * junctions this counts are the junctions you can see on the ground.
+ */
+function roadCrossings(a, b) {
+  const radius = Math.hypot(a.width / 2, b.width / 2) + 0.6
+  return pathCrossings(a.points, b.points, radius)
+}
+
+/**
+ * Keep a new street from putting a junction on top of one already there.
+ *
+ * THE PROBLEM THIS SOLVES. A lane runs from one junction to the next, so
+ * two junctions thirteen units apart make a thirteen-unit lane, and a
+ * thirteen-unit lane holds exactly one vehicle. Stop on it and nothing
+ * behind you can enter: the lane is a plug, and above about seventy
+ * vehicles the plugs stop clearing. Shorter than LANE_MIN_LENGTH and it is
+ * worse - no lane is built at all, and the road has a hole in it.
+ *
+ * The lights had already reached the same conclusion by a different route.
+ * `getTrafficSignals` clusters junctions within SIGNAL_MERGE_DISTANCE and
+ * gives them ONE set of lights, because a driver reads them as one
+ * intersection. So the two halves of the system disagreed: one junction to
+ * the signals, two to the road network, and the gap between the two
+ * opinions is where the traffic jammed.
+ *
+ * THE RULE. No junction within SIGNAL_MERGE_DISTANCE of another on the same
+ * road. Applied here, when the street is generated, rather than patched up
+ * afterwards - because a junction is a place two roads cross, and the only
+ * honest way to remove one is to stop the roads crossing there.
+ *
+ * THREE ANSWERS, IN THIS ORDER.
+ *
+ *   1. **Move the end.** A street ending fifteen units along the ring from
+ *      where a bridge comes ashore is the common case, and the fix is to
+ *      slide it along the ring - either onto the bridge's junction, giving
+ *      one four-armed crossroads instead of two three-armed ones, or clear
+ *      of it, leaving a stretch long enough to queue on. Either way the
+ *      street survives intact. This is the merge the task asks for, done by
+ *      moving a road rather than by declaring two junctions to be one and
+ *      leaving the tarmac where it was.
+ *   2. **Trim back.** If neither place will do - the swing would leave the
+ *      street grazing the ring, or the crowding is with a road it only
+ *      crosses - cut it back to its last useful crossing instead. The tail
+ *      beyond that is a stub, and the street still ends on a road.
+ *   3. **Drop it.** Nothing left to save.
+ *
+ * A street needs two junctions to be worth having: fewer than that and it
+ * either goes nowhere or dead-ends, and a dead end is a worse answer than
+ * no street, because traffic has to turn round on it.
+ *
+ * @returns the street, possibly moved or shortened, or null to reject it
+ */
+function spaceJunctions(candidate, settled, junctions, acceptable) {
+  let street = candidate
+
+  // Moving one end can settle the other - and can unsettle it - so this
+  // repeats. Bounded, because a street with both ends chasing junctions
+  // could otherwise swing back and forth for ever.
+  for (let pass = 0; pass < 3; pass++) {
+    const moved = relocateCrowdedEnd(street, settled, junctions, acceptable)
+    if (!moved) break
+    street = moved
+  }
+
+  const marks = junctionMarks(street, settled)
+  const crowded = crowdingTest(marks, junctions)
+
+  // Trim from the ends inwards. Each cut can settle the one behind it, so
+  // this repeats rather than testing once.
+  let changed = true
+  while (changed && marks.length) {
+    changed = false
+    if (crowded(marks[0])) { marks.shift(); changed = true }
+    if (marks.length && crowded(marks[marks.length - 1])) { marks.pop(); changed = true }
+  }
+
+  if (marks.length < 2) return null
+
+  // Anything still crowded is in the MIDDLE of the street, where there is
+  // no tail to cut. The street goes.
+  if (marks.some(crowded)) return null
+
+  const from = marks[0]
+  const to = marks[marks.length - 1]
+
+  // Untouched if both ends were already junctions - and it must be
+  // untouched, or every street on the map would lose a rounding error off
+  // each end and stop meeting the ring.
+  const ends = [street.points[0], street.points[street.points.length - 1]]
+  if (Math.hypot(from.x - ends[0].x, from.z - ends[0].z) < 1e-6 &&
+      Math.hypot(to.x - ends[1].x, to.z - ends[1].z) < 1e-6) {
+    return street
+  }
+
+  if (Math.hypot(to.x - from.x, to.z - from.z) < JUNCTION_SPACING) return null
+
+  // Trimming shortens a street, which cannot make it shadow anything new -
+  // but it CAN change where it meets the ring, so it faces the same list.
+  const trimmed = {
+    ...street,
+    points: [{ x: from.x, z: from.z }, { x: to.x, z: to.z }]
+  }
+  return acceptable(trimmed) ? trimmed : null
+}
+
+/** Where a street meets everything already there, in order along it. */
+function junctionMarks(street, settled) {
+  const marks = []
+
+  settled.forEach((road, index) => {
+    for (const point of roadCrossings(street, road)) {
+      const along = distanceAlongPath(street.points, point.x, point.z)
+      if (along === null) continue
+      marks.push({ along, x: point.x, z: point.z, road: index })
+    }
+  })
+
+  marks.sort((a, b) => a.along - b.along)
+
+  // The same crossing can be reported twice - once as an intersection and
+  // once as an endpoint landing on the other path.
+  const kept = []
+  for (const mark of marks) {
+    const twin = kept.find(k => k.road === mark.road &&
+      Math.hypot(k.x - mark.x, k.z - mark.z) < NODE_MERGE_TOLERANCE)
+    if (!twin) kept.push(mark)
+  }
+
+  // A junction near the end of a street IS the end of the street.
+  //
+  // The crossing maths returns where the centre lines actually meet, which
+  // on a street clipped to the ring sits a unit or two inside the street's
+  // own last point. Left as they are, those near misses are a slow leak:
+  // "is this mark the end?" answers no, so an end can never be moved onto a
+  // junction, and "was the street left alone?" also answers no, so every
+  // street on the map gets trimmed by a unit and stops touching the ring.
+  const ends = [street.points[0], street.points[street.points.length - 1]]
+  for (const mark of kept) {
+    for (const end of ends) {
+      if (Math.hypot(mark.x - end.x, mark.z - end.z) < NODE_MERGE_TOLERANCE) {
+        mark.x = end.x
+        mark.z = end.z
+      }
+    }
+  }
+
+  return kept
+}
+
+/**
+ * Is this junction too close to another one - close enough to leave a stub
+ * of road between them, but not close enough to BE them?
+ *
+ * Both halves matter. Under NODE_MERGE_TOLERANCE the two are one junction
+ * and there is nothing wrong; between there and SIGNAL_MERGE_DISTANCE is
+ * the band that produces a lane too short to queue on.
+ *
+ * REJECTING at 22 and AIMING at 26 is deliberate, and the difference is not
+ * fussiness. This decides whether a street is acceptable where it is;
+ * `placesToPut` decides where to move one that isn't. Making the second
+ * stricter costs nothing - the street is being moved anyway, so it may as
+ * well land somewhere comfortable - while making the first stricter deletes
+ * streets, and a town with fewer streets carries less traffic, which is the
+ * problem this was all meant to solve. Tried both at 26: three streets went,
+ * one of them the hub's, and the relocations went from 3 to 20.
+ */
+function crowdingTest(marks, junctions) {
+  const between = (ax, az, bx, bz) => {
+    const gap = Math.hypot(ax - bx, az - bz)
+    return gap >= NODE_MERGE_TOLERANCE && gap < SIGNAL_MERGE_DISTANCE
+  }
+
+  return (mark) => {
+    // Against what is already on that road...
+    for (const point of junctions[mark.road]) {
+      if (between(point.x, point.z, mark.x, mark.z)) return true
+    }
+    // ...and against this street's own other junctions, which would put the
+    // short lane on the new street instead of on the old one.
+    for (const other of marks) {
+      if (other === mark) continue
+      if (between(other.x, other.z, mark.x, mark.z)) return true
+    }
+    return false
+  }
+}
+
+/**
+ * Slide a crowded end of a street ALONG the road it finishes on, until it
+ * is either exactly on the junction it was crowding or properly clear of it.
+ *
+ * Only along that same road - the ring, usually. That keeps the move honest:
+ * the street still finishes on the road it always finished on, so nothing is
+ * invented and it is never dragged off across open ground.
+ *
+ * TWO PLACES TO GO, and both are tried, nearest move first:
+ *
+ *   - **onto it.** One four-armed crossroads instead of two three-armed ones,
+ *     which is the better result: one junction, one set of lights.
+ *   - **clear of it**, far enough along that the stretch between them is a
+ *     lane you can queue on.
+ *
+ * The second exists because the first can be refused. Swinging an end fifteen
+ * units along the ring rotates the whole street, and a street that ends up
+ * meeting the ring at 25 degrees is two roads squeezed together rather than a
+ * crossroads - so `meetsTooShallow` turns it down, rightly. Without somewhere
+ * else to go, the street was then dropped: the hub went from three streets to
+ * one, which left the player's garage stranded 26 units from the nearest road
+ * with a 52% grass bank between. Sliding a few units further along costs
+ * almost no rotation and keeps the street.
+ *
+ * @returns a street with one end moved, or null if neither end can be
+ */
+function relocateCrowdedEnd(street, settled, junctions, acceptable) {
+  const marks = junctionMarks(street, settled)
+  if (marks.length < 2) return null
+
+  const crowded = crowdingTest(marks, junctions)
+  const ends = [street.points[0], street.points[street.points.length - 1]]
+
+  for (const [which, mark] of [[0, marks[0]], [1, marks[marks.length - 1]]]) {
+    // Only a mark that IS this end of the street. An interior crossing has
+    // no end to move.
+    if (Math.hypot(mark.x - ends[which].x, mark.z - ends[which].z) >= 1e-6) continue
+    if (!crowded(mark)) continue
+
+    const road = settled[mark.road]
+    const others = junctions[mark.road]
+    const other = ends[1 - which]
+
+    for (const target of placesToPut(mark, road, others)) {
+      const moved = which === 0
+        ? [{ x: target.x, z: target.z }, { ...other }]
+        : [{ ...other }, { x: target.x, z: target.z }]
+
+      // A street swung round is still a street: long enough to be worth
+      // driving, and not turned into something that only grazes the road it
+      // now ends on.
+      const shifted = { ...street, points: moved }
+      if (Math.hypot(moved[1].x - moved[0].x, moved[1].z - moved[0].z) <
+          JUNCTION_SPACING * 2) {
+        continue
+      }
+      if (!acceptable(shifted)) continue
+
+      return shifted
+    }
+  }
+
+  return null
+}
+
+/**
+ * Where a crowded end could go instead, along the road it ends on, nearest
+ * first: the junctions it is crowding, then clear ground further along.
+ *
+ * "Clear" here means JUNCTION_SPACING, not the SIGNAL_MERGE_DISTANCE that
+ * decided it had to move. Landing on the bare minimum is what put a street
+ * 22.2 units from the CONTACT port spur, which after the lane offset was a
+ * 21.2-unit lane on the inside of a bend, which was where a sedan spent five
+ * minutes covering 113 units.
+ */
+function placesToPut(mark, road, others) {
+  const out = []
+
+  for (const point of others) {
+    const gap = Math.hypot(point.x - mark.x, point.z - mark.z)
+    if (gap < NODE_MERGE_TOLERANCE || gap >= SIGNAL_MERGE_DISTANCE) continue
+    out.push({ x: point.x, z: point.z, move: gap })
+  }
+
+  // Walking the road itself, rather than stepping along a straight line from
+  // the end: a ring bends, and a point 20 units along it is not 20 units away
+  // in a straight line. The road is where the junction has to be.
+  const path = measurePath(road.points)
+  const from = distanceAlongPath(road.points, mark.x, mark.z)
+
+  if (from !== null && path.length > 1) {
+    const closed = !!road.closed
+    for (let step = 2; step <= JUNCTION_SPACING * 2; step += 2) {
+      for (const way of [1, -1]) {
+        const at = pointAlong(path, from + step * way, closed)
+        const clear = others.every(p => {
+          const gap = Math.hypot(p.x - at.x, p.z - at.z)
+          return gap < NODE_MERGE_TOLERANCE || gap >= JUNCTION_SPACING
+        })
+        if (clear) out.push({ x: at.x, z: at.z, move: step })
+      }
+      // Nearest first, and one full ring of candidates at each distance is
+      // enough - no point walking on once both directions are clear.
+      if (out.some(o => o.move === step)) break
+    }
+  }
+
+  return out.sort((a, b) => a.move - b.move)
 }
 
 /**
@@ -1900,7 +2381,7 @@ export function getTownPlots(island) {
   const all = getIslandRoads(island)
   return roadsidePlots(island,
     all.filter(r => r.street || r.ring),
-    all.filter(r => r.street || r.ring || r.auto || r.spur))
+    all.filter(r => r.street || r.ring || r.auto || r.spur || r.driveway))
 }
 
 /**
@@ -1926,7 +2407,7 @@ export function getRoadsidePlots(island) {
   if (!roads.length) return []
 
   return roadsidePlots(island, roads,
-    all.filter(r => r.street || r.ring || r.auto || r.spur))
+    all.filter(r => r.street || r.ring || r.auto || r.spur || r.driveway))
     .filter((_, i) => i % every === 0)
 }
 
@@ -2765,6 +3246,72 @@ export const STATION_ROAD_CLEARANCE = 3
 export const STATION_SPACING = 55
 
 /**
+ * The signboard over a station's doors: how big it is and how high it hangs.
+ *
+ * Here rather than in World.js for the reason written on STATION_KINDS - the
+ * renderer draws what the layout decided, and a board sized by eye is a board
+ * across the opening a fire engine drives through. That is not hypothetical:
+ * a fire station is 8.5 up with a 5.2 door head and a roof band eating the
+ * top 1.65, which leaves a strip 1.3 units tall to put a sign in. Anything
+ * that assumes room for a 2.2-unit board on every station covers the door of
+ * the one kind of station whose door matters most.
+ *
+ * The board is 4:1 - the words are the long part and a badge sits square at
+ * one end of them - and the height is what gives, since the front of every
+ * station is far wider than four times the gap it has to fit in.
+ */
+export const STATION_SIGN_GAP = 1.75       // clear below the roof band
+export const STATION_SIGN_CLEAR = 0.25     // clear above the door head
+export const STATION_SIGN_MAX_H = 2.2
+export const STATION_SIGN_MIN_H = 0.8
+export const STATION_SIGN_ASPECT = 4
+export const STATION_SIGN_MARGIN = 1.2     // bare wall each side of the board
+
+/**
+ * Where one station's board goes, or null if there is nowhere for it.
+ *
+ * `height` and `doorHeight` are the BUILT numbers, not the asked-for ones,
+ * for the same reason the fire records the roof it got rather than the roof
+ * it wanted.
+ *
+ * Returns `{ width, height, y }` in world units, `y` measured from the
+ * station's own base - which is where the group that carries it sits.
+ */
+export function stationSignBoard(station, height, doorHeight) {
+  if (!station || !(height > 0)) return null
+
+  const ceiling = height - STATION_SIGN_GAP
+  const floor = (doorHeight || 0) + STATION_SIGN_CLEAR
+  const room = ceiling - floor
+
+  // No strip of wall between the door head and the roof band. Better no sign
+  // than a sign over the door.
+  if (room < STATION_SIGN_MIN_H) return null
+
+  let boardHeight = Math.min(STATION_SIGN_MAX_H, room)
+  let boardWidth = boardHeight * STATION_SIGN_ASPECT
+
+  // A narrow station crops the width, and the height follows it down so the
+  // lettering keeps its proportions instead of being squeezed.
+  const widest = (station.width || 0) - STATION_SIGN_MARGIN
+  if (widest > 0 && boardWidth > widest) {
+    boardWidth = widest
+    boardHeight = boardWidth / STATION_SIGN_ASPECT
+  }
+
+  if (boardHeight < STATION_SIGN_MIN_H * 0.5) return null
+
+  // Hung from the top of the strip, not centred in it: on a hospital the
+  // strip is nine units tall and a centred board lands on the cross the
+  // building already has.
+  return {
+    width: boardWidth,
+    height: boardHeight,
+    y: ceiling - boardHeight / 2
+  }
+}
+
+/**
  * How far a station stands back from the kerb, leaving room for its bays.
  *
  * DERIVED FROM THE BLOCK, because a station has to fit in one. It was a flat
@@ -2836,6 +3383,22 @@ function findStationSite(network, island, spec, taken, route) {
         continue
       }
       if (route && monorailCeiling(route, x, z) < 14) continue
+
+      // Not on top of the player's garage.
+      //
+      // The garage is sited on ground clear of the roads, and "clear of the
+      // roads" is exactly what this is looking for too - so the two went
+      // hunting for the same spot and the hub's hospital, 24 by 16, came to
+      // rest overlapping it by 3.2 units. It read as a building growing out
+      // through the garage roof.
+      //
+      // Rectangles, not the circles round them. A 24x16 hospital and an
+      // 11.7x17 garage have circles that overlap for another ten units after
+      // the buildings have stopped touching, and rejecting all of that would
+      // push the hospital off the island.
+      if (clashesWithGarage(island, x, z, heading, spec.width, spec.depth)) {
+        continue
+      }
 
       if (taken.some(t => Math.hypot(t.x - x, t.z - z) < STATION_SPACING)) continue
 
@@ -6597,6 +7160,11 @@ export function getRoadNetwork() {
       // them here as well would double every one of them up.
       if (road.auto) continue
 
+      // The player's drive is not part of the traffic network. It is a
+      // private road: no lane is built on it, so no AI vehicle can ever be
+      // put on one, and it gets no signals - see getGarageDriveway().
+      if (road.driveway) continue
+
       segments.push({
         points: road.points.map(p => ({ x: island.x + p.x, z: island.z + p.z })),
         island: island.id,
@@ -6679,7 +7247,7 @@ export function getRoadNetwork() {
  */
 export function buildNetwork(segments) {
   // A node wherever segment ends land on, or near, another segment.
-  const TOLERANCE = DEFAULT_ROAD_WIDTH * 0.75
+  const TOLERANCE = NODE_MERGE_TOLERANCE
   const nodes = []
 
   const addNode = (x, z, index) => {
@@ -8170,7 +8738,150 @@ export const GARAGE_HEIGHT = 7
 /** How far in front of the doors a vehicle finishes rolling out. */
 export const GARAGE_APRON = 14
 
+/**
+ * The drive from the garage doors out to the street.
+ *
+ * Wide enough for the widest vehicle with room either side, and narrower than
+ * a street, because it is a drive and should read as one.
+ */
+export const DRIVEWAY_WIDTH = GARAGE_DOOR_WIDTH + 1.4
+
 let garageCache = null
+let drivewayCache
+let sitingGarage = false
+
+/**
+ * A drive from the garage doors to the nearest street.
+ *
+ * WHY THIS EXISTS. The garage is sited on the plaza, on a spot whose whole
+ * footprint is clear of the roads - and "clear of the roads" is exactly the
+ * ground the town generator is free to put buildings on. So the way out was
+ * a strip of grass between two buildings, and Mike could not get to the
+ * street. The apron in front of the doors was checked; the thirty units after
+ * it were nobody's job.
+ *
+ * IT IS A ROAD, and that is the whole trick. Adding it to getIslandRoads()
+ * means everything that already knows how to keep clear of a road keeps clear
+ * of this one, with nothing new to remember:
+ *
+ *   - the terrain gives it a road profile, so it is level across its width
+ *     and gradient-limited along its length. It cannot be a bank.
+ *   - building plots avoid it - getTownPlots() rejects a plot within a
+ *     setback of any road it does not front
+ *   - trees, lamps, brush and the seasonal and holiday props all site
+ *     themselves with distanceToNearestRoad()
+ *   - it gets drawn as tarmac, because roads are what World.js draws
+ *
+ * AND THE TRAFFIC MUST NOT USE IT. getRoadNetwork() skips it, so no lane is
+ * ever built on it and no AI vehicle can be assigned to one. It has no
+ * pavements, no crossings and no signals either - those are all gated on
+ * `street || ring || auto || spur`, and a driveway is none of them. What it
+ * does have is a junction with the street it meets, which is where the player
+ * gives way. That is the rule of the road for a private drive, and it falls
+ * out of meeting the street square rather than having to be enforced.
+ *
+ * Derived, never stored: move the garage and the drive follows.
+ */
+/**
+ * Would a building here stand on the player's garage, or on the drive out?
+ *
+ * WORLD coordinates for x and z, island-local sizes - which is how the
+ * station siting works, and getting that backwards would silently never find
+ * a clash at all.
+ *
+ * Returns false while the garage is being sited, which is not a fudge: at
+ * that moment there is no garage for anything to clash with.
+ */
+function clashesWithGarage(island, x, z, heading, width, depth) {
+  if (sitingGarage) return false
+
+  const garage = getPlayerGarage()
+  if (!garage || garage.island !== island.id) return false
+
+  const here = {
+    x: x - island.x,
+    z: z - island.z,
+    halfWidth: width / 2,
+    halfDepth: depth / 2,
+    heading
+  }
+
+  const shed = {
+    x: garage.localX,
+    z: garage.localZ,
+    halfWidth: garage.width / 2,
+    halfDepth: garage.depth / 2,
+    heading: garage.heading
+  }
+
+  // The building, and the apron it rolls out onto - which is as much a part
+  // of the garage as the walls are. A hospital parked across the doors is the
+  // same fault as one parked on them.
+  const apron = {
+    x: garage.localX + Math.sin(garage.heading) * (garage.depth / 2 + GARAGE_APRON / 2),
+    z: garage.localZ + Math.cos(garage.heading) * (garage.depth / 2 + GARAGE_APRON / 2),
+    halfWidth: garage.doorWidth / 2,
+    halfDepth: GARAGE_APRON / 2,
+    heading: garage.heading
+  }
+
+  return rectanglesOverlap(here, shed, STATION_ROAD_CLEARANCE) ||
+         rectanglesOverlap(here, apron, 1)
+}
+
+export function getGarageDriveway() {
+  if (drivewayCache !== undefined) return drivewayCache
+
+  // Siting the garage asks about the monorail, which asks about the ground,
+  // which asks for the island's roads - and this is one of them. Anything
+  // that arrives here mid-siting gets told there is no drive yet, which is
+  // true: there is no garage for it to lead from.
+  if (sitingGarage) return null
+
+  const garage = getPlayerGarage()
+  if (!garage) return (drivewayCache = null)
+
+  const island = getIsland(garage.island)
+  if (!island) return (drivewayCache = null)
+
+  // From the far edge of the apron - in front of the doors, past where the
+  // car finishes rolling out - so the drive leads forwards and never runs
+  // back through the building it starts at.
+  const from = {
+    x: garage.localX + Math.sin(garage.heading) * (GARAGE_DEPTH / 2 + GARAGE_APRON),
+    z: garage.localZ + Math.cos(garage.heading) * (GARAGE_DEPTH / 2 + GARAGE_APRON)
+  }
+
+  // The nearest point on the nearest road. Nearest means the drive meets it
+  // square, which is what makes it a junction rather than a merge - the
+  // player arrives at the street across it, sees both ways, and gives way.
+  let best = null
+  for (const road of baseIslandRoads(island)) {
+    const near = nearestOnPath(road.points, from.x, from.z)
+    if (!near) continue
+
+    const gap = Math.hypot(near.x - from.x, near.z - from.z)
+    if (!best || gap < best.gap) best = { gap, x: near.x, z: near.z }
+  }
+
+  // Already on the street: the garage opens straight onto it and there is
+  // nothing to build. Measured against the road's own half width plus the
+  // pavement, because that is where the tarmac actually starts.
+  if (!best || best.gap <= DEFAULT_ROAD_WIDTH / 2 + PAVEMENT_WIDTH) {
+    return (drivewayCache = null)
+  }
+
+  drivewayCache = {
+    island: island.id,
+    width: DRIVEWAY_WIDTH,
+    // Straight from the apron to the kerb. Two points, so smoothRoad leaves
+    // it straight - a drive that wanders is a drive you can miss.
+    points: [{ x: from.x, z: from.z }, { x: best.x, z: best.z }],
+    length: best.gap
+  }
+
+  return drivewayCache
+}
 
 /**
  * Is this garage, and the drive out of it, clear of the monorail?
@@ -8224,7 +8935,16 @@ export function getPlayerGarage() {
   const island = getIsland('hub') || ISLANDS[0]
   if (!island) return null
 
-  const roads = getIslandRoads(island)
+  sitingGarage = true
+  try {
+    return (garageCache = siteGarage(island))
+  } finally {
+    sitingGarage = false
+  }
+}
+
+function siteGarage(island) {
+  const roads = baseIslandRoads(island)
   const ring = getIslandRing(island)
   if (!ring) return null
 
@@ -8283,9 +9003,9 @@ export function getPlayerGarage() {
     }
   }
 
-  if (!best) return (garageCache = null)
+  if (!best) return null
 
-  garageCache = {
+  return {
     island: island.id,
     x: island.x + best.localX,
     z: island.z + best.localZ,
@@ -8308,6 +9028,4 @@ export function getPlayerGarage() {
       heading: best.heading
     }
   }
-
-  return garageCache
 }

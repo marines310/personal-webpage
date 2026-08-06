@@ -24,8 +24,17 @@ import {
   GARAGE_DEPTH,
   GARAGE_APRON,
   MONORAIL_CORRIDOR,
-  getMonorailRoute
+  getMonorailRoute,
+  getGarageDriveway,
+  getTownPlots,
+  getRoadsidePlots,
+  getLaneNetwork,
+  getStations,
+  groundSlope,
+  DEFAULT_ROAD_WIDTH,
+  PAVEMENT_WIDTH
 } from '../src/world/islandLayout.js'
+import { MAX_GROUND_GRADIENT } from '../src/world/terrain.js'
 
 let pass = 0, fail = 0
 const chk = (n, c, d = '') => {
@@ -126,6 +135,97 @@ console.log(`   nearest beam point to the way out ${nearestToPath.toFixed(1)}u, 
 chk('the beam does not run over the garage or its drive',
     nearestToPath > MONORAIL_CORRIDOR + garage.doorWidth / 2,
     `${nearestToPath.toFixed(1)}`)
+
+// ---------------------------------------------------------------------------
+console.log('\nThe drive out to the street')
+
+// THE FAILURE THIS IS WRITTEN AGAINST. The garage is sited on a spot whose
+// footprint is clear of the roads - and ground clear of the roads is exactly
+// the ground the town generator is free to build on. So the doors opened onto
+// a strip of grass between two buildings and there was no way to the street.
+// The apron was checked; the thirty units after it were nobody's job.
+const drive = getGarageDriveway()
+const home = getIsland(garage.island)
+
+chk('there is a drive from the garage to the street', !!drive)
+
+if (drive) {
+  console.log(`   ${drive.length.toFixed(1)} units long, ${drive.width} wide`)
+
+  // The whole way out, from the doors to the kerb.
+  const wayOut = []
+  const roll = GARAGE_DEPTH / 2 + GARAGE_APRON
+  for (let t = 0; t <= 1.0001; t += 0.02) {
+    wayOut.push({ x: garage.localX + Math.sin(garage.heading) * roll * t,
+                  z: garage.localZ + Math.cos(garage.heading) * roll * t })
+  }
+  for (let t = 0; t <= 1.0001; t += 0.02) {
+    wayOut.push({ x: drive.points[0].x + (drive.points[1].x - drive.points[0].x) * t,
+                  z: drive.points[0].z + (drive.points[1].z - drive.points[0].z) * t })
+  }
+
+  // NOTHING MAY STAND IN IT. Measured against the buildings' own rectangles,
+  // by the half width the car needs, not by a circle round them.
+  //
+  // STATIONS COUNT, and they were the ones that got in. A fire station or a
+  // hospital is sited on ground clear of the roads, which is the same ground
+  // the garage went looking for - so the hub's hospital, 24 by 16, came to
+  // rest overlapping the garage by 3.2 units and grew out through its roof.
+  // Checking the plots and not the stations was checking the buildings that
+  // were never the problem.
+  const buildings = [...getTownPlots(home), ...getRoadsidePlots(home),
+                     ...(home.buildings || []),
+                     ...getStations(getLaneNetwork())
+                       .filter(s => s.island.id === home.id)
+                       .map(s => ({ x: s.x - home.x, z: s.z - home.z,
+                                    width: s.width, depth: s.depth }))]
+  let closest = Infinity
+  for (const p of wayOut) {
+    for (const b of buildings) {
+      const half = Math.hypot((b.width || 6) / 2, (b.depth || 6) / 2)
+      closest = Math.min(closest, Math.hypot(p.x - b.x, p.z - b.z) - half)
+    }
+  }
+  chk(`no building stands in the way out (nearest ${closest.toFixed(1)})`,
+      closest > drive.width / 2, `${closest.toFixed(1)}`)
+
+  // AND IT IS DRIVABLE. The drive is a road, so the height field gives it a
+  // road profile - this is what proves that actually happened.
+  let steepest = 0
+  for (const p of wayOut) {
+    const s = groundSlope(home.x + p.x, home.z + p.z)
+    steepest = Math.max(steepest, Math.hypot(s.dx, s.dz))
+  }
+  chk(`the way out is drivable (steepest ${(steepest * 100).toFixed(1)}%)`,
+      steepest <= MAX_GROUND_GRADIENT, `${(steepest * 100).toFixed(1)}%`)
+
+  // AND THE TRAFFIC STAYS OFF IT. Mike's requirement: the drive is the
+  // player's, and an AI car parked across it is the same bug in a new hat.
+  const lanes = getLaneNetwork().lanes
+  const along = (x, z) => {
+    const a = drive.points[0], b = drive.points[1]
+    const dx = b.x - a.x, dz = b.z - a.z
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz)))
+    return Math.hypot(x - (a.x + dx * t), z - (a.z + dz * t))
+  }
+  const trespassing = lanes.filter(lane => lane.points.some(q => {
+    // Not the last stretch: the drive ENDS on the street, so the street's own
+    // lanes legitimately cross it there.
+    const toKerb = Math.hypot(q.x - home.x - drive.points[1].x,
+                              q.z - home.z - drive.points[1].z)
+    return along(q.x - home.x, q.z - home.z) < drive.width / 2 &&
+           toKerb > drive.width
+  }))
+  chk('no AI lane runs on the drive', trespassing.length === 0,
+      `${trespassing.length} lanes`)
+
+  // It has to actually REACH the street, or it is a private road to nowhere.
+  const reaches = getIslandRoads(home)
+    .filter(r => r.street || r.ring || r.spur)
+    .some(r => distanceToNearestRoad([r], drive.points[1].x, drive.points[1].z)
+               <= DEFAULT_ROAD_WIDTH / 2 + PAVEMENT_WIDTH + 1)
+  chk('and it ends on a street', reaches)
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

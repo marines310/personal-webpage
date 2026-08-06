@@ -38,6 +38,40 @@
 export const MAX_ROAD_GRADIENT = 0.08
 
 /**
+ * The steepest the OPEN GROUND is allowed to be, anywhere on the map.
+ *
+ * Roads are gradient-limited along their length, which is what makes them
+ * drivable - but it is also what creates the problem this solves. A road
+ * crossing a hill cannot climb it at more than 8%, and near the coast it is
+ * pinned at sea level by the bridges landing there, so the road stays low
+ * while the hill does not. The ground between them has to make up the whole
+ * difference across the nine units of ROAD_BLEND, and the result is a cut
+ * face: on PROJECTS the ground rose 3.2 units in 4, which is 80%, and there
+ * were 486 places over 30% with the worst at 114%.
+ *
+ * A player who drives off the tarmac onto one of those does not climb it and
+ * does not slide off it. They stop, which is what Mike found outside his own
+ * garage. So the ground gets a speed limit of its own: nowhere may rise
+ * faster than this away from the nearest flat thing.
+ *
+ * 0.25 rather than MAX_ROAD_GRADIENT, deliberately. Off-road ground is
+ * allowed to be harder work than a road - a bank you notice is scenery, and
+ * flattening everything to 8% would erase the hills entirely - but 25% is a
+ * gradient a car climbs rather than one it parks on.
+ */
+export const MAX_GROUND_GRADIENT = 0.25
+
+/**
+ * How coarsely the gradient ceiling is worked out.
+ *
+ * It is a sweep over a grid, so this trades accuracy for build time. Four
+ * units is a third of the narrowest blend, which is fine enough that the
+ * ceiling never cuts into a slope that was already legal, and coarse enough
+ * that the whole archipelago costs a few milliseconds.
+ */
+export const CEILING_CELL = 4
+
+/**
  * How far past its own edge a road holds the ground level, before blending.
  *
  * It has to stop short of the plots that front it, or the two fight over the
@@ -544,6 +578,204 @@ function holdStrength(distance, flatTo, blend) {
  *
  * Returns `heightAt(x, z)` and `slopeAt(x, z)`, both island-local.
  */
+/**
+ * The open ground, held to a gradient a car can climb.
+ *
+ * WHAT WENT WRONG WITHOUT IT. Roads are gradient-limited along their length,
+ * which is what makes them drivable - and near the coast they are pinned at
+ * sea level by the bridges landing there. So a road crossing a hill stays low
+ * while the hill does not, and the ground between them makes up the whole
+ * difference across the nine units of ROAD_BLEND. That is a cut face: on
+ * PROJECTS the ground rose 3.2 units in 4, and across the map there were 486
+ * places over 30% with the worst at 114%. Drive off the tarmac onto one and
+ * you stop, which is what Mike found outside his own garage.
+ *
+ * A CONE IS NOT ENOUGH, and this is the part worth understanding before
+ * changing it. The obvious rule - "no higher than the nearest flat thing plus
+ * a quarter of the distance to it" - bounds how far the ground can get from a
+ * road, not how fast it can change. A surface can sit well under that cone
+ * everywhere and still have a wall in it, and the first version of this did:
+ * it took the worst slope from 114% to 95% and left 456 places over 30%,
+ * because the steep bits were never touching the cone in the first place.
+ *
+ * What is wanted is a bound on the SLOPE - that no two nearby points differ
+ * by more than the gradient times the distance between them. Enforcing it is
+ * one repeated operation: let every cell be pulled down to no more than its
+ * neighbour plus one cell's worth of gradient, and sweep until nothing moves.
+ * When that settles, no pair of cells anywhere breaks the rule, which is the
+ * definition. It only ever LOWERS ground, so nothing can rise up through a
+ * road, and the flat things are stamped in first so the ground also comes
+ * down to meet them.
+ *
+ * WHY A GRID AND NOT A SEARCH. The height field is asked several hundred
+ * thousand times when the world is built, and answering this per query means
+ * looking at every road within about 24 units - which would have meant
+ * widening the field's own lookup grid from 12 units to 30 and multiplying
+ * the work per query by six. That grid already cost 13 seconds once. Doing it
+ * once on a coarse grid costs a few milliseconds, and reading it back is a
+ * bilinear interpolation, which is smooth - a mesh can only follow ground it
+ * can sample.
+ */
+function smoothOpenGround(open, roads, pads, hills, inlandAt, beach) {
+  // Big enough to hold everything that matters, found from the things
+  // themselves rather than from a number someone typed.
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
+  const stretch = (x, z, pad = 0) => {
+    minX = Math.min(minX, x - pad); maxX = Math.max(maxX, x + pad)
+    minZ = Math.min(minZ, z - pad); maxZ = Math.max(maxZ, z + pad)
+  }
+
+  for (const road of roads) for (const p of road.points) stretch(p.x, p.z, road.width)
+  for (const pad of pads) stretch(pad.x, pad.z, Math.hypot(pad.halfWidth, pad.halfDepth))
+  for (const hill of hills) stretch(hill.x, hill.z, hill.radius)
+
+  if (!Number.isFinite(minX)) return open
+
+  const margin = CEILING_CELL * 4
+  minX -= margin; maxX += margin; minZ -= margin; maxZ += margin
+
+  const cols = Math.max(2, Math.ceil((maxX - minX) / CEILING_CELL) + 1)
+  const rows = Math.max(2, Math.ceil((maxZ - minZ) / CEILING_CELL) + 1)
+  const grid = new Float64Array(cols * rows)
+  const at = (c, r) => c * rows + r
+
+  for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < rows; r++) {
+      grid[at(c, r)] = open(minX + c * CEILING_CELL, minZ + r * CEILING_CELL)
+    }
+  }
+
+  // The flat things, stamped in as upper limits. Lower only: a road's own
+  // claim wins outright where it is at full strength, so the job here is to
+  // stop the ground standing up BESIDE it, never to lift it to meet one.
+  //
+  // Stamped across the whole width the thing holds LEVEL, not just along its
+  // centre line, and that is the difference between this working and not.
+  // The cut face is made by the BLEND: at the outer edge of a road's blend,
+  // fourteen units out, the ground may be whatever the cone allows from the
+  // centre line - 3.5 units - and the blend then has to fall all of it back
+  // to road level across nine units, which is 39%. Anchoring at the edge of
+  // the level zone instead means the ground nine units beyond it can only be
+  // 2.25 up, and the blend covering that same nine units comes out at exactly
+  // the gradient asked for. Measured: centre line left a 62% bank, hold edge
+  // leaves 25%.
+  // Seeded as the exact cone rather than as a flat disc of cells, out to a
+  // couple of cells past the level zone. Rounding the level zone to whole
+  // cells is worth up to CEILING_CELL of extra reach, and every unit of that
+  // is a unit the cone gets to climb before the blend starts - which showed
+  // as 33% where 25% was asked for. Past the seeded ring the relaxation
+  // carries the cone on, and there a cell of slop costs nothing.
+  const SEED_REACH = CEILING_CELL * 2
+
+  // The cone next to a road is seeded SHALLOWER than the gradient being
+  // enforced, and the factor is measured rather than chosen.
+  //
+  // Between a road and the open ground the height field is a weighted
+  // average, and the weight is s / (1 - s) - it runs to infinity at the edge
+  // of the level zone and to zero at the edge of the blend. So the ground
+  // does not climb away from a road in a straight line: it stays near road
+  // level for the first few units and then makes up the difference in the
+  // middle of the blend. Seeding a 25% cone gave a blend whose steepest point
+  // was 41%, which is the same 1.64 ratio you get from the weighting itself.
+  // Seeding at 25/1.64 puts the steepest point of the blend at the 25% asked
+  // for.
+  const BLEND_SHAPE = 1.64
+
+  const capCone = (x, z, hold, height) => {
+    const radius = hold + SEED_REACH
+    const c0 = Math.floor((x - radius - minX) / CEILING_CELL)
+    const c1 = Math.ceil((x + radius - minX) / CEILING_CELL)
+    const r0 = Math.floor((z - radius - minZ) / CEILING_CELL)
+    const r1 = Math.ceil((z + radius - minZ) / CEILING_CELL)
+
+    for (let c = Math.max(0, c0); c <= Math.min(cols - 1, c1); c++) {
+      for (let r = Math.max(0, r0); r <= Math.min(rows - 1, r1); r++) {
+        const dx = minX + c * CEILING_CELL - x
+        const dz = minZ + r * CEILING_CELL - z
+        const d = Math.hypot(dx, dz)
+        if (d > radius) continue
+
+        const limit = height +
+          (MAX_GROUND_GRADIENT / BLEND_SHAPE) * Math.max(0, d - hold)
+        if (limit < grid[at(c, r)]) grid[at(c, r)] = limit
+      }
+    }
+  }
+
+  for (const road of roads) {
+    const hold = road.width / 2 + ROAD_SHOULDER
+    for (let i = 0; i < road.points.length; i++) {
+      capCone(road.points[i].x, road.points[i].z, hold, road.heights[i] ?? 0)
+    }
+  }
+
+  for (const pad of pads) {
+    capCone(pad.x, pad.z,
+            Math.hypot(pad.halfWidth, pad.halfDepth) + PAD_MARGIN, pad.height)
+  }
+
+  const straight = MAX_GROUND_GRADIENT * CEILING_CELL
+  const diagonal = straight * Math.SQRT2
+
+  const relax = (c, r, dc, dr, step) => {
+    const from = c + dc
+    const to = r + dr
+    if (from < 0 || from >= cols || to < 0 || to >= rows) return
+    const through = grid[at(from, to)] + step
+    if (through < grid[at(c, r)]) grid[at(c, r)] = through
+  }
+
+  // Sweeps in both directions, repeated. A cell only ever learns from
+  // neighbours the sweep has already passed, so one direction propagates a
+  // limit one way across the island and the other brings it back.
+  for (let pass = 0; pass < 3; pass++) {
+    for (let c = 0; c < cols; c++) {
+      for (let r = 0; r < rows; r++) {
+        relax(c, r, -1, 0, straight); relax(c, r, 0, -1, straight)
+        relax(c, r, -1, -1, diagonal); relax(c, r, 1, -1, diagonal)
+      }
+    }
+    for (let c = cols - 1; c >= 0; c--) {
+      for (let r = rows - 1; r >= 0; r--) {
+        relax(c, r, 1, 0, straight); relax(c, r, 0, 1, straight)
+        relax(c, r, 1, 1, diagonal); relax(c, r, -1, 1, diagonal)
+      }
+    }
+  }
+
+  return (x, z) => {
+    const fc = (x - minX) / CEILING_CELL
+    const fr = (z - minZ) / CEILING_CELL
+    const c = Math.floor(fc)
+    const r = Math.floor(fr)
+    if (c < 0 || c >= cols - 1 || r < 0 || r >= rows - 1) return open(x, z)
+
+    const tx = fc - c
+    const tz = fr - r
+    const a = grid[at(c, r)] * (1 - tx) + grid[at(c + 1, r)] * tx
+    const b = grid[at(c, r + 1)] * (1 - tx) + grid[at(c + 1, r + 1)] * tx
+
+    const smoothed = a * (1 - tz) + b * tz
+
+    // The interpolated grid, and NOT the lower of it and the raw ground.
+    //
+    // Taking the lower of the two everywhere looks like a safe
+    // belt-and-braces guard and undoes the entire exercise. Smoothing lowers
+    // the top of a bank and leaves the bottom alone, so on the way down the
+    // raw ground is the lower of the two - and `min` hands the steep face
+    // straight back. Measured as almost no improvement at all: 456 places
+    // over 30% before, 456 after.
+    //
+    // Inside the beach band it IS taken, and there it is not a guard but the
+    // rule: the land has to meet the sea at nothing, and a grid cell straddling
+    // the waterline interpolates to a few centimetres of grass standing over
+    // the water. Steepness there is nobody's problem - it is the last stride
+    // of sand before you are swimming.
+    if (inlandAt(x, z) >= beach) return smoothed
+    return Math.min(smoothed, open(x, z))
+  }
+}
+
 export function makeHeightField(spec) {
   const hills = spec.hills || []
   const roads = spec.roads || []
@@ -614,6 +846,8 @@ export function makeHeightField(spec) {
   const open = (x, z) =>
     hillHeight(hills, x, z) * coastFactor(inlandAt(x, z), beach)
 
+  const ground = smoothOpenGround(open, roads, pads, hills, inlandAt, beach)
+
   function heightAt(x, z) {
     // The coast is applied HERE, to the open ground, and nowhere else.
     //
@@ -625,7 +859,15 @@ export function makeHeightField(spec) {
     // this tapered ground, so gating twice was gating what had already been
     // gated.
     const shore = coastFactor(inlandAt(x, z), beach)
-    const open = hillHeight(hills, x, z) * shore
+
+    // The open ground, held under the gradient ceiling.
+    //
+    // Capped HERE, before the blend, rather than on the finished height. The
+    // roads and the terraces have promises to keep - level across a
+    // carriageway, flat under a footprint - and a cap on the answer would
+    // quietly break them wherever the grid put the ceiling a centimetre low.
+    // Only the open ground is wild, so only the open ground is capped.
+    const open = ground(x, z)
 
     // Every flat thing that has a say here, and how strongly.
     //

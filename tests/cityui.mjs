@@ -35,11 +35,35 @@ chk(`clicking a bridge removes it (${bridgesBefore} -> ${run('map.bridges.length
 
 console.log('\n2. Drag draws a straight road')
 setMode('road')
-const isl = run(`(function(){const i=getIsland('projects');return{x:i.x,z:i.z}})()`)
 const roadsBefore = run(`(getIsland('projects').roads||[]).length`)
-down(isl.x-8, isl.z-8)
-move(isl.x+10, isl.z+9)
-move(isl.x+12, isl.z+11)
+
+// Both ends are taken FROM the street grid, three units off the centre line
+// of a real street, rather than measured out from the island's middle.
+//
+// The hardcoded version drifted: it aimed at coordinates that happened to
+// have a street near them on the map of the day, and when the grid was next
+// laid out differently the same two points landed mid-block. What was being
+// checked - that a road drawn across a town joins the streets - then failed
+// for a reason that had nothing to do with it. Ask the grid where it is.
+const drag = run(`(function(){
+  const isl = getIsland('projects')
+  const grid = getTownGrid(isl)
+  const beside = (street) => {
+    const c = smoothRoad(street.points, street.width)
+    const p = c[Math.floor(c.length / 2)]
+    return { x: isl.x + p.x + 3, z: isl.z + p.z }
+  }
+  // The grid AS IT STANDS NOW, kept for the check further down. Drawing a
+  // road changes it: streets are laid out around the roads already there,
+  // so a new one can move a street that was fitting around its absence.
+  globalThis.gridBefore = grid.map(s =>
+    smoothRoad(s.points, s.width).map(q => ({ x: isl.x + q.x, z: isl.z + q.z })))
+  return { from: beside(grid[0]), to: beside(grid[grid.length - 1]) }
+})()`)
+
+down(drag.from.x, drag.from.z)
+move((drag.from.x + drag.to.x) / 2, (drag.from.z + drag.to.z) / 2)
+move(drag.to.x, drag.to.z)
 up()
 const roadsAfter = run(`(getIsland('projects').roads||[]).length`)
 chk(`press-drag-release makes one road (${roadsBefore} -> ${roadsAfter})`, roadsAfter===roadsBefore+1)
@@ -73,18 +97,21 @@ const far = run(`(function(){
 })()`)
 chk('a point in open ground is left alone', far === false)
 
-// The road drawn in section 2 crossed a town island, so both its ends
-// should have been pulled onto the street grid. This used not to happen:
-// generated streets weren't in the segment list, so you could draw a road
-// straight across a town and it joined nothing.
+// The road drawn in section 2 was started and finished beside a generated
+// street, so both its ends should have been pulled onto one. This used not
+// to happen: generated streets weren't in the segment list, so you could
+// draw a road straight across a town and it joined nothing.
+//
+// Measured against the grid as it was WHEN THE ROAD WAS DRAWN, because that
+// is what the ends were snapped to. Asking for the grid again here gets a
+// different answer - the new road is one of the roads the streets have to
+// fit around, so laying it down can move one.
 const onGrid = run(`(function(){
   const isl = getIsland('projects')
   const rd = isl.roads[isl.roads.length - 1]
   let joined = 0
   for (const p of rd.points) {
-    for (const st of getTownGrid(isl)) {
-      const c = smoothRoad(st.points, st.width)
-        .map(q => ({ x: isl.x + q.x, z: isl.z + q.z }))
+    for (const c of globalThis.gridBefore) {
       const n = nearestOnSeg(c, isl.x + p.x, isl.z + p.z)
       if (n && n.d < 0.5) { joined++; break }
     }

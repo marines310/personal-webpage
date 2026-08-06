@@ -32,6 +32,17 @@ const LABELS = {
 /** How long the roll-out takes, and how far it goes. */
 const ROLL_OUT_SECONDS = 1.6
 
+/**
+ * How close together the two Backspaces have to be to count as a double.
+ *
+ * Long enough to be comfortable on a keyboard you are already using to
+ * steer, short enough that two separate presses a beat apart are not read as
+ * one gesture. A single press does nothing at all, which is the point: this
+ * throws away wherever you had driven to, so it should not be possible to do
+ * by brushing a key.
+ */
+const RECALL_WINDOW = 450
+
 export class VehicleSelector {
   constructor() {
     this.game = Game.getInstance()
@@ -39,7 +50,49 @@ export class VehicleSelector {
     this.open = false
     this.rolling = 0
     this.el = null
+    this.lastRecallKey = 0
     this.onKey = this.onKey.bind(this)
+    this.onGlobalKey = this.onGlobalKey.bind(this)
+
+    // Always listening, unlike `onKey`, which is only bound while the picker
+    // is up. The whole point of this one is to work when it is not.
+    window.addEventListener('keydown', this.onGlobalKey)
+  }
+
+  /**
+   * Backspace twice, quickly: back to the garage, whatever has happened.
+   *
+   * The way out of trouble that does not depend on the world being in a fit
+   * state. Wedged against a building, upside down on a beach, or simply a
+   * long way from home and not wanting the drive back - two taps and you are
+   * in the bay with the picker open, which is exactly where the game starts.
+   *
+   * It reuses show() rather than reimplementing a respawn, and that is worth
+   * keeping: show() parks the vehicle in the bay, and Vehicle.placeAt() zeroes
+   * the velocity, the spin, the steering and the stuck timer. A second way to
+   * put the car somewhere would be a second set of those to forget.
+   */
+  onGlobalKey(event) {
+    if (event.key !== 'Backspace') return
+
+    // Never steal the key from something being typed into.
+    const el = document.activeElement
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ||
+               el.isContentEditable)) {
+      return
+    }
+
+    // Backspace is "go back a page" on some browsers, and losing the session
+    // to a mistyped key would be a poor reward for asking for a respawn.
+    event.preventDefault()
+
+    if (this.isBusy()) return
+
+    const now = performance.now()
+    const quick = now - this.lastRecallKey < RECALL_WINDOW
+    this.lastRecallKey = quick ? 0 : now
+
+    if (quick) this.show()
   }
 
   label(kind) {

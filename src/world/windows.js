@@ -165,3 +165,91 @@ export function windowGeometry(windows, position, push = 0.004) {
 
   return { positions, normals }
 }
+
+/**
+ * Each window as a place something can come OUT of.
+ *
+ * `findWindowFaces` gives triangles, which is what a sheet of glass needs.
+ * A fire needs the opposite: one point per opening, the way it faces, and how
+ * big the hole is - so a flame can be put in the middle of a window, sized to
+ * it, leaning out into the street.
+ *
+ * Everything is in the model's own coordinates, like `windowGeometry`, and for
+ * the same reason: the building models are about one unit across before the
+ * world scales them up, so anything worked out here in world units is out by
+ * the scale factor. Convert at the point of use, with the mesh's own matrix.
+ *
+ * `width` is measured across the opening (horizontally, square to the normal)
+ * and `height` up it. Both come from the corners rather than from the face
+ * count, because a window is two triangles whichever way round it is split.
+ */
+export function windowVents(windows, position) {
+  const vents = []
+
+  for (const window of windows) {
+    const n = window.normal
+
+    // The corners, each counted once. A shared edge means four of the six
+    // triangle corners are duplicates, and averaging with them drags the
+    // centre towards the split rather than leaving it in the middle.
+    const corners = new Set()
+    for (const triangle of window.triangles) {
+      for (const vertex of triangle) corners.add(vertex)
+    }
+    if (corners.size < 3) continue
+
+    let cx = 0, cy = 0, cz = 0
+    for (const vertex of corners) {
+      cx += position[vertex * 3]
+      cy += position[vertex * 3 + 1]
+      cz += position[vertex * 3 + 2]
+    }
+    cx /= corners.size
+    cy /= corners.size
+    cz /= corners.size
+
+    // Across the opening: horizontal, square to the way it faces. The windows
+    // are near-vertical by construction (findWindowFaces rejects anything
+    // tilted more than WINDOW_MAX_TILT), so up-cross-normal is well defined.
+    const tangent = [n[2], 0, -n[0]]
+    const tangentLength = Math.hypot(tangent[0], tangent[2])
+    if (tangentLength < 1e-9) continue
+    tangent[0] /= tangentLength
+    tangent[2] /= tangentLength
+
+    // Up the opening, staying in its plane rather than assuming world up:
+    // a wall leaning a few degrees still has a square window in it.
+    const up = [
+      n[1] * tangent[2] - n[2] * tangent[1],
+      n[2] * tangent[0] - n[0] * tangent[2],
+      n[0] * tangent[1] - n[1] * tangent[0]
+    ]
+
+    let minU = Infinity, maxU = -Infinity
+    let minV = Infinity, maxV = -Infinity
+
+    for (const vertex of corners) {
+      const dx = position[vertex * 3] - cx
+      const dy = position[vertex * 3 + 1] - cy
+      const dz = position[vertex * 3 + 2] - cz
+
+      const u = dx * tangent[0] + dy * tangent[1] + dz * tangent[2]
+      const v = dx * up[0] + dy * up[1] + dz * up[2]
+
+      if (u < minU) minU = u
+      if (u > maxU) maxU = u
+      if (v < minV) minV = v
+      if (v > maxV) maxV = v
+    }
+
+    vents.push({
+      center: [cx, cy, cz],
+      normal: [n[0], n[1], n[2]],
+      up,
+      width: maxU - minU,
+      height: maxV - minV
+    })
+  }
+
+  return vents
+}

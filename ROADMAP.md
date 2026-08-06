@@ -338,6 +338,105 @@ The world now stands on it:
 - [ ] load time: the sand, grass and collider each subdivide separately (3.2s)
 - [ ] bridges rise clear of the water, with ramps every vehicle can drive
 
+# The road network — junctions that agree, 4 August 2026
+
+The lights and the road network had two different opinions about what
+counted as one junction, and the gap between them was where the traffic
+jammed. The lights merged anything within 22 units into one intersection;
+the network kept them as two, cut the road at both, and left a 12-unit lane
+in between. A 12-unit lane holds one vehicle, so stopping on it blocked
+everything behind. Shorter than 11 units and no lane was built at all — a
+hole in the road.
+
+Fixed where the streets are generated rather than patched afterwards,
+because the only honest way to remove a junction is to stop the two roads
+crossing there. A street whose end lands near an existing junction is now
+**moved onto it** — one four-armed crossroads instead of two three-armed
+ones fifteen units apart. Failing that it is trimmed back to its last real
+crossing, and failing that it is dropped.
+
+- [x] no road has two junctions between 5.25 and 22 units apart — was 13 pairs
+- [x] shortest lane on the map is 19.7 units — 12 were under 16
+- [x] 163 lanes and 54 junctions, from 190 and 65: fewer lanes, better flow
+- [x] 16 of the 17 streets kept — the rule moves streets, it does not delete
+      towns
+- [x] at the same fleet of 68, the slowest vehicle covers 731 units in five
+      minutes against 591 before, and the median 1403 against 1194
+- [x] `tests/network.mjs` measures both halves of the rule
+
+**The fleet did not go up, and that was the point of the exercise.** Every
+attempt past 68 fails something: 72 and 75 leave cars piled against the
+staged crash in `tests/incident.mjs`, 81 leaves one stuck for 52 seconds. The
+binding constraint is no longer stub lanes — it is that the map has few
+alternative routes, so shutting one lane backs up everything behind it. More
+lanes will not fix that. More ways round will: a second road across an
+island, or a bridge that does not funnel through the hub.
+
+Still open:
+
+- [ ] one pair of junctions 13 units apart on PROJECTS, on two *different*
+      roads — no short lane, but one set of lights covers both
+- [ ] over fifteen simulated minutes the frames in which two vehicles are
+      interpenetrated are 926, against 528 before. Both are far outside the
+      five-minute window the suite actually runs, and both fail there; worth
+      a look when the routing gets attention
+
+Two things came out of it that were not the point but are worth having.
+Taking a street over in the editor now puts it back in its own place in the
+row rather than at the end, so the island no longer gains or loses a
+building when you click one. And `tests/stations.mjs` now asks the
+allocation whether every station is somebody's home, instead of watching ten
+minutes of simulation and hoping.
+
+**And one that nearly shipped.** The first version of the rule dropped a
+street rather than moving it when the move would have left it grazing the
+ring. The hub lost two of its three streets, which left the player's garage
+sited 26 units from the nearest road with a 52% grass bank between — the car
+spawns and cannot move. Mike hit it within seconds of opening the page. A
+street that cannot join the junction it is crowding now slides clear of it
+instead, and only gives up if neither will do.
+
+# Ground you cannot get stuck on, and a drive to the street — 5 August 2026
+
+Mike opened the page and could not move. Two separate faults, both real.
+
+**The ground was a wall in places.** Roads are gradient-limited and pinned at
+sea level where the bridges land, so a road crossing a hill stays low while
+the hill does not, and the blend between them made up the difference across
+nine units. Measured over the whole map: 486 places steeper than 30%, worst
+114%.
+
+- [x] the ground has a gradient limit of its own — 25%, against the roads' 8%
+- [x] enforced by relaxing a coarse grid until no two neighbouring cells
+      differ by more than the limit allows, which costs milliseconds
+- [x] where a car can actually stand, spots over 30% are down from 187 to 63
+      and over 50% from 40 to 2
+- [x] `tests/terrain.mjs` measures it, sampling only ground a car could
+      reach — the bank between two building terraces is deliberately steep
+      and has a building on each side
+
+**And the garage opened onto grass.** It is sited on a spot whose footprint is
+clear of the roads, which is exactly the ground the town generator is free to
+build on. The apron was checked; the thirty units after it were nobody's job.
+
+- [x] a drive from the doors to the nearest street, derived from where the
+      garage ended up
+- [x] it is a ROAD, so everything that already avoids roads avoids it: the
+      terrain gives it a road profile, plots keep their setback, and trees,
+      lamps, brush and the holiday props all site themselves clear of it
+- [x] the AI traffic cannot use it — `getRoadNetwork` skips it, so no lane is
+      ever built on it and no vehicle can be assigned to one
+- [x] no pavements, no crossings, no signals: a private drive has none, and
+      they are all gated on `street || ring || auto || spur`
+- [x] it meets the street square, so the player gives way — which falls out of
+      the geometry rather than needing a rule
+- [x] `tests/garage.mjs` measures all of it: 13.4 units long, nearest building
+      4.4 clear, steepest ground on the way out 4.8%, zero AI lanes on it
+
+Still open: two spots on CONTACT where a building terrace abuts a road 1.2
+units below it, leaving a step. Both are beside a building rather than on any
+route, and neither is on the way out of anywhere.
+
 # Next up — ships, bridges and terrain
 
 ### Ships sail through the bridges
@@ -402,6 +501,40 @@ wrong in the middle of this one.
 - [ ] Lap timer or small challenge course
 - [x] Working headlights plus a day/night toggle
 - [ ] Horn
+
+---
+
+## Station signage, and fire out of the windows — done, 6 August 2026
+
+Two things the last session named and did not have room to do properly.
+
+- [x] **Signage and badges on the emergency stations.** FIRE STATION,
+      POLICE and HOSPITAL lettered over the doors, each with a badge — a
+      Maltese cross, a shield with a star, a cross. Badge and lettering are
+      one canvas per kind, emissive from its own map so the words light at
+      night and the plate behind them does not, which is the same trick the
+      monorail station names use. The hospital keeps its separate 3D cross:
+      it is the badge you need from an angle the sign cannot be read from.
+- [x] **Where the board hangs is the layout's decision**, not the
+      renderer's — `stationSignBoard()` in `islandLayout.js`, tested in
+      `stations.mjs`. A fire station is 8.5 up with a 5.2 door head and a
+      roof band taking the top 1.65, which leaves a strip 1.3 units tall;
+      the hospital has nine. A board sized to look right on the hospital
+      hangs across the opening the engine drives out of.
+- [x] **Fire comes out of the windows.** `windowVents()` in `windows.js`
+      turns the window quads that already get glass at night into one
+      emitter each — centre, facing, size, in model units — and World.js
+      pushes them through the mesh's own world matrix. No guessed grid:
+      that mistake is already written up at the top of `windows.js`, and it
+      would have put flames in the sky beside the buildings the same way it
+      once put glass there.
+- [x] **The ground floor does not burn**, because that is the height a fire
+      engine parks at. The roof plume stays — it is what you navigate by
+      from the next island.
+
+Verified by driving the built site in a headless browser and looking at it,
+not only by the suites: three stations photographed from the road by day and
+the fire photographed by day and night.
 
 ---
 

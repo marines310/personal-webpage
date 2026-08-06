@@ -42,6 +42,7 @@ import {
   rectangleDistance,
   makeHeightField,
   MAX_ROAD_GRADIENT,
+  MAX_GROUND_GRADIENT,
   ROAD_SHOULDER,
   PAD_MARGIN
 } from '../src/world/terrain.js'
@@ -119,6 +120,62 @@ for (const island of ISLANDS) {
 console.log(`   highest ground anywhere: ${highest.toFixed(1)} units`)
 chk('the ground actually rises', highest > 1, `${highest.toFixed(2)}`)
 chk('and it is mild, as asked for', highest < 12, `${highest.toFixed(2)}`)
+
+// ---------------------------------------------------------------------------
+console.log('\n2b. Promise zero: you cannot get stuck on the ground itself\n')
+
+// MIKE'S REQUIREMENT, and the one that was missing. The first three promises
+// are all about roads and buildings; none of them said anything about the
+// ground you meet the moment you leave the tarmac.
+//
+// What was there: roads are gradient-limited along their length, and near the
+// coast they are pinned at sea level by the bridges. So a road crossing a
+// hill stays low while the hill does not, and the ground between made up the
+// whole difference across the nine units of ROAD_BLEND. That is a cut face.
+// Measured over the whole map: 486 places steeper than 30%, the worst at
+// 114%. Drive off the road onto one of those and you stop.
+//
+// Sampled where a CAR COULD BE - which is not the same as everywhere. The
+// bank between two building terraces is deliberately steep and always was;
+// it is also two metres wide with a building on each side, so nothing can
+// drive into it. Measuring it would be measuring a place the failure cannot
+// happen, and would force the whole town flat to satisfy a test.
+const CAR = 2.5
+let steepestGround = 0
+let stuckSpots = 0
+let groundSamples = 0
+
+for (const island of ISLANDS) {
+  const reach = islandReach(island)
+  const footprints = [...getTownPlots(island), ...getRoadsidePlots(island),
+                      ...(island.buildings || [])]
+    .map(p => ({ x: p.x, z: p.z,
+                 r: Math.hypot((p.width || 6) / 2, (p.depth || 6) / 2) + CAR }))
+
+  for (let x = -reach; x <= reach; x += 4) {
+    for (let z = -reach; z <= reach; z += 4) {
+      if (inlandDistance(island, x, z) <= 0) continue
+      if (footprints.some(f => Math.hypot(x - f.x, z - f.z) < f.r)) continue
+
+      const slope = groundSlope(island.x + x, island.z + z)
+      const grade = Math.hypot(slope.dx, slope.dz)
+      groundSamples++
+      steepestGround = Math.max(steepestGround, grade)
+      if (grade > MAX_GROUND_GRADIENT * 2) stuckSpots++
+    }
+  }
+}
+
+console.log(`   ${groundSamples} samples of ground a car could stand on`)
+console.log(`   steepest: ${(steepestGround * 100).toFixed(0)}%, ` +
+            `${stuckSpots} of them over ${(MAX_GROUND_GRADIENT * 200).toFixed(0)}%`)
+
+// A handful of walls rather than hundreds. The threshold is set to catch a
+// return to the old behaviour - which was 137 spots at this sample spacing -
+// rather than to bless the number that is left.
+chk(`almost nowhere is a wall (${stuckSpots} spots over ` +
+    `${(MAX_GROUND_GRADIENT * 200).toFixed(0)}%)`,
+    stuckSpots <= 20, `${stuckSpots}`)
 
 // ---------------------------------------------------------------------------
 console.log('\n3. Promise one: every road can be driven\n')

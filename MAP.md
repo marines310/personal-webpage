@@ -181,6 +181,35 @@ sees. `grid: true` gives it a town; CONTACT (`mixed`) has one for the same
 reason. Four islands have street grids now instead of two, which was most of
 why the world read empty.
 
+**A street will move, shorten or give up rather than put a junction next to
+one already there.** The grid is swept as parallel lines, so where a street
+happens to cross the ring is an accident — and if it lands fifteen units from
+where a bridge comes ashore, the stretch of ring between them becomes a lane
+that holds a single vehicle. So `getTownGrid` lays each street out against the
+ring, the quay road and the bridge approaches, and against the streets already
+accepted, and applies one rule: no junction within `SIGNAL_MERGE_DISTANCE` of
+another on the same road, unless they are close enough to be the same junction.
+
+Three answers in order, and the first is the one that usually applies:
+
+1. **Move the end**, along the road it already finishes on. Either onto the
+   junction it is crowding — one four-armed crossroads, one set of lights, no
+   stub — or clear of it, far enough along that the stretch between is a lane
+   you can queue on. Whichever is the shorter move, and the street survives
+   whole either way. Whatever comes back faces the same tests the street
+   passed on the way in, because rotating a street can make it graze the ring
+   or shadow another road, and those were checked on where it used to be.
+2. **Trim back** to the street's last real crossing, losing the stub.
+3. **Drop it**, if there is nothing left worth driving.
+
+Having only the first and third of those cost the hub two of its three
+streets, which stranded the player's garage 26 units from any road behind a
+52% grass bank. A rule that deletes streets needs somewhere to put them.
+
+Note what this does NOT consider: roads you drew by hand. Taking a street over
+in the editor puts a copy of it in `roads`, and letting the grid see that copy
+would mean touching one street quietly relaid another. See `getFixedRoads`.
+
 **`blockSize` is derived, and from the largest thing that has to fit in a
 block — which is not the houses.** Two rows of houses back to back come to
 28.3; a 24-wide hospital with its clearances and a street comes to 35.5, and
