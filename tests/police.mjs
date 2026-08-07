@@ -17,7 +17,7 @@ import {
   ESCAPE_AFTER, MESSAGE_TIME, BACKGROUND_MIN, BACKGROUND_MAX,
   BACKGROUND_MIN_LIFE, BACKGROUND_MAX_LIFE, MIN_CHASE_DISTANCE, ROBBER_KINDS,
   newPoliceState, stepPolice, chooseRobber, caught, backgroundWanted, policeHud,
-  nearestStation, AT_STATION, ABANDON_CUSTODY
+  nearestStation, AT_STATION, ABANDON_CUSTODY, BOOKING_DELAY
 } from '../src/world/policeGame.js'
 import { chooseMission, missionArrow, formatDistance } from '../src/world/missions.js'
 import { fireHud, newFireState } from '../src/world/fireGame.js'
@@ -515,6 +515,92 @@ chk('reaching the station books him', jail.phase === 'over' &&
 chk('and the next chase is a minute or two away',
     jail.timer >= CHASE_GAP_MIN && jail.timer <= CHASE_GAP_MAX, `${jail.timer}`)
 chk('with nobody left in the back', !jail.custody)
+
+// ---------------------------------------------------------------------------
+// An arrest made ON the station's doorstep.
+//
+// `nearestStation()` is asked for the station nearest THE PLAYER at the moment
+// of the arrest, and the arrival check ran on the very next frame - so catching
+// somebody inside AT_STATION opened the custody phase and closed it again
+// before one frame of it was ever drawn. SUSPECT APPREHENDED and SUSPECT
+// BOOKED landed one frame apart with nothing in between, which looks exactly
+// like the second half of the game not existing.
+//
+// Measured rather than imagined, in the running game: 1.1% of the positions
+// robbers actually occupy during chases are already inside AT_STATION, as is
+// 1.88% of the drivable road network.
+//
+// THE QUESTION IS NOT "DOES IT SAY TAKE HIM IN". It does not, and should not -
+// with no drive left to do, the arrest banner is the right thing on screen and
+// TAKE HIM IN exists only to fill the gap after it. The question is whether
+// the leg is ever THERE: does holding him last long enough to see, and does
+// the arrow point at the station while it does.
+console.log('\n9. Arrested on the station steps')
+
+const doorstep = (gap) => {
+  const state = newPoliceState()
+  const robbers = []
+  let id = 0
+  const at = STATIONS[0]
+  const player = { x: at.x + gap, z: at.z, isPolice: true }
+  const ctx = {
+    player, robbers, stations: STATIONS,
+    spawn: () => { const r = { id: ++id, x: player.x, z: player.z }; robbers.push(r); return r.id },
+    release: (i) => { const k = robbers.findIndex(r => r.id === i); if (k >= 0) robbers.splice(k, 1) },
+    rand: seeded(101)
+  }
+  // Step to the arrest and read THERE. The robber is spawned on top of the
+  // player, so the catch lands on the chase's own first frame - counting a
+  // fixed number of frames and assuming the arrest is at the end of them
+  // measures a leg that has already been running, which is how the first
+  // version of this check came out at 3.07 seconds for a 5-second wait.
+  let guard = 0
+  while (state.phase !== 'custody' && guard++ < (FIRST_CHASE + 30) * 30) {
+    stepPolice(state, 1 / 30, ctx)
+  }
+
+  let heldFor = 0
+  let aimedAtStation = 0
+  let frames = 0
+  while (state.phase === 'custody' && frames++ < 30 * 60) {
+    const hud = policeHud(state, true, robbers)
+    if (hud.active && hud.target &&
+        hud.target.x === at.x && hud.target.z === at.z) aimedAtStation++
+    heldFor += 1 / 30
+    stepPolice(state, 1 / 30, ctx)
+  }
+  return { state, heldFor, aimedAtStation, frames }
+}
+
+const steps = doorstep(2)
+chk('an arrest at the door still opens the run rather than skipping it',
+    steps.heldFor > 0, `${steps.heldFor}`)
+chk('and it lasts long enough to be seen, not one frame',
+    steps.heldFor >= MESSAGE_TIME - 0.1, `held for ${steps.heldFor.toFixed(2)}s`)
+chk('with the arrow on the station the whole time',
+    steps.aimedAtStation === steps.frames,
+    `${steps.aimedAtStation} of ${steps.frames}`)
+chk('and he is booked at the end of it, not abandoned',
+    steps.state.phase === 'over' && steps.state.message === 'SUSPECT BOOKED',
+    `${steps.state.phase} / ${steps.state.message}`)
+
+// Just outside the trigger is unchanged - that path was never broken, and a
+// fix that moved it would be a fix that broke the ordinary case.
+const outside = doorstep(AT_STATION + 4)
+chk('an arrest just outside the trigger still gives the full leg',
+    outside.heldFor > MESSAGE_TIME, `${outside.heldFor.toFixed(2)}s`)
+chk('and that one does say TAKE HIM IN once the arrest banner clears', (() => {
+  const s = newPoliceState()
+  s.phase = 'custody'
+  s.custody = { station: STATIONS[0], held: MESSAGE_TIME + 1 }
+  s.message = null
+  return policeHud(s, true, []).title === 'TAKE HIM IN'
+})())
+
+// The delay is the arrest's own banner, not a number of its own - if one moves
+// the other has to, or the sequence goes back to being unreadable.
+chk('the wait is the arrest banner itself, not a second invented constant',
+    BOOKING_DELAY === MESSAGE_TIME, `${BOOKING_DELAY} vs ${MESSAGE_TIME}`)
 
 // Getting out of the police car with a suspect aboard. The arrest stands -
 // losing it would punish a change of vehicle, and the arrest already happened.

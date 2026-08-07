@@ -87,6 +87,29 @@ export const AT_STATION = 20
 export const ABANDON_CUSTODY = 420
 
 /**
+ * How long the arrest itself takes, before a station will accept him.
+ *
+ * THE LEG HAS TO EXIST. `nearestStation()` is asked for the station nearest
+ * THE PLAYER at the moment of the arrest, and the arrival check then runs on
+ * the very next frame - so catching somebody near a station opened the custody
+ * phase and closed it again before a single frame of it was ever drawn. The
+ * player got SUSPECT APPREHENDED and SUSPECT BOOKED one frame apart, with no
+ * TAKE HIM IN and no arrow in between, which is indistinguishable from the
+ * second half of the game not being there at all.
+ *
+ * Not a hypothetical, and not a guess at how often: 1.1% of the positions
+ * robbers actually occupy during real chases are already inside AT_STATION
+ * (33 of 2999 sampled in the running game), as is 1.88% of the drivable
+ * network. About one arrest in ninety.
+ *
+ * It is MESSAGE_TIME rather than a number of its own because it is the same
+ * moment - the arrest banner is up, and the arrest is not finished until it
+ * comes down. The cost is a second or two spent at the door on the rare very
+ * short run, against a leg that always exists and can always be read.
+ */
+export const BOOKING_DELAY = MESSAGE_TIME
+
+/**
  * How many chases run in the background when the player is not the police.
  *
  * One to three, as asked. Re-rolled each time the set changes rather than
@@ -233,7 +256,14 @@ export function stepPolice(state, delta, ctx) {
     const at = state.custody.station
     const here = ctx.player &&
       Math.hypot(ctx.player.x - at.x, ctx.player.z - at.z) <= AT_STATION
-    if (here) return finish(state, ctx, 'SUSPECT BOOKED')
+    // `held` and not "have I moved": standing at the door of the station you
+    // made the arrest outside of is a legitimate way to finish the leg, and
+    // making the player drive away and come back to satisfy a rule would be
+    // worse than the bug. All this asks is that the leg gets its moment on
+    // screen - see BOOKING_DELAY.
+    if (here && state.custody.held >= BOOKING_DELAY) {
+      return finish(state, ctx, 'SUSPECT BOOKED')
+    }
 
     if (state.custody.held > ABANDON_CUSTODY) {
       return finish(state, ctx, 'SUSPECT HANDED OVER')
