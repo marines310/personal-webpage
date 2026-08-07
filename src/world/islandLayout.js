@@ -3268,6 +3268,64 @@ export const STATION_SIGN_ASPECT = 4
 export const STATION_SIGN_MARGIN = 1.2     // bare wall each side of the board
 
 /**
+ * How much bare ground the forecourt leaves between itself and the pavement.
+ *
+ * It used to leave none. The slab was drawn `STATION_SETBACK - 2` deep, which
+ * on a 17.6 setback puts its far edge 2.0 out from the kerb - and the
+ * pavement is 2.4 wide, so the forecourt covered the pavement and ran to the
+ * kerb line with nothing left for the slack in where a station actually gets
+ * sited. It is also drawn a third of a unit above the road, so where it
+ * overlapped it made a pale shelf standing over the tarmac that the car had
+ * to climb. Mike photographed one at a junction.
+ *
+ * A metre, which is enough to read as a verge rather than a mistake.
+ */
+export const APRON_PAVEMENT_GAP = 1
+
+/**
+ * The concrete forecourt in front of one station: how big, and how far out.
+ *
+ * `offset` is from the station's CENTRE along its heading, which is how
+ * everything else about a station is measured. The near edge sits on the
+ * front wall, so the slab starts where the building stops.
+ *
+ * Here rather than in World.js for the reason on STATION_KINDS: the renderer
+ * draws what the layout decided. A slab sized by eye is a slab over the road.
+ */
+export function stationApron(station) {
+  if (!station) return null
+
+  // Out from the front wall, stopping short of the pavement rather than on
+  // top of it.
+  const depth = STATION_SETBACK - PAVEMENT_WIDTH - APRON_PAVEMENT_GAP
+  if (depth <= 1) return null
+
+  return {
+    // The station's own width. It was width + 4, which hung two units over
+    // the plot on each side and onto whatever was next door.
+    width: station.width,
+    depth,
+    offset: station.depth / 2 + depth / 2
+  }
+}
+
+/**
+ * How far the forecourt's far edge ends up from the kerb it faces.
+ *
+ * Separated out so a test can state the promise - "it does not reach the
+ * pavement" - as a measurement rather than by re-deriving the arithmetic and
+ * agreeing with itself.
+ */
+export function apronClearance(station) {
+  const apron = stationApron(station)
+  if (!apron) return null
+
+  // The kerb is STATION_SETBACK out from the front wall.
+  const farEdge = apron.offset + apron.depth / 2 - station.depth / 2
+  return STATION_SETBACK - farEdge
+}
+
+/**
  * Where one station's board goes, or null if there is nowhere for it.
  *
  * `height` and `doorHeight` are the BUILT numbers, not the asked-for ones,

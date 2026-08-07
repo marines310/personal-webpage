@@ -44,8 +44,16 @@ import {
   MAX_ROAD_GRADIENT,
   MAX_GROUND_GRADIENT,
   ROAD_SHOULDER,
-  PAD_MARGIN
+  PAD_MARGIN,
+  surfaceLift,
+  SURFACE_GRASS,
+  SURFACE_PAVED
 } from '../src/world/terrain.js'
+import { readFileSync } from 'fs'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
 
 let pass = 0, fail = 0
 const chk = (n, c, d = '') => {
@@ -485,6 +493,73 @@ chk('a road claims the ground under it', onRoads >= 20, `${onRoads}`)
 // handful, not the rule.
 chk('a building plot does not - or the building floats over a moat',
     sunkPlots.length <= 2, `${sunkPlots.length}: ${sunkPlots.join(', ')}`)
+
+// ---------------------------------------------------------------------------
+console.log('\n5. What you drive on is what you can see\n')
+
+// The bug this section exists for, measured in the running game before it was
+// fixed: the car sat 0.30 into open grass, 0.10 into the carriageway and 0.35
+// into a station forecourt. It showed worst at the end of a driveway, where a
+// raised apron meets a road and the step is a third of a wheel.
+//
+// The cause was not a missing collider. It was that NOTHING is drawn on the
+// bare height field - the grass cap stands proud of the beach, and every
+// paved surface stands proud of the grass so it does not z-fight - and the
+// collider was built on the field itself, under all of it.
+//
+// This is the same class of mistake as the road four centimetres under the
+// grass at the top of this file, and it went unseen for the same reason: two
+// numbers written down in two places, never compared.
+
+chk('open ground is lifted onto the grass cap', surfaceLift(0) === SURFACE_GRASS,
+    `${surfaceLift(0)}`)
+chk('and tarmac onto the carriageway', surfaceLift(1) === SURFACE_PAVED,
+    `${surfaceLift(1)}`)
+
+// The kerb has to go the right way round. A collider matched to the PAVEMENT
+// rather than the road would float the car half a kerb above the tarmac.
+chk('the road sits below the grass either side of it',
+    SURFACE_PAVED < SURFACE_GRASS)
+
+// No step changes: claimAt fades over PAVED_FADE at the kerb, and the lift
+// has to fade with it or there is a cliff where the tarmac starts.
+let worstJump = 0
+let previous = surfaceLift(0)
+for (let i = 1; i <= 100; i++) {
+  const here = surfaceLift(i / 100)
+  worstJump = Math.max(worstJump, Math.abs(here - previous))
+  previous = here
+}
+chk('and it eases between the two rather than stepping',
+    worstJump < (SURFACE_GRASS - SURFACE_PAVED) / 20,
+    `worst jump ${worstJump.toFixed(4)}`)
+
+chk('it is monotonic - more tarmac never means more lift',
+    Array.from({ length: 101 }, (_, i) => surfaceLift(i / 100))
+      .every((v, i, all) => i === 0 || v <= all[i - 1] + 1e-12))
+
+// Nonsense in, something sane out. claimAt is clamped 0..1 but this is the
+// function the collider is built from, and a NaN here is a hole in the world.
+chk('a claim outside 0..1 is clamped, not extrapolated',
+    surfaceLift(-3) === SURFACE_GRASS && surfaceLift(9) === SURFACE_PAVED)
+chk('and a missing claim is treated as open ground',
+    surfaceLift(undefined) === SURFACE_GRASS && surfaceLift(null) === SURFACE_GRASS)
+
+// And the two places that have to use it. World.js needs a browser, so this
+// reads it - the same trick fire.mjs and stations.mjs use.
+const world = readFileSync(join(HERE, '..', 'src/world/World.js'), 'utf8')
+
+chk('the collider is built with the lift, not on the bare field',
+    /surfaceLift\(terrain\.claimAt\(p\.x, p\.z\)\)/.test(world))
+chk('and the grass it is lifted onto is the same constant the cap is drawn at',
+    /GRASS_ABOVE_SAND = SURFACE_GRASS/.test(world))
+chk('and the carriageway is drawn at the height the collider expects',
+    /buildRoadSurface\(path, width, dashOffset = 0, y = SURFACE_PAVED\)/.test(world))
+
+// The beach has no grass cap to stand on, and lifting the collider there
+// would float the car over the sand - the same bug the other way up.
+chk('the beach is left alone, because there is no grass on it',
+    /onGrass\(p\.x, p\.z\)/.test(world) && /: 0$/m.test(world))
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

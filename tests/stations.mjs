@@ -41,6 +41,9 @@ import {
   TRAFFIC_WIDTHS,
   TRAFFIC_LENGTHS,
   PAVEMENT_WIDTH,
+  stationApron,
+  apronClearance,
+  APRON_PAVEMENT_GAP,
   stationSignBoard,
   STATION_SIGN_GAP,
   STATION_SIGN_CLEAR,
@@ -454,6 +457,65 @@ chk('every kind of station has a name and a badge to draw',
     /label: 'FIRE STATION', badge: 'maltese'/.test(world) &&
     /label: 'POLICE', badge: 'shield'/.test(world) &&
     /label: 'HOSPITAL', badge: 'cross'/.test(world))
+
+// ---------------------------------------------------------------------------
+console.log('\n6. The forecourt stays on its own plot\n')
+
+// Mike photographed this one: a pale slab spread over the pavement and up to
+// the kerb at a junction, standing about a third of a unit above the tarmac
+// because it is drawn at grass height and the road is not. It read as a shelf
+// the car had to climb.
+//
+// The old slab was `STATION_SETBACK - 2` deep and `station.width + 4` across.
+// On a 17.6 setback that puts its far edge 2.0 from the kerb, and the
+// pavement is 2.4 wide - so it covered the pavement by construction, with
+// nothing left over for the slack in where a station actually gets sited.
+// The comment above it said "out to just short of the pavement", which is
+// what it was meant to do and not what the numbers did.
+
+for (const station of stations) {
+  const yard = stationApron(station)
+  chk(`the ${station.kind} station has a forecourt`, !!yard)
+  if (!yard) continue
+
+  chk('  it does not reach the pavement, let alone the road',
+      apronClearance(station) >= PAVEMENT_WIDTH + APRON_PAVEMENT_GAP - 1e-9,
+      `${apronClearance(station).toFixed(2)} from the kerb, ` +
+      `pavement is ${PAVEMENT_WIDTH}`)
+
+  chk('  and it is no wider than the building it belongs to',
+      yard.width <= station.width + 1e-9,
+      `${yard.width} on a ${station.width} frontage`)
+
+  // The near edge on the front wall: concrete starts where the building
+  // stops, with no grass stripe between the door and the apron.
+  chk('  it starts at the front wall',
+      Math.abs((yard.offset - yard.depth / 2) - station.depth / 2) < 1e-9)
+
+  // THE ONE THAT MAKES IT USEFUL. Trimming the slab is only right if the
+  // bays are still standing on it - the markings are painted on the
+  // concrete, and a bay hanging off the end is paint on grass.
+  let furthest = -Infinity
+  for (const bay of station.bays) {
+    const along = (bay.x - station.x) * Math.sin(station.heading) +
+                  (bay.z - station.z) * Math.cos(station.heading)
+    furthest = Math.max(furthest, along + 7.5 / 2)   // the 7.5-long bay box
+  }
+  chk('  and every bay is still on the concrete',
+      furthest <= yard.offset + yard.depth / 2 + 1e-9,
+      `bay reaches ${furthest.toFixed(1)}, concrete ends ` +
+      `${(yard.offset + yard.depth / 2).toFixed(1)}`)
+}
+
+// A setback too small to hold a forecourt has to give none, rather than one
+// with a negative depth turned inside out across the street.
+chk('no room means no forecourt',
+    stationApron({ width: 20, depth: 12, bays: [] }) === null ||
+    STATION_SETBACK > PAVEMENT_WIDTH + APRON_PAVEMENT_GAP + 1)
+
+chk('World.js asks the layout for the forecourt rather than sizing it',
+    /const yard = stationApron\(station\)/.test(world) &&
+    !/PlaneGeometry\(station\.width \+ 4/.test(world))
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

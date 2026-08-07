@@ -229,8 +229,16 @@ chk('the ground mesh is built from the terrain',
     code.includes('}, height)'),
     'the grass and sand are still flat')
 chk('and so is the collider it collides with',
-    code.includes('terrain.heightAt(p.x, p.z), p.z'),
+    code.includes('terrain.heightAt(p.x, p.z) + lift, p.z'),
     'buildLandCollider is still flat')
+// And the half that was missing until 7 August: the height field is not what
+// anything is DRAWN on. The grass cap stands proud of the beach and the
+// tarmac proud of the grass, so a collider on the bare field sits under every
+// surface in the world - measured at 0.30 into open grass and 0.35 into a
+// station forecourt before this was added. See section 5 of terrain.mjs.
+chk('and the collider is lifted onto the surface you can actually see',
+    /surfaceLift\(terrain\.claimAt\(/.test(code),
+    'the car will drive below the grass again')
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

@@ -117,6 +117,52 @@ export const PAD_BLEND = 5
 export const PAVED_FADE = 1.5
 
 /**
+ * How far above the height field each drawn surface actually sits.
+ *
+ * Nothing is drawn ON the height field. The grass cap is lifted so it reads
+ * as grass standing proud of the beach, and every paved surface is lifted so
+ * it does not z-fight with the grass underneath it. Those lifts were picked
+ * independently, in the code that draws each one, and they were never told to
+ * the collider - which was built on the bare height field.
+ *
+ * The result was measured in the running game: the car sat 0.30 into open
+ * grass, 0.10 into the carriageway and 0.35 into a station forecourt. It
+ * showed worst at the end of a driveway, where a 0.35 apron meets a 0.10
+ * road and the step is a third of a wheel.
+ *
+ * So the lift belongs here, once, next to `claimAt` - which is the thing that
+ * decides which of the two a given point is. Draw with it and collide with
+ * it, and the two cannot drift apart again.
+ */
+export const SURFACE_GRASS = 0.3
+
+/**
+ * The CARRIAGEWAY, specifically - buildRoadSurface()'s own default, which is
+ * what the wheels are on. Not the pavement (0.12) and not a junction patch
+ * (0.065): a kerb is meant to stand proud of the road, and matching the
+ * collider to the pavement would float the car half a kerb above the tarmac.
+ */
+export const SURFACE_PAVED = 0.06
+
+/**
+ * The drivable surface at a point, as a lift above the height field.
+ *
+ * `claim` is `claimAt(x, z)`: 0 on open ground, 1 under tarmac, and a short
+ * fade between the two at the kerb. The lift follows it, so the collider
+ * steps down onto a road exactly where the drawn tarmac takes over from the
+ * drawn grass rather than at some second, separately-tuned boundary.
+ *
+ * Off the grass cap - on the beach - there is no lift at all, because there
+ * is no grass there to stand proud of. That case is not decided here: it
+ * needs the grass ring, which is geometry, and this file has none. See
+ * buildLandCollider().
+ */
+export function surfaceLift(claim) {
+  const held = Math.min(1, Math.max(0, claim || 0))
+  return SURFACE_PAVED + (SURFACE_GRASS - SURFACE_PAVED) * (1 - held)
+}
+
+/**
  * A smooth bump, 1 at the middle and 0 at the rim, with zero slope at both.
  *
  * Smoothstep rather than a cone, because the ground's SLOPE matters as much

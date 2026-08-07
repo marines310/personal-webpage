@@ -38,6 +38,7 @@ import {
   groundHeight,
   getStations,
   STATION_SETBACK,
+  stationApron,
   stationSignBoard,
   makeTraffic,
   stepTraffic,
@@ -92,7 +93,10 @@ import {
 import { findWindowFaces, windowGeometry, windowVents } from './windows.js'
 import {
   subdivideTriangles,
-  GROUND_MESH_EDGE
+  GROUND_MESH_EDGE,
+  SURFACE_GRASS,
+  SURFACE_PAVED,
+  surfaceLift
 } from './terrain.js'
 
 /**
@@ -131,7 +135,12 @@ export const GROUND_SINK = 0.7
  * vertices cannot be stacked closer than the error between them.** Either
  * give them the same vertices, or leave a real gap.
  */
-export const GRASS_ABOVE_SAND = 0.3
+/**
+ * Now derived rather than declared. It is the same number the collider is
+ * lifted by on open ground, and the whole point of this bug was that the two
+ * were written down separately and disagreed by exactly this much.
+ */
+export const GRASS_ABOVE_SAND = SURFACE_GRASS
 import { mixHex, SNOW_COLOUR, SNOW_TAKE } from '../systems/seasons.js'
 import { DECOR_KINDS, emptyLayer } from '../systems/holidays.js'
 import { lampBrightness, blinkOn, gloomLevel, sideOfVehicle, sirenBeat } from './vehicleLights.js'
@@ -144,7 +153,10 @@ import {
   CRASH_CARS, CRASH_SIDE_OFFSET, crashBlocks
 } from './ambulanceGame.js'
 import { chooseMission } from './missions.js'
-import { insetPolygon, insetPolygonRadial, polygonCentroid, rayDistanceToBoundary } from './shapes.js'
+import {
+  insetPolygon, insetPolygonRadial, polygonCentroid, pointInPolygon,
+  rayDistanceToBoundary
+} from './shapes.js'
 import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
 
 /**
@@ -1073,7 +1085,10 @@ export class World {
     wet.position.set(cx, 0, cz)
     this.game.add(wet)
 
-    this.buildLandCollider(island, outline, cx, cz)
+    // The grass ring, so the collider is lifted onto the grass cap where
+    // there is one and left on the sand where there is not.
+    this.buildLandCollider(island, outline, cx, cz,
+      grassRing.length >= 3 ? grassRing : null)
   }
 
   /**
@@ -1212,7 +1227,7 @@ export class World {
    * Falls back to a cylinder if the engine rejects the mesh, so an island is
    * never left without collision.
    */
-  buildLandCollider(island, outline, cx, cz) {
+  buildLandCollider(island, outline, cx, cz, grassRing = null) {
     const verts = []
 
     const push = (x, y, z) => { verts.push(x + cx, y, z + cz) }
@@ -1223,11 +1238,31 @@ export class World {
     // The same triangles the sand mesh was built from - see
     // islandGroundTriangles(). The collider applies the TRUE height, with no
     // GROUND_SINK duck: what you drive on stays the real surface.
+    //
+    // AND THEN THE LIFT, which is the half this was missing. Nothing is drawn
+    // on the bare height field: the grass cap stands SURFACE_GRASS proud of
+    // it and the tarmac SURFACE_PAVED, so a collider built on the field alone
+    // is under every surface in the world. Measured in the running game
+    // before this was added: 0.30 into open grass, 0.10 into the carriageway,
+    // 0.35 into a station forecourt. You saw it at the end of a driveway,
+    // where the apron meets the road and the step is a third of a wheel.
+    //
+    // Off the grass cap there is no lift, because the beach has no grass to
+    // stand proud of - and lifting it there would float the car over the sand
+    // instead, which is the same bug wearing a hat.
     const terrain = getIslandTerrain(island)
     const shared = this.islandGroundTriangles(island, outline)
 
+    const onGrass = (x, z) =>
+      !grassRing || grassRing.length < 3 || pointInPolygon(grassRing, x, z)
+
     for (const triangle of shared) {
-      for (const p of triangle) push(p.x, terrain.heightAt(p.x, p.z), p.z)
+      for (const p of triangle) {
+        const lift = onGrass(p.x, p.z)
+          ? surfaceLift(terrain.claimAt(p.x, p.z))
+          : 0
+        push(p.x, terrain.heightAt(p.x, p.z) + lift, p.z)
+      }
     }
 
     // Walls, so you bump the cliff rather than sliding through it
@@ -1669,7 +1704,7 @@ export class World {
     this.game.add(mesh)
   }
 
-  buildRoadSurface(path, width, dashOffset = 0, y = 0.06) {
+  buildRoadSurface(path, width, dashOffset = 0, y = SURFACE_PAVED) {
     if (!path || path.length < 2) return
 
     // ribbonQuads gives one full-width quad per step, already wound to
@@ -1734,7 +1769,7 @@ export class World {
   }
 
   /** Dashed centre line that follows the bend of the road. */
-  addRoadMarkings(path, tangents, dashOffset = 0, roadY = 0.06) {
+  addRoadMarkings(path, tangents, dashOffset = 0, roadY = SURFACE_PAVED) {
     const dashMat = new THREE.MeshStandardMaterial({
       color: PALETTE.roadLine, roughness: 0.8
     })
@@ -3340,16 +3375,24 @@ export class World {
     const fx = Math.sin(station.heading)
     const fz = Math.cos(station.heading)
 
-    // From the front wall out to just short of the pavement
+    // From the front wall out to just short of the pavement - and this time
+    // it really does stop short of it. See stationApron(): the old slab was
+    // STATION_SETBACK - 2 deep and station.width + 4 across, which covered
+    // the pavement, reached the kerb and hung two units over the plot on each
+    // side. Because it is also drawn a third of a unit above the road, the
+    // overlap read as a pale shelf standing over the tarmac.
+    const yard = stationApron(station)
+    if (!yard) return
+
     const apron = new THREE.Mesh(
-      new THREE.PlaneGeometry(station.width + 4, STATION_SETBACK - 2),
+      new THREE.PlaneGeometry(yard.width, yard.depth),
       new THREE.MeshStandardMaterial({
         color: PALETTE.concrete, roughness: 0.95
       }))
     apron.rotation.x = -Math.PI / 2
     apron.rotation.z = -station.heading
-    const apronX = station.x + fx * (STATION_SETBACK / 2 + station.depth / 2 - 1)
-    const apronZ = station.z + fz * (STATION_SETBACK / 2 + station.depth / 2 - 1)
+    const apronX = station.x + fx * yard.offset
+    const apronZ = station.z + fz * yard.offset
     // Above the grass cap, not under it: the apron is a raised forecourt, so
     // it does not have to claim the ground and sink the plots around it.
     apron.position.set(
@@ -3861,7 +3904,12 @@ export class World {
       new THREE.MeshStandardMaterial({
         color: PALETTE.concrete, roughness: 0.95, flatShading: true
       }))
-    apron.position.set((garage.x + garage.apron.x) / 2, ground + 0.1,
+    // Top face on the road surface, not 0.14 over it. The slab is 0.2 thick
+    // and drawn from its middle, so the centre goes half a thickness below
+    // where the top is wanted. This is the driveway Mike could see the car
+    // sinking into.
+    apron.position.set((garage.x + garage.apron.x) / 2,
+                       ground + SURFACE_PAVED + 0.02 - 0.1,
                        (garage.z + garage.apron.z) / 2)
     apron.rotation.y = garage.heading
     this.game.add(apron)
