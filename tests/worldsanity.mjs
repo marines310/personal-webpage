@@ -63,10 +63,48 @@ chk(`${used.size} palette colours used, all defined`, unknown.length === 0,
 console.log('\n4. Every model asked for is one the manifest lists')
 const manifest = readFileSync(ROOT + 'src/world/modelManifest.js', 'utf8')
 const keys = new Set([...manifest.matchAll(/key:\s*'([^']+)'/g)].map(m => m[1]))
-const asked = [...new Set([...src.matchAll(/assets\.get\(\s*'([^']+)'/g)].map(m => m[1]))]
+
+// get, has AND clone. This looked only at `get(` and therefore never checked
+// `rock` or `streetlight`, which are reached through `has(`/`clone(` - the
+// same shape of half-a-guard as section 6 missing camelCase names.
+const asked = [...new Set(
+  [...src.matchAll(/assets\.(?:get|has|clone)\(\s*'([^']+)'/g)].map(m => m[1])
+)]
 const absent = asked.filter(k => !keys.has(k))
 chk(`asks for ${asked.join(', ')} - all in the manifest`, absent.length === 0,
     'not in manifest (will silently fall back): ' + absent.join(', '))
+
+// The pools, which are the whole reason a fourth building is one line of
+// manifest and nothing else. A key written out in World.js is a second copy
+// of the list, and the copy is what goes stale: `building_d` was reachable
+// from the loader and from nowhere else, and every street tree on the map
+// was `tree_a` while `tree_b` loaded on every visit and appeared only on the
+// beaches.
+const { MODEL_MANIFEST, BUILDING_MODELS, TREE_MODELS } =
+  await import('../src/world/modelManifest.js')
+
+const roled = (role) => MODEL_MANIFEST.filter(m => m.role === role).map(m => m.key)
+chk(`the building pool is the manifest's ${BUILDING_MODELS.length} building entries`,
+    BUILDING_MODELS.length > 0 &&
+    BUILDING_MODELS.join() === roled('building').join(),
+    BUILDING_MODELS.join(', '))
+chk(`the tree pool is the manifest's ${TREE_MODELS.length} tree entries`,
+    TREE_MODELS.length > 0 && TREE_MODELS.join() === roled('tree').join(),
+    TREE_MODELS.join(', '))
+
+const hardCoded = [...new Set(
+  [...src.matchAll(/'((?:building|tree)_[a-z])'/g)].map(m => m[1])
+)]
+chk('World.js names no building or tree model directly - it uses the pools',
+    hardCoded.length === 0,
+    'hard-coded, so a new model in the manifest would never reach it: ' +
+    hardCoded.join(', '))
+
+for (const name of ['BUILDING_MODELS', 'TREE_MODELS']) {
+  chk(`${name} is imported, not assumed`,
+      new RegExp(`import \\{[^}]*\\b${name}\\b[^}]*\\} from '\\./modelManifest\\.js'`)
+        .test(src))
+}
 
 console.log('\n5. Everything imported from the layout is exported by it')
 const layout = readFileSync(ROOT + 'src/world/islandLayout.js', 'utf8')

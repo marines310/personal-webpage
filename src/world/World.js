@@ -153,6 +153,7 @@ import {
   CRASH_CARS, CRASH_SIDE_OFFSET, crashBlocks
 } from './ambulanceGame.js'
 import { chooseMission } from './missions.js'
+import { BUILDING_MODELS, TREE_MODELS } from './modelManifest.js'
 import {
   insetPolygon, insetPolygonRadial, polygonCentroid, pointInPolygon,
   rayDistanceToBoundary
@@ -6067,9 +6068,16 @@ export class World {
     this.game.add(group)
   }
 
-  /** A narrow street tree - tidier than the palms, which are for beaches. */
+  /**
+   * A narrow street tree - tidier than the palms, which are for beaches.
+   *
+   * Drawn from the pool rather than always being `tree_a`. Every street tree
+   * in every town on the map was the same model, while `tree_b` sat in the
+   * manifest, loaded on every visit, and appeared only on the beaches.
+   */
   addStreetTree(x, z) {
-    const model = this.assets && this.assets.get && this.assets.get('tree_a')
+    const key = this.pick(TREE_MODELS)
+    const model = key && this.assets && this.assets.get && this.assets.get(key)
     if (model) {
       const tree = model.clone()
       tree.position.set(x, this.groundAt(x, z), z)
@@ -6356,8 +6364,7 @@ export class World {
     // model when this one falls through to the box shape.
     this._builtModel = null
 
-    const modelKey = opts.model ||
-      this.pick(['building_a', 'building_b', 'building_c'])
+    const modelKey = opts.model || this.pick(BUILDING_MODELS)
     const rotation = opts.rotation !== undefined
       ? opts.rotation
       : this.rand() * Math.PI * 2
@@ -6874,7 +6881,7 @@ export class World {
   }
 
   addPalm(x, z, beach = false) {
-    const modelKey = this.rand() < 0.5 ? 'tree_a' : 'tree_b'
+    const modelKey = this.pick(TREE_MODELS)
 
     // Palms are the only other thing that gets near the beam - the trunk
     // alone runs to 7.5 units, and the crown sits on top of that. The

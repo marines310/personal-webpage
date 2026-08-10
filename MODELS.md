@@ -43,11 +43,11 @@ manifest expects `.glb`.
 | Filename | What it becomes | Roughly how many |
 |---|---|---|
 | `car.glb` | The car you drive | 1 |
-| `building_a.glb` | City tower | picked at random |
-| `building_b.glb` | City tower | picked at random |
-| `building_c.glb` | City tower | picked at random |
-| `tree_a.glb` | Jungle tree | ~30 across two islands |
-| `tree_b.glb` | Jungle tree | ~30 across two islands |
+| `building_a.glb` | City building | picked at random |
+| `building_b.glb` | City building | picked at random |
+| `building_c.glb` | City building | picked at random |
+| `tree_a.glb` | Tree — streets and beaches | ~30 across two islands |
+| `tree_b.glb` | Tree — streets and beaches | ~30 across two islands |
 | `rock.glb` | Scattered rock | ~15 |
 | `streetlight.glb` | Street lamp | ~16 |
 
@@ -61,7 +61,32 @@ public/models/tree_a.glb
 ```
 
 Start with `car.glb` — it's the one you look at constantly, so it makes
-the biggest difference.
+the biggest difference. The one in the folder now is a placeholder I
+generated to prove the pipeline works, not a real model.
+
+---
+
+## Adding MORE than the eight above
+
+The buildings and the trees are **pools**, not fixed slots. Drop in a
+`building_d.glb` and add one line to `src/world/modelManifest.js`:
+
+```js
+{ key: 'building_d', url: path('building_d.glb'), fitLength: 6, role: 'building' },
+```
+
+`role: 'building'` is the whole of it. Every town on the map starts using
+the new model immediately — there is no second list to update, and no
+other file to touch. Same for trees with `role: 'tree'`.
+
+This is worth having because three buildings is what makes a street read
+as repetitive. Six or seven is where a town stops looking copy-pasted.
+
+> **Why one line and not zero?** The manifest is also the download list.
+> Naming a file that isn't there costs a failed request and a red console
+> error on every single visit, so the game only asks for what you tell it
+> you have. `tests/worldsanity.mjs` section 4 checks the pools and the code
+> can't drift apart again.
 
 ---
 
@@ -142,6 +167,40 @@ That URL is exactly where the file needs to go — everything after
 **Alternative:** if you'd rather have self-contained files, open the
 `.glb` at [gltf.report](https://gltf.report/) and re-export — it embeds
 the texture into the file so there's no separate folder to keep track of.
+
+### Two packs, two colormaps, one filename
+
+Every Kenney kit ships its own `Textures/colormap.png`, and the path baked
+into the model is relative — so models from two different kits both ask for
+`models/Textures/colormap.png`. Copy the second kit's over the first and
+your existing buildings can quietly change colour.
+
+**You do not have to re-export anything.** Give each pack its own folder:
+
+```
+public/models/
+├── building_a.glb          ← what's there now
+├── Textures/colormap.png
+├── city/
+│   ├── building_d.glb
+│   └── Textures/colormap.png   ← the city kit's own
+└── nature/
+    ├── tree_c.glb
+    └── Textures/colormap.png   ← the nature kit's own
+```
+
+and point the manifest at the subfolder:
+
+```js
+{ key: 'building_d', url: path('city/building_d.glb'), fitLength: 6, role: 'building' },
+```
+
+The texture path inside the `.glb` resolves relative to the `.glb` itself,
+so each pack finds its own palette and nothing overwrites anything. Vite
+copies `public/` verbatim, subfolders included.
+
+If the old buildings *do* change colour after you add a pack, this is what
+happened.
 
 ---
 

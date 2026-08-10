@@ -46,13 +46,25 @@ export const MODEL_MANIFEST = [
   },
 
   // --- Town / city props (cyberpunk districts) ---
-  { key: 'building_a', url: path('building_a.glb'), fitLength: 6 },
-  { key: 'building_b', url: path('building_b.glb'), fitLength: 7 },
-  { key: 'building_c', url: path('building_c.glb'), fitLength: 5 },
+  //
+  // `role` is what makes these a POOL rather than three named files. Add a
+  // `building_d` line below and every town on the map starts using it; there
+  // is nowhere else to edit. Before this, the three keys were also written
+  // out inside World.js, so a fourth building was in the manifest, in the
+  // loader, and still never appeared anywhere.
+  { key: 'building_a', url: path('building_a.glb'), fitLength: 6, role: 'building' },
+  { key: 'building_b', url: path('building_b.glb'), fitLength: 7, role: 'building' },
+  { key: 'building_c', url: path('building_c.glb'), fitLength: 5, role: 'building' },
 
   // --- Jungle props ---
-  { key: 'tree_a', url: path('tree_a.glb'), fitLength: 3 },
-  { key: 'tree_b', url: path('tree_b.glb'), fitLength: 3.5 }
+  //
+  // One pool, deliberately: the street trees and the palms draw from the same
+  // list today because there are only two models between them. Splitting
+  // 'tree' into 'street' and 'palm' is worth doing when there are enough
+  // models for the distinction to be visible, and not before - a role with
+  // one model in it is a hard-coded name wearing a costume.
+  { key: 'tree_a', url: path('tree_a.glb'), fitLength: 3, role: 'tree' },
+  { key: 'tree_b', url: path('tree_b.glb'), fitLength: 3.5, role: 'tree' }
 
   // Not downloaded yet. Listing a file you don't have still works - the
   // built-in shape is used instead - but it costs a failed request and a
@@ -62,3 +74,21 @@ export const MODEL_MANIFEST = [
   // { key: 'rock', url: path('rock.glb'), fitLength: 2 },
   // { key: 'streetlight', url: path('streetlight.glb'), fitLength: 1 }
 ]
+
+/**
+ * The keys that share a job, derived from the manifest rather than listed
+ * again beside it.
+ *
+ * Computed once at module load and not per call: `addBuilding()` runs for
+ * every building on the map, and rebuilding the same short array a few
+ * hundred times a load is work for nothing.
+ *
+ * A missing role is an EMPTY pool, not an error. `pick()` on an empty array
+ * gives undefined, `assets.has(undefined)` is false, and the caller falls
+ * back to its built-in shape - which is exactly what the whole manifest
+ * promises: every model is optional.
+ */
+const withRole = (role) => MODEL_MANIFEST.filter(m => m.role === role).map(m => m.key)
+
+export const BUILDING_MODELS = withRole('building')
+export const TREE_MODELS = withRole('tree')
