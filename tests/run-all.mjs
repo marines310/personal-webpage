@@ -46,6 +46,7 @@ const SUITES = [
   'helicopters.mjs',   // rooftop and ground pads, and clearance above them
   'stations.mjs',      // fire, police and hospital: bays, doors, coming and going
   'windows.mjs',       // the windows in the building models, read from the models
+  'models.mjs',        // rock.glb and streetlight.glb, the two we generate ourselves
   'audio.mjs',         // the mix: gears, the siren's clock, and never a NaN
 
   // The editor, driven through real events

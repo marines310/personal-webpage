@@ -7115,6 +7115,30 @@ export class World {
       model.position.set(x, this.groundAt(x, z), z)
       model.rotation.y = heading
       this.game.add(model)
+
+      // THE MODEL PATH HAS TO DO BOTH THE THINGS THE FALLBACK DOES.
+      //
+      // It did neither, and it had never once run - so the day a
+      // streetlight.glb appeared, every lamp in the world would have stopped
+      // coming on at dusk and every pool of light on every road would have
+      // gone with it. Better geometry, darker night. Exactly the failure
+      // already written up at addBuilding(): lighting written for a code path
+      // the game never takes.
+      //
+      // Registered ONCE, not once per lamp. `assets.clone()` deep-copies the
+      // scene graph and SHARES materials, so all of them are lit through one
+      // material - which is also why the lens is its own material in the
+      // .glb, or the pole and the arm would glow with it.
+      if (!this._lampLens) {
+        const lens = model.getObjectByName('lamp')
+        if (lens && lens.material) {
+          this._lampLens = lens.material
+          lens.material.emissive = new THREE.Color(PALETTE.lampLit)
+          this.registerNightLight(lens.material, 4.5)
+        }
+      }
+
+      this.addLampPool(x, z, aim)
       return
     }
 
@@ -7147,8 +7171,18 @@ export class World {
     group.rotation.y = heading
     this.game.add(group)
 
-    // Light the road, not just the lamp. Offset toward whatever it's
-    // aimed at, because that's where a lamp on an arm actually throws it.
+    this.addLampPool(x, z, aim)
+  }
+
+  /**
+   * Light the road, not just the lamp.
+   *
+   * Offset toward whatever the lamp is aimed at, because that is where a lamp
+   * on an arm actually throws it. Its own method so the model path and the
+   * built-in path cannot drift - which they had already done, the model path
+   * having no pool at all.
+   */
+  addLampPool(x, z, aim) {
     const reach = 11
     const px = aim ? x + (aim.x - x) * 0.45 : x
     const pz = aim ? z + (aim.z - z) * 0.45 : z

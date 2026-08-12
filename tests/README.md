@@ -29,6 +29,7 @@ prints PASS/FAIL lines and exits non-zero if anything failed.
 | `ports.mjs` | Piers start on land and end in water, the quay is drivable and in the road network, no shipping lane crosses an island, and the fleet sails 15 simulated minutes without a hull ever standing on land |
 | `monorail.mjs` | The loop closes and never crosses itself, platforms stand on land near each island's middle, no pier in a carriageway, nothing under the beam reaches it, and the trains run 400 simulated seconds calling everywhere |
 | `windows.mjs` | The windows in the building models, read out of the real `.glb` files and the real texture atlas: every building has 4-8 panes, none on a roof, the walls stay clear of the darkness threshold, and the glass lands on the model at the model's own scale |
+| `models.mjs` | `rock.glb` and `streetlight.glb` — the two models this project generates rather than downloads — read back off disk: they share the one atlas, every UV lands on a painted swatch, the rock stands on the ground and is wider than tall, and the lamp is built to the exact dimensions `addStreetlight()` positions against |
 | `stations.mjs` | Fire, police and hospital: no corner of a building in a road, a garage door wider than the engine with a run-in square to it, every station somebody's home, and ten simulated minutes in which they actually come and go from their own bays |
 
 **The editor**
