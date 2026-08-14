@@ -9,24 +9,27 @@ import topLevelAwait from 'vite-plugin-top-level-await'
  * Where the published site lives. This decides how links to the JavaScript,
  * models and textures get written into the built page.
  *
- * Right now:                          '/personal-webpage/'
- *   because the repo is called personal-webpage, so GitHub serves it at
- *   https://marines310.github.io/personal-webpage/  - inside a subfolder.
+ * Right now:                          '/'
+ *   because the site is served from https://mikeslee.com - a custom domain
+ *   points at the ROOT, with no subfolder, so there is no prefix to add.
  *
- * If you ever add a custom domain:    '/'
- *   a custom domain points at the site's root (https://yoursite.com), with
- *   no subfolder, so the prefix has to come off. See DEPLOY.md, Part 3.
+ * It was '/personal-webpage/' until 13 August 2026, when the domain went
+ *   live. That is what GitHub needs when a site is served out of a repo's
+ *   own folder at https://marines310.github.io/personal-webpage/ - and that
+ *   address now redirects to the domain, so it is no longer the one to
+ *   match. If the custom domain is ever removed, this has to go back.
  *
  * If this is wrong the page loads completely blank with no error on screen,
  * because every file it asks for comes back 404. It is the single most
- * common reason a site that works locally breaks once published.
+ * common reason a site that works locally breaks once published, and it is
+ * rule 8 in HANDOFF.md for that reason.
  *
  * This only applies to the PUBLISHED site. `npm run dev` always serves from
  * plain http://localhost:3000 regardless, so you never have to remember a
  * subfolder while you're working.
  * ===========================================================================
  */
-const SITE_BASE = '/personal-webpage/'
+const SITE_BASE = '/'
 
 export default defineConfig(({ command }) => ({
   root: '.',
