@@ -263,6 +263,11 @@ run, so if it's going to fail you find out in five seconds rather than two minut
 
 ## Part 3 — your own domain
 
+**Bought: `mikeslee.com`, at Squarespace, 13 August 2026.** $14 the first year, $20/year
+after. The rest of this Part is the record of how it was chosen and what still has to be
+done to it — the steps themselves are below and are not done until the DNS records are in
+and `SITE_BASE` is `'/'`.
+
 `marines310.github.io` is a perfectly respectable address. A custom domain is worth it if
 you're putting this on a resume or in an email signature and want it to read as yours.
 
@@ -323,6 +328,16 @@ four, for redundancy. The CNAME makes `www.yoursite.com` work too.
 Note the trailing dot: enter the CNAME value as `marines310.github.io` — some registrars
 add the dot themselves, which is fine.
 
+**At Squarespace specifically:** log in → **Domains** → `mikeslee.com` → **DNS** →
+**DNS Settings**, and add them under **Custom Records**. Squarespace pre-fills records
+that point the domain at its own parking page — **delete those first**, or you will have
+two sets of instructions fighting each other and the domain will resolve to whichever
+wins. Leave any `TXT` verification records alone.
+
+Do not use Squarespace's "Connect a domain" or "Point to an external site" flows. Those
+set up a redirect or a Squarespace-hosted page; you want the raw DNS records above, and
+nothing else.
+
 **Third — on GitHub:** **Settings** → **Pages** → **Custom domain**, type your domain,
 click **Save**. GitHub will check the DNS. This can fail for the first hour or so purely
 because DNS changes take time to spread; that's normal, not a mistake on your part.
@@ -333,20 +348,32 @@ certificate is issued for you — check back in an hour.
 **Timing:** usually 15 minutes to an hour. Occasionally up to 24. Nothing is broken during
 the wait.
 
-### One extra file, as insurance
+### Do NOT add a CNAME file — it does nothing here
 
-Once the domain is working, create a file called `CNAME` (no extension) inside the
-`public/` folder, containing just your domain:
+An earlier version of this document told you to put a `CNAME` file in `public/` as
+insurance, because GitHub's custom-domain setting has been known to reset itself. That
+advice is wrong **for this project**, and it is worth knowing why rather than just
+deleting it.
 
-```
-yoursite.com
-```
+There are two ways to publish a GitHub Pages site. If you publish from a *branch*, GitHub
+commits a `CNAME` file into that branch and reads it back, so keeping your own copy is
+genuine insurance. This project doesn't do that — `.github/workflows/deploy.yml` builds
+the site and uploads it as an artifact, which is the *GitHub Actions* method. GitHub's own
+documentation is explicit about what happens then:
 
-Then commit and push it in GitHub Desktop, as usual.
+> If you are publishing from a custom GitHub Actions workflow, no `CNAME` file is created,
+> and any existing `CNAME` file is ignored and is not required.
 
-GitHub stores your custom domain in its settings, but that setting has been known to reset
-itself when a deployment replaces the site. This file makes the domain part of your code,
-so it survives.
+So the file would sit in the repo doing nothing, while looking like protection. Worse than
+having nothing, because you'd stop looking for real protection.
+
+**The real protection is verifying the domain.** GitHub → your profile **Settings** →
+**Pages** → **Add a domain**. You add one TXT record at your registrar and GitHub then
+knows the domain is yours. It stops anyone else attaching it to their repository, and it
+is what GitHub actually recommends. Worth the five minutes, once.
+
+Reference: [Managing a custom domain for your GitHub Pages
+site](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site)
 
 ---
 

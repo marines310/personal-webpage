@@ -186,6 +186,26 @@ class Zone {
   }
 }
 
+/** The address the project ships with, and which nobody owns. */
+const BLOG_PLACEHOLDER = 'https://your-blog-url.com'
+
+/**
+ * The "Read the blog" line, or nothing at all.
+ *
+ * A placeholder rendered as a live `<a href>` is worse than no link: it looks
+ * finished, it is on the published site, and anyone who drives to the Writing
+ * island can click through to a domain that does not exist. Better to have no
+ * link until there is somewhere to point it.
+ *
+ * Deliberately checks against the placeholder rather than for a "real-looking"
+ * URL. Anything else would be guessing at what a blog address looks like, and
+ * would eventually reject a perfectly good one.
+ */
+export function blogLink(url) {
+  if (!url || url === BLOG_PLACEHOLDER) return ''
+  return `<p><a href="${url}" target="_blank" rel="noopener">Read the blog →</a></p>`
+}
+
 /**
  * ZoneManager - Manages all content zones
  */
@@ -201,7 +221,12 @@ export class ZoneManager {
 
   createZones() {
     // --- Edit these to update your site's content ---
-    const BLOG_URL = 'https://your-blog-url.com' // TODO: replace with your real blog/Substack/Medium URL
+    // Put a real address here and the "Read the blog" link appears. Leave the
+    // placeholder and the Writing panel simply has no link in it - see
+    // blogLink() below. It used to render the placeholder as a live link, so
+    // anyone who found the Writing island on the published site could click
+    // through to a domain nobody owns.
+    const BLOG_URL = 'https://your-blog-url.com'
     const EMAIL = 'skhylee0416@gmail.com'
     const LINKEDIN_URL = 'https://www.linkedin.com/in/mikeshlee'
     const GITHUB_URL = 'https://github.com/marines310'
@@ -286,7 +311,7 @@ export class ZoneManager {
           title: 'Writing',
           body: `
             <p>Notes on AI product strategy, venture building, and lessons from launching innovation centers.</p>
-            <p><a href="${BLOG_URL}" target="_blank" rel="noopener">Read the blog →</a></p>
+            ${blogLink(BLOG_URL)}
           `
         }
       },

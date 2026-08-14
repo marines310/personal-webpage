@@ -2,3 +2,8 @@ node_modules
 dist
 .DS_Store
 *.log
+
+# Scratch commit messages written by a Cowork session so a Terminal paste can
+# stay short. They are notes for one commit, not part of the project, and one
+# of them got committed on 13 August because `git add -A` sweeps up everything.
+commit-msg.txt

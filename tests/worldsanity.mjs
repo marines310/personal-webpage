@@ -278,5 +278,44 @@ chk('and the collider is lifted onto the surface you can actually see',
     /surfaceLift\(terrain\.claimAt\(/.test(code),
     'the car will drive below the grass again')
 
+// ---------------------------------------------------------------------------
+console.log('\n10. Nothing on the published site is a placeholder')
+
+// This is a PUBLIC site with a domain on it now, so a leftover
+// `https://your-blog-url.com` is not a TODO - it is a dead link a visitor can
+// click. It shipped as one: the Writing island rendered it as a live <a href>.
+//
+// The check is on what gets RENDERED, not on whether the string exists. The
+// constant is still there, with a comment telling Mike to replace it, and
+// `blogLink()` returns nothing at all while it is unchanged.
+const zones = readFileSync(ROOT + 'src/world/ZoneManager.js', 'utf8')
+const page = readFileSync(ROOT + 'index.html', 'utf8')
+
+chk('the blog link is gated rather than rendered blind',
+    /\$\{blogLink\(BLOG_URL\)\}/.test(zones) &&
+    !/<a href="\$\{BLOG_URL\}/.test(zones),
+    'a placeholder URL is being rendered as a live link')
+chk('and blogLink() refuses the placeholder it ships with',
+    /const BLOG_PLACEHOLDER = /.test(zones) &&
+    /url === BLOG_PLACEHOLDER\) return ''/.test(zones))
+
+// Anything else obviously unfinished that a visitor could reach.
+for (const bad of ['your-blog-url.com', 'example.com', 'yoursite.com', 'TODO']) {
+  chk(`index.html has no "${bad}"`, !page.includes(bad),
+      'it goes out in the <head> on every page load')
+}
+
+// The link previews, which are most of the reason to have a domain: a bare
+// blue URL on LinkedIn is not what the last three weeks were for.
+for (const tag of ['og:title', 'og:description', 'og:image', 'og:url',
+                   'twitter:card', 'name="description"']) {
+  chk(`index.html carries ${tag}`, page.includes(tag))
+}
+// og:image is fetched by somebody else's server, which has no idea what page
+// the tag came from. A relative path renders a blank card.
+chk('and og:image is absolute, or the card comes up blank',
+    /property="og:image" content="https:\/\//.test(page))
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
+

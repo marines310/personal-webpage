@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Mike Lee">
+  <!--
+    A car on a road, at 16 pixels.
+
+    Drawn as three bands rather than a car shape, because a recognisable car
+    silhouette turns into four grey pixels in a browser tab. What survives at
+    that size is the CONTRAST: a dark square, a pale road across the middle,
+    one warm block on it. Colours are PALETTE's own - night, concrete, and the
+    coral the buildings use.
+  -->
+  <rect width="64" height="64" rx="14" fill="#070713"/>
+  <rect x="0" y="26" width="64" height="16" fill="#d9d3c7"/>
+  <rect x="6" y="32" width="9" height="3" fill="#070713" opacity="0.5"/>
+  <rect x="49" y="32" width="9" height="3" fill="#070713" opacity="0.5"/>
+  <rect x="21" y="27.5" width="22" height="11" rx="3" fill="#e89a86"/>
+  <rect x="25" y="29.5" width="14" height="4.5" rx="1.5" fill="#9fd0dd"/>
+</svg>
