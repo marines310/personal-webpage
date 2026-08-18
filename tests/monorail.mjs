@@ -61,8 +61,25 @@ chk('there is a route at all', !!route)
 const stops = getMonorailStops()
 console.log(`   ${stops.map(i => i.id).join(' -> ')} -> (back to start)`)
 
-chk(`every island gets a stop (${route.stations.length} of ${ISLANDS.length})`,
-    route.stations.length === ISLANDS.length)
+// Every island on the line, and only those. Same story as the port count in
+// tests/ports.mjs: this used to compare against ISLANDS.length, which assumed
+// the railway was compulsory. `monorail: false` has always been honoured by
+// getMonorailStops(); the stunt park and the speedway are the first to use it,
+// because joining the line would move the centroid the whole loop is drawn
+// around and reroute it past every island in the world.
+//
+// Checking both halves is stricter than the count: an island silently dropped
+// off the line and a new one silently added would have cancelled out before.
+const onLine = ISLANDS.filter(i => i.monorail !== false)
+const offLine = ISLANDS.filter(i => i.monorail === false)
+
+chk(`every island on the line gets a stop (${route.stations.length} of ${onLine.length})`,
+    route.stations.length === onLine.length,
+    onLine.filter(i => !route.stations.some(s => s.id === i.id)).map(i => i.id).join(' '))
+
+chk(`and the ${offLine.length} that opted out get none`,
+    offLine.every(i => !route.stations.some(s => s.id === i.id)),
+    offLine.filter(i => route.stations.some(s => s.id === i.id)).map(i => i.id).join(' '))
 chk('no island twice',
     new Set(route.stations.map(s => s.id)).size === route.stations.length)
 chk('the stations are in the order the line meets them',

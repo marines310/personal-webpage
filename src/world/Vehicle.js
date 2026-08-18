@@ -10,6 +10,9 @@ import {
   lampBrightness, blinkOn, gloomLevel, sirenBeat,
   steerIndicator, resolveIndicator, stalkCancels, turnAmount
 } from './vehicleLights.js'
+import {
+  tuningFor, airborneVelocity, isGrounded, groundedWithCoyote, airYaw
+} from './driving.js'
 // World imports Vehicle nowhere, so this is not a cycle - and taking the
 // height from the same table the traffic uses is the point: the sedan you
 // drive is the sedan on the road.
@@ -216,6 +219,12 @@ export class Vehicle {
     // numbers, and for anything but the default sedan those numbers are the
     // ones the traffic already uses for that kind.
     this.size = vehicleSize(kind)
+
+    // The baseline is kept untouched so switching back to a saloon restores a
+    // saloon exactly, rather than compounding whatever the last kind did to
+    // it. See driving.js - the per-kind numbers are multipliers of this.
+    this._baseParams = { ...this.params }
+    this.params = tuningFor(kind, this._baseParams)
     this.params.wheelbase = WHEELBASE_RATIO * this.size.length
 
     this.mesh = this.createMesh()
@@ -254,6 +263,7 @@ export class Vehicle {
 
     this.kind = kind
     this.size = vehicleSize(kind)
+    this.params = tuningFor(kind, this._baseParams)
 
     // The arc grows with the body. Everything else about the handling is
     // deliberately identical between kinds - only the thing that is a
@@ -864,7 +874,13 @@ export class Vehicle {
 
     // Only the throttle needs solid ground; steering geometry still applies
     // while airborne so the car doesn't freeze mid-jump.
-    this.isGrounded = this.game.physics.isGrounded(this.body)
+    //
+    // ONE notion of grounded, asked once a frame and used everywhere below.
+    // It used to be a downward ray with a 1.2-unit reach, which is a different
+    // question from the one `groundedNow()` answers and gave a different
+    // answer at the top of a ramp - so the throttle cut out at a point that
+    // had nothing to do with where the car actually left the ground.
+    this.isGrounded = this.updateGrounded(delta)
 
     const maxForward = boost ? p.maxForwardSpeed * p.boostMultiplier : p.maxForwardSpeed
     const accelForward = boost ? p.forwardAccel * p.boostMultiplier : p.forwardAccel
@@ -899,10 +915,20 @@ export class Vehicle {
           speed + p.reverseAccel * throttle * delta
         )
       }
-    } else {
+    } else if (this.isGrounded) {
       // Coasting - roll to a stop gradually, never instantly
       this.currentSpeed = this.approach(speed, 0, p.rollingResistance * delta)
     }
+    // Airborne and off the throttle, the speed is simply KEPT. Rolling
+    // resistance is friction between a tyre and a road, and there is no road.
+    //
+    // This matters more than it sounds. `throttle` is forced to zero the
+    // moment the wheels leave the ground, so before this the coast branch ran
+    // through every jump: the monster truck left the lip at 14 and landed
+    // doing noticeably less, and because it has full air control its velocity
+    // IS its speed times its heading, so the whole flight shortened with it.
+    // Measured, the big jump came out at 9.8 units against the 16.8 the
+    // ballistics say - and the ballistics were right.
 
     // ---------------------------------------------------------------
     // 2. Steering angle - eased toward target, reduced at speed
@@ -924,10 +950,18 @@ export class Vehicle {
     const yawRate =
       (this.currentSpeed * Math.tan(this.currentSteering)) / p.wheelbase
 
-    this.body.setAngvel({ x: 0, y: yawRate, z: 0 }, true)
+    // In the air there are no tyres to turn against, so the bicycle model
+    // does not apply and using it raw is absurd: the monster truck's lock and
+    // short wheelbase come out at five radians a second, which would let it
+    // spin four times over a two-second jump. `airYaw()` scales it back to
+    // what the kind is allowed - see driving.js.
+    this.body.setAngvel(
+      { x: 0, y: this.isGrounded ? yawRate : airYaw(yawRate, this.params), z: 0 },
+      true)
 
-    // Hard cornering scrubs off a little speed, like real tyres
-    if (p.corneringDrag > 0) {
+    // Hard cornering scrubs off a little speed, like real tyres - which is
+    // exactly why it does not apply in mid-air either.
+    if (p.corneringDrag > 0 && this.isGrounded) {
       this.currentSpeed = this.approach(
         this.currentSpeed,
         0,
@@ -954,9 +988,33 @@ export class Vehicle {
     const vel = this.body.linvel()
 
     if (!this.isGrounded) {
-      // Airborne: let gravity and momentum do their thing, but keep our
-      // bookkeeping in sync so landing doesn't produce a jolt.
+      // Airborne. Gravity owns the vertical; what happens horizontally is the
+      // whole difference between the three vehicles - see `airControl` in
+      // driving.js and `airborneVelocity()`.
+      //
+      // This used to be an unconditional early return, and that was the bug
+      // that made the stunt park's big jump behave identically for all three
+      // kinds: `airborneVelocity()` was written, tested and imported, and the
+      // code that called it was three lines further down than the `return`.
+      // Measured before the fix, holding full lock from the moment the wheels
+      // left the ramp moved the monster truck 0.4 units sideways over a
+      // 20-unit flight. Which is to say: none.
       this._planarVel.set(vel.x, 0, vel.z)
+
+      const air = this.params.airControl || 0
+      if (air > 0) {
+        const wanted = {
+          x: this._forwardDir.x * this.currentSpeed,
+          z: this._forwardDir.z * this.currentSpeed
+        }
+        const flown = airborneVelocity(wanted, vel, false, air)
+        this.body.setLinvel({ x: flown.x, y: vel.y, z: flown.z }, true)
+        this._planarVel.set(flown.x, 0, flown.z)
+      }
+
+      // Either way, keep the bookkeeping honest: `currentSpeed` is what the
+      // HUD, the camera and the engine note all read, and landing with a
+      // stale one produces a jolt.
       this.currentSpeed = this._planarVel.dot(this._forwardDir)
       return
     }
@@ -990,14 +1048,83 @@ export class Vehicle {
     const falling = this.currentSpeed *
       (slope.dx * this._forwardDir.x + slope.dz * this._forwardDir.z)
 
+    // Grounded or airborne, and it changes what the horizontal velocity is
+    // allowed to be. See driving.js: on the ground the velocity IS the
+    // heading times the speed, set outright, which is what makes the car feel
+    // planted. In the air that same rule turns a jump into a flat steerable
+    // glide, because the speed never decays and a flick of the wheel
+    // redirects all of it sideways.
+    //
+    // Nothing in the world could launch a car until the jump course, so this
+    // was never wrong before and is unavoidably wrong now.
+    // `this.isGrounded` rather than asking again: it is one fact about this
+    // frame, it costs a walk over the body's contacts to work out, and two
+    // answers to the same question in one frame is how they come to disagree.
+    const grounded = this.isGrounded
+    const desired = {
+      x: this._forwardDir.x * this.currentSpeed + this._lateral.x * lateralKept,
+      z: this._forwardDir.z * this.currentSpeed + this._lateral.z * lateralKept
+    }
+    const flat = airborneVelocity(
+      desired, vel, grounded, this.params.airControl ?? 0)
+
     this.body.setLinvel(
       {
-        x: this._forwardDir.x * this.currentSpeed + this._lateral.x * lateralKept,
-        y: falling < 0 ? Math.min(vel.y, falling) : vel.y,
-        z: this._forwardDir.z * this.currentSpeed + this._lateral.z * lateralKept
+        x: flat.x,
+        // Only pinned DOWN to the slope while grounded. Doing it in mid-air
+        // would drag the car back onto the hill it just left.
+        y: (grounded && falling < 0) ? Math.min(vel.y, falling) : vel.y,
+        z: flat.z
       },
       true
     )
+  }
+
+  /**
+   * Is the vehicle standing on something?
+   *
+   * Asked of the physics engine, which knows exactly, rather than measured
+   * with a downward ray, which needs a threshold nobody could justify. This
+   * returned a hardcoded `true` for a whole stage while that threshold was
+   * being argued about; `Physics.contactNormals()` records what the argument
+   * was and how it ended.
+   *
+   * The array is kept on the vehicle and refilled in place. This runs every
+   * frame, and a fresh array sixty times a second for a whole session is
+   * garbage nobody needs to collect.
+   */
+  groundedNow() {
+    if (!this.body || !this.game.physics) return true
+    if (!this._contactNormals) this._contactNormals = []
+    return isGrounded(
+      this.game.physics.contactNormals(this.body, this._contactNormals))
+  }
+
+  /**
+   * Grounded for THIS frame, contacts plus coyote time.
+   *
+   * Called exactly once a frame, at the top of the driving update, and every
+   * other question about the ground reads `this.isGrounded`. Two things follow
+   * from that: the contact walk happens once rather than three times, and
+   * nothing in a frame can disagree with anything else about whether the car
+   * is on the ground - which matters more, because the answer decides the
+   * throttle, the yaw and the velocity, and those three disagreeing is a car
+   * that accelerates while sliding sideways through the air.
+   *
+   * See COYOTE_TIME in driving.js for why the raw contact answer is not used
+   * directly. The short version is a measurement: without it a saloon driven
+   * hard spent 28.7% of its frames genuinely airborne, over kerbs and road
+   * seams, and it felt like it.
+   */
+  updateGrounded(delta) {
+    const touching = this.groundedNow()
+    this._offGroundFor = touching ? 0 : (this._offGroundFor || 0) + delta
+
+    // The ray is only asked when the contacts have already said no, which is
+    // most frames skipped: a walk over the body's contacts is 70 microseconds
+    // and a raycast is not free either.
+    const below = touching ? 0 : this.game.physics.groundDistance(this.body)
+    return groundedWithCoyote(touching, below, this._offGroundFor)
   }
 
   postPhysicsUpdate(delta) {

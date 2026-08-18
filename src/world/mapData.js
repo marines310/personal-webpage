@@ -145,6 +145,118 @@ export const ISLANDS = [
       { x: -26, z: -26, radius: 48, height: 4 },
       { x: 34, z: 24, radius: 40, height: 2.5 }
     ]
+  },
+
+  // ==========================================================================
+  // THE TWO MOTORSPORT ISLANDS
+  // ==========================================================================
+  // Added 17 August 2026. These are not places to read about somebody's
+  // career - they are two courses, and everything below is in service of
+  // that.
+  //
+  // THEY ARE APPENDED, AND THAT IS LOAD-BEARING. The world is drawn from one
+  // shared random sequence walked island by island in this array's order (see
+  // World.rand()), so an island INSERTED anywhere above would shift every draw
+  // after it and quietly regenerate the whole map. At the end, they draw last
+  // and disturb nothing.
+  //
+  // Every flag below is there to keep them inert:
+  //
+  //   theme: 'plain'   no scatter, and no fire/police/hospital station -
+  //                    getStations() skips plain islands, so the twenty-odd
+  //                    service vehicles carry on exactly as they were.
+  //   no `grid`        no street grid, so no plots and no buildings.
+  //   noTraffic: true  a ring road like anywhere else, so the bridge lands on
+  //                    a real road and the network has no dead end - but no AI
+  //                    vehicle is ever placed on it. See makeTraffic(). A
+  //                    circuit with a bus on it is not a circuit.
+  //   port: false      no quay. Ports are scored against open water across
+  //                    the WHOLE map, so a new port would re-cut the sea
+  //                    lanes and move every ship.
+  //   monorail: false  the line's route is a loop through every island that
+  //                    doesn't opt out; joining it would move the centroid
+  //                    it is drawn around and reroute the entire railway.
+  //   bare: true       no wildflowers, no seasonal decorations - see
+  //                    World.decorateIsland() for why this one matters most.
+  //   palms: 0, hills: []
+  //
+  // Between them those make the two islands cost ZERO draws from the shared
+  // sequence, which is what `tools/mapFingerprint.mjs` is for: run it before
+  // and after and the six original islands come out identical, line for line.
+  //
+  // The positions were SEARCHED FOR rather than chosen, and the search is
+  // worth reading before moving either of them, because the obvious answer
+  // is wrong.
+  //
+  // tools/placeIsland.mjs does the geometry: a channel of open water to every
+  // other coastline, a span near the 130 units every other crossing uses,
+  // clearance from the existing bridges, and clearance from the airport -
+  // which does not appear in this file at all, because it sites ITSELF in
+  // whatever open water is left. That search says the widest gap by far is
+  // north-west, between CONTACT and ABOUT.
+  //
+  // North-west is the one place neither island can go. tools/islandImpact.mjs
+  // is what found it: the hub's own quay faces north-west, a port's bearing is
+  // scored partly on HOW FAR IT IS FROM THE NEAREST BRIDGE, and a sixth
+  // crossing on that bearing pushed the hub's harbour round to the south side
+  // of the island - taking the quay road, the street grid laid out around it,
+  // and two buildings with it. The gap is wide precisely BECAUSE the harbour
+  // is there. Measured impact of these two, against the same tool: the hub
+  // gains two landings and two approach roads, and loses one building that
+  // one of those roads now runs through. Nothing else in the world moves -
+  // not a port, not a station, not the garage, not the airport, not the
+  // monorail, not one lane on any other island.
+  //
+  // Both also sit inside today's `getMapExtent()`, which is a maximum over
+  // every island, so the shipping ring, the sea lanes and the minimap scale
+  // are unchanged as well.
+  {
+    id: 'stunt',
+    x: 165.4,
+    z: 159.8,
+    radius: 72,
+    theme: 'plain',
+    accent: 0xff8c42,
+    name: 'STUNT PARK',
+    palms: 0,
+    // 'long': roughly 75 across and 190 down the Z axis. A jump needs a
+    // RUN-UP more than it needs floor area, and a long island is a run-up
+    // with a coastline round it. A monster truck reaches its top speed of 14
+    // in about 25 units, so the straight inside the ring road here is four
+    // times longer than the approach needs to be.
+    //
+    // An L was tried first and thrown away: `tests/ring.mjs` caught it. The
+    // ring road is inset from the coastline, and an inset reflex corner folds
+    // through itself - the ring came out with a 0.2-unit hairpin in it and
+    // ran 1.4 units from the water. Concave coastlines and ring roads do not
+    // mix, which is worth knowing before choosing a shape for its floor plan.
+    shape: 'long',
+    shapeSeed: 7,
+    hills: [],
+    port: false,
+    monorail: false,
+    noTraffic: true,
+    bare: true
+  },
+  {
+    id: 'speedway',
+    x: -280.2,
+    z: -85.7,
+    radius: 76,
+    theme: 'plain',
+    accent: 0xef4444,
+    name: 'SPEEDWAY',
+    palms: 0,
+    // Deliberately the 'wide' preset: about 200 across and 80 deep. A circuit
+    // wants two long straights and two ends to turn at, and an island that is
+    // already that shape gives you one without fighting the coastline.
+    shape: 'wide',
+    shapeSeed: 3,
+    hills: [],
+    port: false,
+    monorail: false,
+    noTraffic: true,
+    bare: true
   }
 ]
 
@@ -153,5 +265,18 @@ export const BRIDGES = [
   { from: 'hub', to: 'projects' },
   { from: 'hub', to: 'skills' },
   { from: 'hub', to: 'blog' },
-  { from: 'hub', to: 'contact' }
+  { from: 'hub', to: 'contact' },
+
+  // Appended for the same reason the islands are: bridges are built in this
+  // order and the lamps on their railings draw from the shared sequence, so
+  // a new crossing at the end changes nothing about the five above it.
+  //
+  // Both run from the hub, because the hub is where the garage is: pick the
+  // monster truck, come out of the drive, and the way there is one crossing
+  // away rather than three. STUNT goes north-east between ABOUT and PROJECTS,
+  // SPEEDWAY west-south-west between BLOG and CONTACT - the two gaps that
+  // leave the hub's own harbour bearing alone. See the note above the islands
+  // for why the wider north-west gap could not be used.
+  { from: 'hub', to: 'stunt' },
+  { from: 'hub', to: 'speedway' }
 ]

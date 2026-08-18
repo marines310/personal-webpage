@@ -63,10 +63,28 @@ const ports = getPorts()
 const graph = getSeaGraph()
 
 // ---------------------------------------------------------------------------
-console.log('1. Every island gets a port, in a sensible place\n')
+console.log('1. Every island that wants a port gets one, in a sensible place\n')
 
-chk(`one port per island (${ports.length} of ${ISLANDS.length})`,
-    ports.length === ISLANDS.length)
+// This used to read `ports.length === ISLANDS.length`, which was true of the
+// six islands that existed when it was written, and quietly assumed a harbour
+// was compulsory. `port: false` has been honoured by getPort() the whole time
+// - nothing had ever set it. The stunt park and the speedway do, so the check
+// is now in two halves: everybody who should have one has one, and everybody
+// who opted out has none.
+//
+// That is a STRICTER test than the count was, not a looser one. The old
+// version would have passed a world where CONTACT quietly lost its quay and
+// the speedway grew one.
+const wantPorts = ISLANDS.filter(i => i.port !== false)
+const optedOut = ISLANDS.filter(i => i.port === false)
+
+chk(`one port per island that wants one (${ports.length} of ${wantPorts.length})`,
+    ports.length === wantPorts.length,
+    wantPorts.filter(i => !ports.some(p => p.island === i)).map(i => i.id).join(' '))
+
+chk(`and no port on the ${optedOut.length} that opted out`,
+    optedOut.every(i => !ports.some(p => p.island === i)),
+    optedOut.filter(i => ports.some(p => p.island === i)).map(i => i.id).join(' '))
 
 const big = ports.filter(p => p.big)
 console.log(`   ${big.length} cargo ports: ${big.map(p => p.id).join(', ')}`)

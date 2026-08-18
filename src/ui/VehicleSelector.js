@@ -26,7 +26,9 @@ const LABELS = {
   police: 'Police Car',
   ambulance: 'Ambulance',
   fire: 'Fire Engine',
-  bus: 'City Bus'
+  bus: 'City Bus',
+  monster: 'Monster Truck',
+  race: 'Race Car'
 }
 
 /** How long the roll-out takes, and how far it goes. */

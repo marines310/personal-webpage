@@ -341,12 +341,24 @@ console.log('\n7. One lamp builder, and one thing writing each material')
 
 const world = readFileSync(ROOT + 'src/world/World.js', 'utf8')
 
-const builders = ['buildCar', 'buildPickup', 'buildSUV', 'buildPoliceCar',
-                  'buildAmbulance', 'buildFireEngine', 'buildBus']
+// The builder list is DERIVED from buildTrafficVehicle's switch, not written
+// out here. It used to be a hardcoded array of seven names, and the day a
+// monster truck and a racing car were added it failed with "9 vs 7" - the
+// code was right and the list was stale. That is the same trap as
+// approachedit.mjs copying three named files out of a folder: a list that has
+// to be kept in step with something else is a copy of it, and it goes stale.
+const dispatch = world.slice(world.indexOf('buildTrafficVehicle(v) {'))
+  .slice(0, world.slice(world.indexOf('buildTrafficVehicle(v) {')).indexOf('\n  }'))
+const builders = [...new Set(
+  [...dispatch.matchAll(/return this\.(build[A-Za-z]+)\(/g)].map(m => m[1])
+)]
 const lamped = (world.match(/this\.addVehicleLamps\(/g) || []).length
 console.log(`   ${builders.length} vehicle builders, ${lamped} calls to the lamp builder`)
+console.log(`   ${builders.join(', ')}`)
+chk('every builder is reachable from buildTrafficVehicle', builders.length >= 7,
+    builders.join(', '))
 chk('every kind of vehicle gets lamps from the one builder',
-    lamped === builders.length, `${lamped} vs ${builders.length}`)
+    lamped === builders.length, `${lamped} lamp calls vs ${builders.length} builders`)
 chk('and there is no second lamp builder left behind',
     !/addLampsAndTail/.test(world))
 

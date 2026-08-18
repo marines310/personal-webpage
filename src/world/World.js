@@ -7,6 +7,8 @@ import {
   getBridges,
   getIslandRoads,
   getIsland,
+  getIslandRing,
+  DEFAULT_ROAD_WIDTH,
   pointAlong,
   distanceToNearestRoad,
   getSpawnIsland,
@@ -153,12 +155,20 @@ import {
   CRASH_CARS, CRASH_SIDE_OFFSET, crashBlocks
 } from './ambulanceGame.js'
 import { chooseMission } from './missions.js'
+import {
+  newRaceState, stepRace, raceHud, gridOffset, gridSide,
+  RACE_LAPS, RACE_FIELD, RACE_PACE
+} from './raceGame.js'
 import { BUILDING_MODELS, TREE_MODELS } from './modelManifest.js'
 import {
   insetPolygon, insetPolygonRadial, polygonCentroid, pointInPolygon,
   rayDistanceToBoundary
 } from './shapes.js'
 import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
+import {
+  COURSE_GROUND, COURSE_ROAD, wedgeSolid, humpWedges, pointAlongRing,
+  STUNT_COURSE, RACE_LINE_AT, GRID_COLUMN_OFFSET
+} from './course.js'
 
 /**
  * World - builds the geography described by islandLayout.js.
@@ -264,7 +274,12 @@ export const TRAFFIC_HEIGHTS = {
   police: 1.8,
   ambulance: 2.4,
   fire: 2.7,
-  bus: 3
+  bus: 3,
+  // Tall on purpose, and low on purpose. Ride height is the monster truck's
+  // whole reason for existing and the racing car's whole reason for being
+  // quick, so it is the first number either of them gets.
+  monster: 3.2,
+  race: 1.1
 }
 
 export const PALETTE = {
@@ -668,6 +683,7 @@ export class World {
     this.createIslands()
     this.createBridges()
     this.createConnectingRoads()
+    this.createCourses()
     this.createMonorail()
     this.createPorts()
     this.createShips()
@@ -686,6 +702,8 @@ export class World {
     this.createFireEffects()
     this.police = newPoliceState()
     this.ambulance = newAmbulanceState()
+    this.race = newRaceState()
+    this.createRaceField()
     this.crashSites = this.findCrashSites()
     this.createWreck()
   }
@@ -2357,8 +2375,196 @@ export class World {
       case 'convertible': return this.buildCar(v, true)
       case 'pickup': return this.buildPickup(v)
       case 'suv': return this.buildSUV(v)
+      case 'monster': return this.buildMonsterTruck(v)
+      case 'race': return this.buildRaceCar(v)
       default: return this.buildCar(v, false)
     }
+  }
+
+  /**
+   * The monster truck.
+   *
+   * Everything about it is proportion rather than detail: a short body held
+   * absurdly high on four wheels nearly as tall as the body itself. At the
+   * distance this is usually seen, silhouette is the whole of recognition -
+   * so the wheels are the model, and the bodywork is what sits on top of
+   * them.
+   *
+   * The axles are drawn because you can see straight under it, which is the
+   * point of the thing. A gap with nothing in it reads as a mistake.
+   */
+  buildMonsterTruck(v) {
+    const group = new THREE.Group()
+    const length = TRAFFIC_LENGTHS[v.kind]
+    const width = TRAFFIC_WIDTHS[v.kind]
+
+    // Big, loud, and never the same twice.
+    const paint = this.pick([
+      PALETTE.carRed, PALETTE.carBlue, PALETTE.carGreen, PALETTE.signPink
+    ])
+    const body = new THREE.MeshStandardMaterial({
+      color: paint, roughness: 0.5, metalness: 0.25, flatShading: true
+    })
+    group.userData.body = body
+
+    const chrome = new THREE.MeshStandardMaterial({
+      color: PALETTE.bollard, roughness: 0.4, metalness: 0.7, flatShading: true
+    })
+
+    // The chassis rails, up where a monster truck's chassis lives.
+    const RIDE = 1.55
+    for (const side of [1, -1]) {
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(0.16, 0.22, length * 0.92), chrome)
+      rail.position.set(side * width * 0.26, RIDE - 0.28, 0)
+      group.add(rail)
+    }
+
+    // Live axles, front and back, visible through the gap.
+    for (const along of [length * 0.31, -length * 0.31]) {
+      const axle = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.11, 0.11, width * 1.02, 8), chrome)
+      axle.rotation.z = Math.PI / 2
+      axle.position.set(0, 1.1, along)
+      group.add(axle)
+    }
+
+    // The cab, short and square.
+    const shell = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.86, 0.95, length * 0.62), body)
+    shell.position.set(0, RIDE + 0.42, length * 0.02)
+    shell.castShadow = true
+    group.add(shell)
+
+    const roof = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.78, 0.55, length * 0.34), body)
+    roof.position.set(0, RIDE + 1.14, length * 0.08)
+    roof.castShadow = true
+    group.add(roof)
+
+    const glass = new THREE.MeshStandardMaterial({
+      color: PALETTE.glass, roughness: 0.2, metalness: 0.5,
+      emissive: new THREE.Color(PALETTE.windowLit), emissiveIntensity: 0
+    })
+    this.registerNightLight(glass, 0.5)
+
+    const screen = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.68, 0.42, 0.08), glass)
+    screen.position.set(0, RIDE + 1.12, length * 0.08 + length * 0.17)
+    group.add(screen)
+
+    // A roll bar, because every one of these has one.
+    for (const side of [1, -1]) {
+      const leg = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.07, 0.07, 0.85, 6), chrome)
+      leg.position.set(side * width * 0.3, RIDE + 1.3, -length * 0.22)
+      group.add(leg)
+    }
+    const bar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.07, width * 0.6, 6), chrome)
+    bar.rotation.z = Math.PI / 2
+    bar.position.set(0, RIDE + 1.72, -length * 0.22)
+    group.add(bar)
+
+    this.addVehicleLamps(group, length, width, TRAFFIC_HEIGHTS[v.kind])
+    // 1.05 against a saloon's 0.45. This is the number the jump course is
+    // designed around, so it is the one to change if the course ever feels
+    // wrong - not the ramps.
+    this.addWheels(group, length, width, 1.05)
+    return group
+  }
+
+  /**
+   * The racing car.
+   *
+   * Long, flat and pointed, with the wheels outside the bodywork - which is
+   * the one detail that separates a racing car from a fast road car at a
+   * glance, and the reason `addWheels` is given a track wider than the shell.
+   */
+  buildRaceCar(v) {
+    const group = new THREE.Group()
+    const length = TRAFFIC_LENGTHS[v.kind]
+    const width = TRAFFIC_WIDTHS[v.kind]
+
+    const paint = this.pick([
+      PALETTE.carRed, PALETTE.signCyan, PALETTE.carBlue, PALETTE.crane
+    ])
+    const body = new THREE.MeshStandardMaterial({
+      color: paint, roughness: 0.35, metalness: 0.45, flatShading: true
+    })
+    group.userData.body = body
+
+    const dark = new THREE.MeshStandardMaterial({
+      color: PALETTE.tyre, roughness: 0.8, flatShading: true
+    })
+
+    // The tub: narrow, and barely off the ground.
+    const tub = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.5, 0.34, length * 0.62), body)
+    tub.position.set(0, 0.44, -length * 0.04)
+    tub.castShadow = true
+    group.add(tub)
+
+    // Nose, tapering forward. Two boxes rather than a cone: the whole world
+    // is flat-shaded and a smooth nose would be the only round thing in it.
+    const nose = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.34, 0.22, length * 0.3), body)
+    nose.position.set(0, 0.4, length * 0.4)
+    group.add(nose)
+
+    const tip = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.2, 0.16, length * 0.12), body)
+    tip.position.set(0, 0.38, length * 0.57)
+    group.add(tip)
+
+    // Front wing, wide and low, right at the front.
+    const frontWing = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 1.02, 0.07, length * 0.1), body)
+    frontWing.position.set(0, 0.24, length * 0.56)
+    group.add(frontWing)
+
+    // Sidepods.
+    for (const side of [1, -1]) {
+      const pod = new THREE.Mesh(
+        new THREE.BoxGeometry(width * 0.2, 0.3, length * 0.36), body)
+      pod.position.set(side * width * 0.33, 0.42, -length * 0.02)
+      group.add(pod)
+    }
+
+    // Cockpit surround and the driver's helmet.
+    const halo = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.42, 0.16, length * 0.16), dark)
+    halo.position.set(0, 0.66, length * 0.02)
+    group.add(halo)
+
+    const helmet = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.22, 0.22, 0.26), dark)
+    helmet.position.set(0, 0.72, -length * 0.02)
+    group.add(helmet)
+
+    // Airbox behind the driver, and the rear wing on its two endplates.
+    const airbox = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.26, 0.34, length * 0.16), body)
+    airbox.position.set(0, 0.74, -length * 0.16)
+    group.add(airbox)
+
+    for (const side of [1, -1]) {
+      const plate = new THREE.Mesh(
+        new THREE.BoxGeometry(0.07, 0.42, length * 0.12), body)
+      plate.position.set(side * width * 0.42, 0.66, -length * 0.44)
+      group.add(plate)
+    }
+    const rearWing = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.9, 0.08, length * 0.12), body)
+    rearWing.position.set(0, 0.86, -length * 0.44)
+    group.add(rearWing)
+
+    this.addVehicleLamps(group, length, width, TRAFFIC_HEIGHTS[v.kind])
+    // Wheels OUTSIDE the shell, which is the whole silhouette. addWheels
+    // tracks them off the width, so it is given the full width while the
+    // bodywork is built at half of it.
+    this.addWheels(group, length, width * 1.24, 0.46)
+    return group
   }
 
   /** Wheels, shared by everything on the road. */
@@ -4778,6 +4984,26 @@ export class World {
     const palmCount = island.palms !== undefined ? island.palms : 8
     if (palmCount > 0) this.ringOfPalms(island, palmCount, roads)
 
+    // `bare: true` means no sown ground cover - no wildflowers, no seasonal
+    // decorations. It is set on the two motorsport islands, for two reasons
+    // that happen to agree.
+    //
+    // The content reason: a stunt park and a racing circuit are GRADED. Every
+    // square metre is engineered - hardstanding, gravel trap, banking - and a
+    // meadow growing up through it reads as a field somebody left a ramp in.
+    //
+    // The mechanical reason, which is why this is a flag rather than a
+    // judgement call inside sowFlowers(): these two sowings are the last thing
+    // an island does, and on a plain, road-less island they are the ONLY draws
+    // it makes from the world's random sequence. That sequence is shared and
+    // positional - see rand() - so a few hundred draws here would move every
+    // container's colour, every ship's deck cargo and every traffic car's
+    // paint, right across the world. Skipping them is what lets two islands be
+    // added with the other six coming out byte for byte identical, which is a
+    // thing a test can assert rather than a thing to hope for.
+    // See tools/mapFingerprint.mjs.
+    if (island.bare) return
+
     this.sowFlowers(island, roads)
     this.sowDecorations(island, roads)
   }
@@ -7189,6 +7415,441 @@ export class World {
     this.addLightPool(px, pz, reach, 1)
   }
 
+  // -------------------------------------------------------------
+  // The two courses
+  // -------------------------------------------------------------
+
+  /**
+   * The stunt park's jumps and the speedway's circuit furniture.
+   *
+   * Called after the roads and before the ports, and it draws NOTHING from
+   * `this.rand()` - not one call, anywhere below this line. That is deliberate
+   * and it is worth keeping. The world's randomness is a single shared
+   * sequence walked in build order, so a course that took a few dozen draws
+   * would move every container's colour, every ship's cargo and every traffic
+   * car's paint on the six islands that were here first. Everything here is
+   * laid out from `course.js`, which is arithmetic, so there is nothing to
+   * draw for.
+   */
+  createCourses() {
+    this.buildStuntPark()
+    this.buildSpeedway()
+  }
+
+  /**
+   * One ramp: the mesh and the collider, from the same triangles.
+   *
+   * This is the whole reason `wedgeSolid()` returns vertices rather than a
+   * description. Every collider in this world before the courses was a box
+   * with a yaw or a cylinder standing on end - `Physics.js` has no pitch in
+   * its API at all - so a ramp has to be a triangle mesh. Building the picture
+   * and the collision from one array means they cannot drift apart, which is
+   * the mistake this codebase keeps making: the kerb drawn 0.12 above a
+   * collider that followed the ground, the car drawn 2.57 wide against a 1.9
+   * collider.
+   *
+   * World-space vertices with the mesh left at the origin, the same way the
+   * island ground is built, so there is no transform to get wrong either.
+   */
+  buildRamp(island, spec, material, markLip = true) {
+    const solid = wedgeSolid({
+      ...spec,
+      x: island.x + spec.x,
+      z: island.z + spec.z
+    })
+
+    const geometry = new THREE.BufferGeometry()
+    const positions = new Float32Array(solid.positions)
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geometry.computeVertexNormals()
+
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    this.game.add(mesh)
+
+    this.game.physics.createStaticTrimesh(
+      positions, new Uint32Array(solid.indices))
+
+    // A bright bar along the lip.
+    //
+    // Not decoration. Photographed from above, the first version of this park
+    // was a brown field: the ramps were built in `timber` (0x9a7350) standing
+    // on dirt (`cliff`, 0x9c8a6d), which are the same colour to within a few
+    // percent, so from any distance at all there was nothing to see and
+    // nothing to aim at. Hazard paint on the edge of a ramp is what a real
+    // course does, for the same reason.
+    if (markLip) {
+      const stripe = new THREE.Mesh(
+        new THREE.BoxGeometry(spec.width, 0.28, 0.9), this.courseMarkMaterial())
+      stripe.position.set(solid.lip.x, solid.lip.y + 0.1, solid.lip.z)
+      stripe.rotation.y = spec.heading
+      this.game.add(stripe)
+    }
+
+    return solid
+  }
+
+  /** The hazard paint. One material for every mark on both courses. */
+  courseMarkMaterial() {
+    if (!this._courseMark) {
+      this._courseMark = new THREE.MeshStandardMaterial({
+        color: PALETTE.crane, roughness: 0.8, flatShading: true
+      })
+    }
+    return this._courseMark
+  }
+
+
+  buildStuntPark() {
+    const island = getIsland('stunt')
+    if (!island) return
+
+    const ring = getIslandRing(island)
+    if (!ring) return
+
+    // Dirt light, ramps dark. The other way round - `timber` ramps on `cliff`
+    // dirt - was tried and the two are the same colour to within a few
+    // percent, so the whole park photographed as an empty brown field.
+    const dirtMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.sandWet, roughness: 0.98, flatShading: true
+    })
+    const rampMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.bollard, roughness: 0.92, flatShading: true
+    })
+    const hazardMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.crane, roughness: 0.85, flatShading: true
+    })
+
+    // The hardstanding: the ring road's own outline, pulled inwards. A
+    // rectangle was tried and looked exactly like what it was - see
+    // STUNT_PAD_INSET.
+    this.buildInfield(island, ring, STUNT_COURSE.padInset, dirtMat)
+
+    // The rollers. Low, close together, and the first thing you meet coming
+    // out of the entrance - impossible to fail, and they teach the one thing
+    // the park is about.
+    const r = STUNT_COURSE.rollers
+    for (let i = 0; i < r.count; i++) {
+      const z = r.from + i * r.spacing
+      for (const wedge of humpWedges({
+        x: 0, z, heading: 0, up: r.length, down: r.length,
+        width: r.width, height: r.height
+      })) {
+        this.buildRamp(island, wedge, rampMat)
+      }
+    }
+
+    // The tabletop: up, along the flat, and down the far side. The flat top is
+    // an ordinary box because it IS one - the wedge is only needed where there
+    // is a slope, and a box collider is cheaper than a trimesh.
+    const t = STUNT_COURSE.tabletop
+    this.buildRamp(island, {
+      x: 0, z: t.z, heading: 0, length: t.up, width: t.width, height: t.height
+    }, rampMat)
+
+    const topZ = t.z + t.up + t.top / 2
+    const topY = COURSE_GROUND + t.height - (t.height + 0.4) / 2
+    const topMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(t.width, t.height + 0.4, t.top), rampMat)
+    topMesh.position.set(island.x, topY, island.z + topZ)
+    topMesh.castShadow = true
+    topMesh.receiveShadow = true
+    this.game.add(topMesh)
+    this.game.physics.createStaticBoxAt(
+      island.x, topY, island.z + topZ, t.width, t.height + 0.4, t.top, 0)
+
+    // The far side, built backwards from its own low end so its crest meets
+    // the table with no lip to catch a wheel.
+    this.buildRamp(island, {
+      x: 0, z: t.z + t.up + t.top + t.down, heading: Math.PI,
+      length: t.down, width: t.width, height: t.height
+    }, rampMat)
+
+    // THE SIDEWINDER: the kicker, and the landing twenty units on and nine to
+    // the west of where it points you.
+    const jump = STUNT_COURSE.bigJump
+    this.buildRamp(island, jump.takeOff, hazardMat)
+    for (const wedge of humpWedges(jump.landing)) {
+      this.buildRamp(island, wedge, rampMat)
+    }
+
+    this.buildStuntScrap(island)
+    this.buildStuntGantry(island, hazardMat)
+    this.buildJumpArrow(island)
+  }
+
+  /**
+   * The flat middle of an island, cut from its ring road.
+   *
+   * `insetPolygon` on the ring gives the exact interior, whatever shape the
+   * coast turned out to be, so there is no rectangle to poke out over a beach
+   * at the narrow end. Drawn and not collided: both course islands are dead
+   * flat, so the terrain trimesh underneath is already a perfectly good
+   * surface, and a second collider a few centimetres above the first is how
+   * you get a car that judders along the seam between them.
+   */
+  buildInfield(island, ring, inset, material) {
+    const inner = insetPolygon(ring, inset)
+    if (!inner || inner.length < 3) return null
+
+    const shape = new THREE.Shape()
+    shape.moveTo(inner[0].x, -inner[0].z)
+    for (let i = 1; i < inner.length; i++) shape.lineTo(inner[i].x, -inner[i].z)
+    shape.closePath()
+
+    const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), material)
+    // ShapeGeometry is built in XY, so it is laid down by a quarter turn about
+    // X - and that flips Z, which is why the outline above is fed in with -z.
+    mesh.rotation.x = -Math.PI / 2
+    mesh.position.set(island.x, COURSE_GROUND + 0.02, island.z)
+    mesh.receiveShadow = true
+    this.game.add(mesh)
+    return mesh
+  }
+
+  /**
+   * The wrecks along the western side of the stunt park.
+   *
+   * Built from the traffic's own vehicle builders, which is the same trick the
+   * roadside crash uses: a row of boxes reads as a row of boxes, and these are
+   * the cars you have spent all session driving past. Laid out on a fixed
+   * lattice rather than scattered, because scattering would mean drawing from
+   * the world's shared random sequence - see createCourses().
+   */
+  buildStuntScrap(island) {
+    const s = STUNT_COURSE.scrap
+    const kinds = ['sedan', 'pickup', 'suv', 'convertible', 'sedan', 'pickup']
+    const colours = [PALETTE.carRed, PALETTE.carBlue, PALETTE.carSand,
+                     PALETTE.carGreen, PALETTE.carGrey, PALETTE.carWhite]
+
+    let n = -1
+    for (let row = 0; row < s.rows; row++) {
+      for (let i = 0; i < s.perRow; i++) {
+        n++
+        const kind = kinds[n % kinds.length]
+        const x = s.x + row * s.rowGap
+        const z = s.z + i * s.spacing
+        const turn = 1.2 + n * 0.37
+        const mesh = this.buildTrafficVehicle({ kind, colour: colours[n % colours.length] })
+        mesh.position.set(island.x + x, COURSE_GROUND, island.z + z)
+        mesh.rotation.set(0, turn, (n % 2 ? 0.24 : -0.19), 'YXZ')
+        this.game.add(mesh)
+
+        this.game.physics.createStaticBoxAt(
+          island.x + x, COURSE_GROUND + 0.7, island.z + z,
+          TRAFFIC_WIDTHS[kind] || 1.9, 1.4, TRAFFIC_LENGTHS[kind] || 4.4, turn)
+      }
+    }
+  }
+
+  /**
+   * The arrow on the ground from the kicker to the landing.
+   *
+   * The one piece of teaching on the whole course, and it earns its place. The
+   * big jump is gated on STEERING IN THE AIR, which is not a thing anybody has
+   * had to do anywhere else in this world and not a thing a six-year-old will
+   * guess. Everything else here can be worked out by driving at it.
+   *
+   * Painted rather than written, because it has to be readable by somebody who
+   * is going forty and possibly cannot read.
+   */
+  buildJumpArrow(island) {
+    const jump = STUNT_COURSE.bigJump
+    const from = { x: jump.takeOff.x, z: jump.takeOff.z - jump.takeOff.length }
+    const to = { x: jump.landing.x, z: jump.landing.z - jump.landing.up }
+    const material = this.courseMarkMaterial()
+
+    const dx = to.x - from.x
+    const dz = to.z - from.z
+    const span = Math.hypot(dx, dz)
+    if (!(span > 0)) return
+    const heading = Math.atan2(dx, dz)
+
+    // Chevrons rather than one long arrow: a dashed line reads as a direction
+    // to travel and a solid one reads as a barrier.
+    const chevrons = 4
+    for (let i = 0; i < chevrons; i++) {
+      const t = (i + 0.8) / (chevrons + 0.6)
+      const x = island.x + from.x + dx * t
+      const z = island.z + from.z + dz * t
+      for (const side of [-1, 1]) {
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.08, 4.4), material)
+        bar.position.set(
+          x + Math.cos(heading) * side * 1.4,
+          COURSE_GROUND + 0.05,
+          z - Math.sin(heading) * side * 1.4)
+        bar.rotation.y = heading + side * 0.55
+        this.game.add(bar)
+      }
+    }
+  }
+
+  /**
+   * The arch over the big jump's run-up.
+   *
+   * Two legs and a beam, in the same hazard orange as the kicker. It is there
+   * to be seen from three hundred units away: the park is a long thin island
+   * and the whole of it is visible from the bridge, so the one thing that
+   * matters has to look like the one thing that matters.
+   */
+  buildStuntGantry(island, material) {
+    const jump = STUNT_COURSE.bigJump.takeOff
+    const z = island.z + jump.z + 6
+    const span = jump.width + 9
+    const height = 7.5
+
+    for (const side of [-1, 1]) {
+      const leg = new THREE.Mesh(
+        new THREE.BoxGeometry(1.1, height, 1.1), material)
+      leg.position.set(island.x + jump.x + (span / 2) * side,
+                       COURSE_GROUND + height / 2, z)
+      leg.castShadow = true
+      this.game.add(leg)
+      this.game.physics.createStaticBoxAt(
+        island.x + jump.x + (span / 2) * side, COURSE_GROUND + height / 2, z,
+        1.1, height, 1.1, 0)
+    }
+
+    const beam = new THREE.Mesh(
+      new THREE.BoxGeometry(span + 1.1, 1.6, 1.4), material)
+    beam.position.set(island.x + jump.x, COURSE_GROUND + height + 0.8, z)
+    beam.castShadow = true
+    this.game.add(beam)
+  }
+
+  /**
+   * The speedway's furniture.
+   *
+   * The circuit itself is the island's RING ROAD - see mapData.js. That is not
+   * a shortcut: the ring is already a 380-unit oval of proper road with kerbs
+   * and a flattened corridor under it, being a real road is what keeps the
+   * bridge joined to the network, and `noTraffic` on the island is what keeps
+   * the public off it. What is left to build is what makes it read as a
+   * circuit rather than as a road round an empty island.
+   */
+  buildSpeedway() {
+    const island = getIsland('speedway')
+    if (!island) return
+
+    const ring = getIslandRing(island)
+    if (!ring) return
+
+    this.speedwayLine = pointAlongRing(ring, RACE_LINE_AT)
+    if (!this.speedwayLine) return
+    // How far round the ring road's own point list the start line is. Every
+    // race distance is measured from the LINE, so this is the one place the
+    // two origins are reconciled - see circuitAlong().
+    this.speedwayLineAlong = this.speedwayLine.along
+
+    const whiteMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.roadLine, roughness: 0.85, flatShading: true
+    })
+    const kerbMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.ambulanceStripe, roughness: 0.9, flatShading: true
+    })
+
+    const at = this.speedwayLine
+    const fx = Math.sin(at.heading)
+    const fz = Math.cos(at.heading)
+
+    // The start/finish line itself: a broad white bar across the road.
+    const bar = new THREE.Mesh(
+      new THREE.BoxGeometry(DEFAULT_ROAD_WIDTH, 0.1, 1.6), whiteMat)
+    bar.position.set(island.x + at.x, COURSE_ROAD + 0.03, island.z + at.z)
+    bar.rotation.y = at.heading
+    bar.receiveShadow = true
+    this.game.add(bar)
+
+    // The gantry the lights hang off, straddling the line.
+    this.buildStartGantry(island, at, kerbMat)
+
+    // The grid boxes, back down the road from the line.
+    //
+    // ALONG THE CIRCUIT, not along a straight line drawn back from the start.
+    // The first version walked back on a fixed bearing, and this circuit is an
+    // oval - by the sixth box the grid had left the road and was painted on
+    // the beach. `circuitPoint()` is the same thing the field itself is drawn
+    // with, so the boxes are where the cars will be by construction.
+    //
+    // Painted only, with no collider: they are where the cars stop, not
+    // something to stop them.
+    for (let slot = 0; slot < RACE_FIELD + 1; slot++) {
+      const back = gridOffset(slot)
+      const spot = this.circuitPoint(-back)
+      if (!spot) continue
+
+      const across = gridSide(slot) * GRID_COLUMN_OFFSET
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(2.4, 0.1, 5.4), whiteMat)
+      box.position.set(
+        spot.x - Math.cos(spot.heading) * across,
+        COURSE_ROAD + 0.03,
+        spot.z + Math.sin(spot.heading) * across)
+      box.rotation.y = spot.heading
+      this.game.add(box)
+    }
+  }
+
+  /**
+   * The lights over the start/finish line.
+   *
+   * Three lamps in a row - red, amber, green - registered as night emissives
+   * so they carry the same glow the rest of the world's lamps do. The race
+   * itself drives which one is lit; before a race starts they are all dark,
+   * which is what an empty circuit looks like.
+   */
+  buildStartGantry(island, at, material) {
+    const height = 8.5
+    // Just wider than the road. Seven units of overhang either side put one
+    // leg on the beach and one in the grass, because the circuit runs close to
+    // the coast on both sides of the island.
+    const span = DEFAULT_ROAD_WIDTH + 3.5
+    const fx = Math.sin(at.heading)
+    const fz = Math.cos(at.heading)
+    const sx = fz
+    const sz = -fx
+
+    for (const side of [-1, 1]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(1.2, height, 1.2), material)
+      leg.position.set(island.x + at.x + sx * (span / 2) * side,
+                       COURSE_GROUND + height / 2,
+                       island.z + at.z + sz * (span / 2) * side)
+      leg.castShadow = true
+      this.game.add(leg)
+      this.game.physics.createStaticBoxAt(
+        island.x + at.x + sx * (span / 2) * side, COURSE_GROUND + height / 2,
+        island.z + at.z + sz * (span / 2) * side, 1.2, height, 1.2, 0)
+    }
+
+    const beam = new THREE.Mesh(
+      new THREE.BoxGeometry(span + 1.2, 1.8, 1.5), material)
+    beam.position.set(island.x + at.x, COURSE_GROUND + height + 0.9, island.z + at.z)
+    beam.rotation.y = at.heading
+    beam.castShadow = true
+    this.game.add(beam)
+
+    // The three lamps. Kept on the world so the race can light them.
+    this.raceLamps = {}
+    const colours = { red: 0xff2b1c, amber: 0xffb020, green: 0x2bd94a }
+    let i = -1
+    for (const name of ['red', 'amber', 'green']) {
+      i++
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x22252b, roughness: 0.6, flatShading: true,
+        emissive: new THREE.Color(colours[name]), emissiveIntensity: 0
+      })
+      const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 0.6), mat)
+      lamp.position.set(
+        island.x + at.x + sx * (i - 1) * 2.2 - fx * 0.9,
+        COURSE_GROUND + height + 0.9,
+        island.z + at.z + sz * (i - 1) * 2.2 - fz * 0.9)
+      lamp.rotation.y = at.heading
+      this.game.add(lamp)
+      this.raceLamps[name] = mat
+    }
+  }
+
   createHubSign() {
     const spawn = getSpawnIsland()
     if (!spawn) return
@@ -8231,6 +8892,170 @@ export class World {
     })
   }
 
+
+  // -------------------------------------------------------------
+  // The race
+  // -------------------------------------------------------------
+
+  /**
+   * The five cars that come out of the garage.
+   *
+   * Built once, at load, and hidden until a race starts - the same pattern the
+   * wreck and the fire use. Building them on demand would mean five vehicle
+   * meshes and their materials arriving in one frame the moment a child drove
+   * onto the circuit, which is exactly the wrong moment for a stutter.
+   *
+   * Colours from the traffic palette rather than new ones, so a racing car is
+   * recognisably one of this world's cars in a different shape.
+   */
+  createRaceField() {
+    this.raceCars = []
+
+    const island = getIsland('speedway')
+    if (!island) return
+    const ring = getIslandRing(island)
+    if (!ring) return
+
+    this.raceRing = ring.map(p => ({ x: island.x + p.x, z: island.z + p.z }))
+    this.raceLapLength = 0
+    for (let i = 1; i < this.raceRing.length; i++) {
+      this.raceLapLength += Math.hypot(
+        this.raceRing[i].x - this.raceRing[i - 1].x,
+        this.raceRing[i].z - this.raceRing[i - 1].z)
+    }
+
+    const colours = [PALETTE.carRed, PALETTE.carBlue, PALETTE.carGreen,
+                     PALETTE.carWhite, PALETTE.carSand]
+
+    for (let i = 0; i < RACE_FIELD; i++) {
+      const mesh = this.buildTrafficVehicle({ kind: 'race', colour: colours[i % colours.length] })
+      mesh.visible = false
+      this.game.add(mesh)
+      this.raceCars.push(mesh)
+    }
+  }
+
+  /**
+   * Where a point on the circuit is, and which way it faces.
+   *
+   * `along` is measured from the start/finish line rather than from the first
+   * point of the ring road, because that is where a lap begins - so this is
+   * the one place the offset between the two is applied and everything else
+   * can think in laps.
+   */
+  circuitPoint(along) {
+    if (!this.raceRing || !this.raceLapLength) return null
+    const line = this.speedwayLineAlong || 0
+    const lap = this.raceLapLength
+    const wrapped = (((along + line) % lap) + lap) % lap
+    return pointAlongRing(this.raceRing, wrapped / lap)
+  }
+
+  /**
+   * How far round the lap a world position is.
+   *
+   * Found by walking the ring and taking the nearest point on it, which is
+   * cheap enough at 385 points and once a frame, and is honest in a way that
+   * a lane lookup would not be: the player is not on a lane, they are on a
+   * circuit, and they may well be on the grass at the time.
+   */
+  circuitAlong(x, z) {
+    if (!this.raceRing) return null
+
+    let best = Infinity
+    let at = 0
+    let run = 0
+    for (let i = 1; i < this.raceRing.length; i++) {
+      const ax = this.raceRing[i - 1].x
+      const az = this.raceRing[i - 1].z
+      const dx = this.raceRing[i].x - ax
+      const dz = this.raceRing[i].z - az
+      const l2 = dx * dx + dz * dz
+      const step = Math.sqrt(l2)
+      if (l2 > 0) {
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2))
+        const d = Math.hypot(x - (ax + dx * t), z - (az + dz * t))
+        if (d < best) { best = d; at = run + step * t }
+      }
+      run += step
+    }
+
+    // Measured from the start/finish line, not from wherever the ring road's
+    // point list happens to begin.
+    const line = this.speedwayLineAlong || 0
+    const along = ((at - line) % this.raceLapLength + this.raceLapLength) % this.raceLapLength
+    return { along, offCircuit: best }
+  }
+
+  updateRace(delta) {
+    if (!this.race || !this.raceRing) return
+
+    const vehicle = this.game.vehicle
+    const at = vehicle && vehicle.mesh ? vehicle.mesh.position : null
+    const found = at ? this.circuitAlong(at.x, at.z) : null
+
+    // "On the course" is a distance from the circuit rather than a test of
+    // which island you are on, and deliberately: the island is 200 units
+    // across and most of it is not the track. Twenty-two units is the road
+    // plus its verges plus enough grass that spinning off does not abandon
+    // your race.
+    const ON_COURSE = 22
+    const onCourse = !!found && found.offCircuit < ON_COURSE
+
+    let toGrid = Infinity
+    if (found && this.speedwayLine) {
+      const pole = this.circuitPoint(-8)
+      if (pole && at) toGrid = Math.hypot(at.x - pole.x, at.z - pole.z)
+    }
+
+    stepRace(this.race, delta, {
+      onCourse,
+      kind: vehicle ? vehicle.kind : null,
+      along: found ? found.along : 0,
+      lapLength: this.raceLapLength,
+      pace: RACE_PACE,
+      toGrid,
+      elapsed: this.elapsed
+    })
+
+    this.drawRaceField()
+    this.drawRaceLights()
+  }
+
+  /** Put the field where the state says it is. */
+  drawRaceField() {
+    if (!this.raceCars) return
+
+    const racing = this.race.phase !== 'idle'
+    for (let i = 0; i < this.raceCars.length; i++) {
+      const mesh = this.raceCars[i]
+      const car = this.race.cars[i]
+      if (!racing || !car) { mesh.visible = false; continue }
+
+      const point = this.circuitPoint(car.along)
+      if (!point) { mesh.visible = false; continue }
+
+      // A quarter of the road's width to their own side of the centre line,
+      // and alternating, so a grid of six is two columns and a race is two
+      // cars wide rather than five cars in single file down the middle.
+      const side = car.side * (DEFAULT_ROAD_WIDTH / 4)
+      mesh.visible = true
+      mesh.position.set(
+        point.x + Math.cos(point.heading) * side,
+        COURSE_ROAD,
+        point.z - Math.sin(point.heading) * side)
+      mesh.rotation.y = point.heading
+    }
+  }
+
+  /** Red, amber, green, or all dark. */
+  drawRaceLights() {
+    if (!this.raceLamps) return
+    for (const [name, material] of Object.entries(this.raceLamps)) {
+      material.emissiveIntensity = this.race.light === name ? 2.4 : 0
+    }
+  }
+
   /**
    * The one callout on screen.
    *
@@ -8248,7 +9073,8 @@ export class World {
     return chooseMission([
       fireHud(this.fire, kind === 'fire'),
       policeHud(this.police, kind === 'police', robbers),
-      ambulanceHud(this.ambulance, kind === 'ambulance')
+      ambulanceHud(this.ambulance, kind === 'ambulance'),
+      raceHud(this.race)
     ])
   }
 
@@ -8353,6 +9179,7 @@ export class World {
     this.updateFire(delta)
     this.updatePolice(delta)
     this.updateAmbulance(delta)
+    this.updateRace(delta)
 
     const env = this.game.environment
     if (!env) return

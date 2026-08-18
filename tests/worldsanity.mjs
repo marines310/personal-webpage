@@ -289,15 +289,30 @@ console.log('\n10. Nothing on the published site is a placeholder')
 // constant is still there, with a comment telling Mike to replace it, and
 // `blogLink()` returns nothing at all while it is unchanged.
 const zones = readFileSync(ROOT + 'src/world/ZoneManager.js', 'utf8')
+const content = readFileSync(ROOT + 'src/content.js', 'utf8')
 const page = readFileSync(ROOT + 'index.html', 'utf8')
 
 chk('the blog link is gated rather than rendered blind',
-    /\$\{blogLink\(BLOG_URL\)\}/.test(zones) &&
-    !/<a href="\$\{BLOG_URL\}/.test(zones),
+    /\$\{blogLink\(LINKS\.blog\)\}/.test(content) &&
+    !/<a href="\$\{LINKS\.blog\}/.test(content),
     'a placeholder URL is being rendered as a live link')
 chk('and blogLink() refuses the placeholder it ships with',
-    /const BLOG_PLACEHOLDER = /.test(zones) &&
-    /url === BLOG_PLACEHOLDER\) return ''/.test(zones))
+    /export const BLOG_PLACEHOLDER = /.test(content) &&
+    /url === BLOG_PLACEHOLDER\) return ''/.test(content))
+
+// The copy lives in ONE file, and it is not the one with the Three.js in it.
+// Mike edits his own bio; he should never have to open a 380-line file full
+// of geometry to do it, and a stray backtick in the prose should not be able
+// to break the zone machinery.
+chk('ZoneManager holds no copy - it reads src/content.js',
+    /from '\.\.\/content\.js'/.test(zones) &&
+    /ZONE_CONTENT\.map/.test(zones),
+    'the zones are not being built from the content file')
+chk('and no prose is left behind in it',
+    !/Hanwha|DREAMPLUS|PMP\)|skhylee/.test(zones),
+    'there is still bio text inside ZoneManager.js')
+chk(`content.js carries all ${(content.match(/island: '/g) || []).length} panels`,
+    (content.match(/island: '/g) || []).length === 5)
 
 // Anything else obviously unfinished that a visitor could reach.
 for (const bad of ['your-blog-url.com', 'example.com', 'yoursite.com', 'TODO']) {

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { Game } from '../core/Game.js'
 import { getIsland } from './islandLayout.js'
+import { ZONE_CONTENT } from '../content.js'
 
 /**
  * Zone - A trigger area that shows content when the player enters
@@ -186,26 +187,6 @@ class Zone {
   }
 }
 
-/** The address the project ships with, and which nobody owns. */
-const BLOG_PLACEHOLDER = 'https://your-blog-url.com'
-
-/**
- * The "Read the blog" line, or nothing at all.
- *
- * A placeholder rendered as a live `<a href>` is worse than no link: it looks
- * finished, it is on the published site, and anyone who drives to the Writing
- * island can click through to a domain that does not exist. Better to have no
- * link until there is somewhere to point it.
- *
- * Deliberately checks against the placeholder rather than for a "real-looking"
- * URL. Anything else would be guessing at what a blog address looks like, and
- * would eventually reject a perfectly good one.
- */
-export function blogLink(url) {
-  if (!url || url === BLOG_PLACEHOLDER) return ''
-  return `<p><a href="${url}" target="_blank" rel="noopener">Read the blog →</a></p>`
-}
-
 /**
  * ZoneManager - Manages all content zones
  */
@@ -219,22 +200,18 @@ export class ZoneManager {
     this.createZones()
   }
 
+  /**
+   * One marker per island, built from `src/content.js`.
+   *
+   * THERE IS NO TEXT IN THIS FILE. Every word a visitor reads is in
+   * content.js, which has nothing else in it - so changing the bio never
+   * means opening a 380-line file full of Three.js, and a stray character in
+   * the prose cannot break the zone machinery.
+   *
+   * Position, colour and the fallback label come from islandLayout.js, so
+   * moving or recolouring an island updates its marker automatically.
+   */
   createZones() {
-    // --- Edit these to update your site's content ---
-    // Put a real address here and the "Read the blog" link appears. Leave the
-    // placeholder and the Writing panel simply has no link in it - see
-    // blogLink() below. It used to render the placeholder as a live link, so
-    // anyone who found the Writing island on the published site could click
-    // through to a domain nobody owns.
-    const BLOG_URL = 'https://your-blog-url.com'
-    const EMAIL = 'skhylee0416@gmail.com'
-    const LINKEDIN_URL = 'https://www.linkedin.com/in/mikeshlee'
-    const GITHUB_URL = 'https://github.com/marines310'
-
-    // Zone coordinates come straight from the island layout, so the
-    // markers always land in the middle of their island's plaza.
-    // Position, colour and label all come from islandLayout.js, so moving
-    // or recolouring an island there updates its marker automatically.
     const fromIsland = (id) => {
       const island = getIsland(id)
       if (!island) {
@@ -252,84 +229,12 @@ export class ZoneManager {
       }
     }
 
-    const zoneConfigs = [
-      {
-        id: 'about',
-        ...fromIsland('about'),
-        radius: 10,
-        content: {
-          title: "'Mike' Sukhyung Lee, PMP",
-          body: `
-            <p><strong>Product &amp; Venture Strategy Leader</strong> — Financial Services, AI</p>
-            <p>New Business Building · GTM · 0→1 Initiatives · Partnerships · Global Expansion</p>
-            <p>San Francisco, CA</p>
-            <p>AI product, project management, and corporate innovation leader with 10+ years of experience building new ventures, digital products, and operating models across financial services, AI, e-commerce, healthcare, defense, and corporate venture environments.</p>
-            <p>Currently leading project management standards and deputy operations for Hanwha AI Center, supporting AI initiatives across Hanwha's financial subsidiaries.</p>
-          `
-        }
-      },
-      {
-        id: 'projects',
-        ...fromIsland('projects'),
-        radius: 10,
-        content: {
-          title: 'Ventures & Experience',
-          body: `
-            <ul>
-              <li><strong>Head of PMO, Hanwha AI Center</strong> (2025–Present) — Leading New Product Development practice; deputy for operations overseeing a $20M budget; scaled to 6–10 projects/year targeting an $800M market (4x throughput).</li>
-              <li><strong>Interim COO, Hanwha AI Center</strong> (Jan–Jun 2025) — Stood up a new joint AI R&D center across Hanwha's financial subsidiaries; grew the management team 4x; oversaw a $12M annual budget.</li>
-              <li><strong>Head of Ops &amp; PMO, Hanwha Life Digital Lab (DREAMPLUS SF)</strong> (2019–2024) — Founding member; developed new business opportunities in healthcare, cyber, investments, and mobility; bridged SF and Korea HQ.</li>
-              <li><strong>DREAMPLUS Alliance</strong> — Built a network of 13 accelerators and VCs across 12 nations to help startups expand into new markets.</li>
-              <li><strong>Republic of Korea Air Force</strong> — First Lieutenant, Command Staff &amp; Crisis Action Group (2010–2013).</li>
-            </ul>
-          `
-        }
-      },
-      {
-        id: 'skills',
-        ...fromIsland('skills'),
-        radius: 10,
-        content: {
-          title: 'Skills & Certifications',
-          body: `
-            <ul>
-              <li>Agile Project Management &amp; Administration</li>
-              <li>Project Management Professional (PMP)®</li>
-              <li>Professional Scrum Master™ I (PSM I)</li>
-              <li>Generative AI &amp; Prompt Engineering for Project Managers</li>
-              <li>0→1 Venture Building, GTM, Partnerships, Global Expansion</li>
-              <li>Bilingual — Korean &amp; English (native/bilingual)</li>
-            </ul>
-          `
-        }
-      },
-      {
-        id: 'blog',
-        ...fromIsland('blog'),
-        radius: 10,
-        content: {
-          title: 'Writing',
-          body: `
-            <p>Notes on AI product strategy, venture building, and lessons from launching innovation centers.</p>
-            ${blogLink(BLOG_URL)}
-          `
-        }
-      },
-      {
-        id: 'contact',
-        ...fromIsland('contact'),
-        radius: 10,
-        content: {
-          title: 'Get In Touch',
-          body: `
-            <p>I'd love to hear from you!</p>
-            <p><a href="mailto:${EMAIL}">${EMAIL}</a></p>
-            <p><a href="${LINKEDIN_URL}" target="_blank" rel="noopener">LinkedIn</a></p>
-            <p><a href="${GITHUB_URL}" target="_blank" rel="noopener">GitHub</a></p>
-          `
-        }
-      }
-    ]
+    const zoneConfigs = ZONE_CONTENT.map(entry => ({
+      id: entry.island,
+      ...fromIsland(entry.island),
+      radius: 10,
+      content: { title: entry.title, body: entry.body }
+    }))
 
     for (const config of zoneConfigs) {
       this.zones.push(new Zone(config))

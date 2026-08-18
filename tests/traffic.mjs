@@ -64,9 +64,27 @@ chk('every lane is long enough to be worth having',
 
 // A lane with nowhere to go is a car parked for ever. Even a pier gets one:
 // the only move there is to turn round, which is better than stopping.
-chk('every lane leads somewhere',
-    net.lanes.every(l => l.next.length > 0),
-    `${net.lanes.filter(l => !l.next.length).length} dead ends`)
+//
+// "Public" because of the closed courses. The stunt park and the speedway have
+// ring roads, junctions and bridges like anywhere else, but no AI vehicle is
+// ever put on one and none can turn onto one - see `noTraffic` in
+// getLaneNetwork(). A lane nothing can reach cannot strand anything, so asking
+// where it leads is the wrong question. The two checks below ask the right
+// one: nowhere REACHABLE is a trap, and nothing can wander in.
+const open = net.lanes.filter(l => !l.noTraffic)
+const shut = net.lanes.filter(l => l.noTraffic)
+console.log(`   ${open.length} public lanes, ${shut.length} on closed courses`)
+
+chk('every public lane leads somewhere',
+    open.every(l => l.next.length > 0),
+    `${open.filter(l => !l.next.length).length} dead ends`)
+
+// The other half of the same promise. Without it the fleet found the racing
+// circuit on its own, over the bridge: measured before the links were cut,
+// last-resort relocations went from 4 in five minutes to 14.
+chk('and no public lane leads onto a closed course',
+    open.every(l => l.next.every(i => !net.lanes[i].noTraffic)),
+    `${open.filter(l => l.next.some(i => net.lanes[i].noTraffic)).length} ways in`)
 
 // Both directions. A one-way world would have half the traffic driving at
 // the kerb on the wrong side.

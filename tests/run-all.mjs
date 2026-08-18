@@ -47,6 +47,7 @@ const SUITES = [
   'stations.mjs',      // fire, police and hospital: bays, doors, coming and going
   'windows.mjs',       // the windows in the building models, read from the models
   'models.mjs',        // rock.glb and streetlight.glb, the two we generate ourselves
+  'race.mjs',          // the ramps' geometry, and ten laps of the speedway
   'audio.mjs',         // the mix: gears, the siren's clock, and never a NaN
 
   // The editor, driven through real events

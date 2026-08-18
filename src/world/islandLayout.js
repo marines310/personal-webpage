@@ -803,7 +803,15 @@ export const TRAFFIC_LENGTHS = {
   police: 4.6,
   ambulance: 6,
   fire: 7,
-  bus: 11
+  bus: 11,
+
+  // The two the player can pick but the city never drives. They are in this
+  // table because it is what the garage lists and what sizes a collider - and
+  // deliberately NOT in TRAFFIC_FLEET above, which is what puts a kind into
+  // the rush hour. A monster truck in the school run would be a different
+  // game.
+  monster: 5.4,
+  race: 5.0
 }
 
 /**
@@ -822,7 +830,21 @@ export const TRAFFIC_WIDTHS = {
   police: 2,
   ambulance: 2.2,
   fire: 2.4,
-  bus: 2.5
+  bus: 2.5,
+  // Wide stance and narrow shell - the two silhouettes are most of how you
+  // tell these apart at a distance.
+  //
+  // 2.5 and not a centimetre more, which is the bus's width and therefore the
+  // widest thing in the world. GARAGE_DOOR_WIDTH is derived from the widest
+  // vehicle, so 2.6 grew the player's garage by 100mm - which moved the plot
+  // it stands on, which moved the town around it, which changed how often the
+  // service vehicles reached their own bays. `stations.mjs` caught it: 20
+  // comings and goings in ten minutes against a clean run's pass.
+  //
+  // The truck looks wider than the bus anyway, because its wheels are tracked
+  // outside the bodywork.
+  monster: 2.5,
+  race: 1.95
 }
 
 /** Emergency lights: full flashes a second. */
@@ -2916,14 +2938,48 @@ export function getLaneNetwork() {
   lanes.length = 0
   lanes.push(...kept)
 
+  // Which lanes the public is not allowed on.
+  //
+  // The stunt park and the speedway are closed courses. They are ordinary
+  // islands in every other respect - a ring road, a bridge that lands on it,
+  // a junction where the two meet - because being ordinary is what keeps
+  // tests/network.mjs and tests/town.mjs honest: a bridge that lands on
+  // nothing is exactly the bug they exist to catch, and carving an exception
+  // for two islands would have blinded them to it everywhere else.
+  //
+  // What these islands do not get is traffic. Marked here rather than in
+  // makeTraffic() alone, because keeping a saloon from STARTING on a racing
+  // circuit is not the same as keeping it OFF one: without this the fleet
+  // simply drove over the bridge and found the track on its own.
+  //
+  // The bridge counts as closed too. It leads nowhere else.
+  const shut = (id) => {
+    const island = ISLANDS.find((i) => i.id === id)
+    return !!(island && island.noTraffic)
+  }
+  for (const lane of lanes) {
+    const seg = lane.segment
+    lane.noTraffic = seg.kind === 'bridge'
+      ? (shut(seg.bridge.from) || shut(seg.bridge.to))
+      : shut(lane.island)
+  }
+
   // What each lane can become at its far end
   for (const lane of lanes) {
     lane.next = []
     if (lane.toNode === null) continue
 
+    // A closed lane is left with nowhere to go, and nothing is ever put on
+    // one, so it never has to have anywhere to go. Giving it the U-turn
+    // fallback below would be worse than useless: an empty lane whose only
+    // continuation is itself reversed is a 180-degree "turn" that
+    // tests/vehiclelights.mjs would then check the indicator handedness of.
+    if (lane.noTraffic) continue
+
     for (let i = 0; i < lanes.length; i++) {
       const other = lanes[i]
       if (other === lane) continue
+      if (other.noTraffic) continue
       if (other.fromNode !== lane.toNode) continue
 
       // And the two must actually meet. Sharing a node index is not enough:
@@ -3707,15 +3763,17 @@ export function makeTraffic(network, fleet = TRAFFIC_FLEET, stops = null,
     return (seed - 1) / 2147483646
   }
 
-  // Buses only run where there are stops to call at
+  // Buses only run where there are stops to call at. `noTraffic` is set in
+  // getLaneNetwork() - the closed courses, and the bridges that only serve
+  // them. Nothing is ever placed on one and nothing can turn onto one.
   const busLanes = lanes
     .map((l, i) => ({ l, i }))
-    .filter(({ l }) => l.stops.length)
+    .filter(({ l }) => l.stops.length && !l.noTraffic)
     .map(({ i }) => i)
 
   const streetLanes = lanes
     .map((l, i) => ({ l, i }))
-    .filter(({ l }) => l.length > TRAFFIC_HEADWAY * 3)
+    .filter(({ l }) => l.length > TRAFFIC_HEADWAY * 3 && !l.noTraffic)
     .map(({ i }) => i)
 
   if (!streetLanes.length) return vehicles

@@ -247,6 +247,11 @@ const through = (() => {
   const earlyWho = new Set()
   const lateWho = new Set()
 
+  // And the longest UNBROKEN stay, per vehicle, in the late window. See the
+  // check below for why this is the one that actually answers the question.
+  const streak = new Map()
+  const longest = new Map()
+
   for (let step = 0; step < seconds / dt; step++) {
     stepTraffic(net, vehicles, dt, step * dt, null, crash)
     let hits = 0
@@ -256,6 +261,11 @@ const through = (() => {
       for (const wreck of crash.blocks) {
         if (boxesOverlap(box, vehicleBox(wreck, wreck))) touching = true
       }
+      if (step >= lateFrom) {
+        const run = touching ? (streak.get(i) || 0) + 1 : 0
+        streak.set(i, run)
+        if (run > (longest.get(i) || 0)) longest.set(i, run)
+      }
       if (!touching) return
       hits++
       if (step < split) earlyWho.add(i)
@@ -264,7 +274,8 @@ const through = (() => {
     if (step < split) early += hits
     if (step >= lateFrom) late += hits
   }
-  return { early, late, earlyWho: earlyWho.size, lateWho: lateWho.size }
+  const worstStay = longest.size ? Math.max(...longest.values()) * dt : 0
+  return { early, late, earlyWho: earlyWho.size, lateWho: lateWho.size, worstStay }
 })()
 console.log(`   first 20s: ${through.early} vehicle-frames inside a crashed car,` +
             ` ${through.earlyWho} different vehicles`)
@@ -283,11 +294,36 @@ console.log(`   last 20s:  ${through.late}, ${through.lateWho} different vehicle
 // behaviour - four thousand and rising - rather than to bless this number.
 chk('the traffic is not simply ignoring the crash',
     through.late < 2500, `${through.late}`)
-// Six different vehicles in twenty seconds is traffic moving past an
-// obstruction. The behaviour Mike reported - the road simply shut - would show
-// as two or three, over and over, for the whole run.
-chk('and the traffic at the wreck keeps turning over rather than piling up',
-    through.lateWho >= 6, `${through.lateWho} different vehicles in the last 20s`)
+// HOW LONG THE LONGEST STAY IS, not how many cars had one.
+//
+// This was a turnover count - "six different vehicles in twenty seconds" - and
+// it was measuring the wrong thing, which showed the day two islands were
+// added to the map. The count is not a property of the crash. It is a property
+// of WHICH LANE the crash landed on, because the lane is picked as whichever
+// happens to be busiest, and adding two bridges moved that from a lane carrying
+// eight vehicles to one carrying seven. On the new lane the count fell to two,
+// with the fleet's median distance covered at 96% of a clear run, nothing
+// stopped for longer than it stops with no crash at all, and no relocations.
+//
+// The reason is that low turnover is ambiguous, and it hides the very case it
+// was written to catch. Two cars touching the wreck can mean "the road has
+// shut and the same two are wedged against it", or it can mean "traffic has
+// routed round and stopped coming" - which is INCIDENT_PENALTY doing exactly
+// its job. Both read as two.
+//
+// What separates them is how long a single vehicle stays inside it without a
+// break. A wreck being driven past is touched for a fraction of a second at a
+// time. A wreck that has shut the road has a car resting against it for the
+// whole window, which is twenty seconds.
+//
+// Measured on both maps: 9.7 seconds before the two islands were added and 9.4
+// after - the same number, unlike the turnover count, which is the whole
+// argument for this being the better check. Fifteen sits half way between what
+// a healthy run does and what a shut road would have to do.
+console.log(`   longest unbroken stay inside the wreck, last 20s:` +
+            ` ${through.worstStay.toFixed(1)}s`)
+chk('and nothing is parked against the wreck',
+    through.worstStay < 15, `${through.worstStay.toFixed(1)}s`)
 
 // ---------------------------------------------------------------------------
 console.log('\n4. The rules themselves')
