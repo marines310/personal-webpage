@@ -25,6 +25,29 @@ import {
 import { ISLANDS, BRIDGES } from './mapData.js'
 import { SIGNAL_HOLD, turnDirection } from './vehicleLights.js'
 import {
+  massOf,
+  contactBetween,
+  impactResponse,
+  separation,
+  addKnock,
+  stepKnock,
+  speedAfterImpact,
+  stunnedSpeed,
+  PUSH_RATE,
+  IMPACT_SPEED
+} from './impacts.js'
+import {
+  BRIDGE_RISE,
+  BRIDGE_CHANNEL,
+  BRIDGE_DECK_THICKNESS,
+  BOAT_AIR_DRAFT,
+  CARGO_AIR_DRAFT,
+  bridgeDeckProfile,
+  bridgeClearance,
+  bridgeFrame,
+  bridgeDeckAt
+} from './bridgeDeck.js'
+import {
   sampleSpline,
   bowedPath,
   distanceToPath,
@@ -80,15 +103,66 @@ export const SEA_LEVEL = -1.4
 /** Drive below this and the car respawns at SPAWN_POINT. */
 export const FALL_LIMIT = -4.5
 
-/**
- * Default width of a bridge deck.
- * Wider than DEFAULT_ROAD_WIDTH so the road running across it leaves a
- * concrete shoulder either side, with the railings outside that.
- */
-export const DEFAULT_BRIDGE_WIDTH = 8.5
+
 
 /** Default width of a road, and the clearance props keep from one. */
 export const DEFAULT_ROAD_WIDTH = 7
+
+/**
+ * How wide an ARTERY is - the ring roads and the runs across the bridges.
+ *
+ * Mike: "I still see a bunch of traffic jams... Can we add multi-lane roads
+ * for the main arteries of traffic?"
+ *
+ * Measured after the signals were fixed, genuine queueing is 49.8% of all
+ * stopped time - up from 27.6%, not because it got worse but because the red
+ * lights that used to dwarf it went from 60% to 32%. Queueing is what lane
+ * capacity fixes, so this is now the right lever rather than a hunch.
+ *
+ * FOURTEEN, AND THE NUMBER IS DERIVED. Four lanes means each is `width / 4`
+ * wide and the two carriageways in one direction sit `width / 4` apart. The
+ * widest thing on the road is a bus at 2.5, so 3.5 leaves it half a metre
+ * either side - the same clearance a bus has on a 7-unit two-lane street
+ * today, which is the standard this world already drives at.
+ *
+ * Thirteen was tried first, because `mapData.js` already sets `ringWidth: 13`
+ * on the speedway and reusing a number the map had already proved seemed
+ * tidy. It puts two same-direction lanes 3.25 apart, against a
+ * `LANE_SHARED_GAP` of 3.2 that exists to dedupe lanes which accidentally
+ * share tarmac - a five-centimetre margin between "dual carriageway" and
+ * "the same road counted twice". The gap is now told about deliberate
+ * parallel lanes instead of being dodged, but 14 is still the honest width
+ * for four lanes and 13 was only ever borrowed from a racing circuit.
+ */
+export const ARTERIAL_WIDTH = 14
+
+/**
+ * How big an island has to be before its ring becomes an artery.
+ *
+ * 75 sits between blog at 70, which cannot turn a 14-wide ribbon without
+ * folding it, and stunt at 72 / speedway at 76 - both closed courses excluded
+ * for other reasons - with the smallest island that DOES carry one being
+ * skills at 79. See ringWidthOf() for the measurement.
+ */
+export const ARTERIAL_MIN_RADIUS = 75
+
+/**
+ * Default width of a bridge deck.
+ *
+ * Wider than the road running across it, so there is a concrete shoulder
+ * either side with the railings outside that. It was 8.5 against a 7-unit
+ * road - a 0.75 shoulder each side - and the road across a bridge is now
+ * ARTERIAL_WIDTH, so this has to move with it or the carriageway hangs three
+ * and a half units out over the water on each side with the parapet somewhere
+ * underneath it.
+ *
+ * Stated as a derivation rather than a number for exactly that reason: the two
+ * are not independent, and the last time this project let two surfaces that
+ * have to meet pick their own heights it put a 30cm wall across a pier (see
+ * PIER_DECK_Y).
+ */
+export const BRIDGE_SHOULDER = 0.75
+export const DEFAULT_BRIDGE_WIDTH = ARTERIAL_WIDTH + BRIDGE_SHOULDER * 2
 
 /**
  * How much automatic bridge-to-centre roads bow sideways.
@@ -493,8 +567,28 @@ export const MONORAIL_INNER_FRACTION = 0.45
  * the lamps and the drivers read, or they drift apart and you get cars
  * crossing on red while the lamp says otherwise.
  */
-export const TRAFFIC_CYCLE = 18
-export const TRAFFIC_AMBER = 2.5
+/**
+ * How long a set of lights takes to go round, and how much of that is amber.
+ *
+ * EIGHTEEN SECONDS WAS TOO LONG, and it was the largest single cause of a city
+ * that stood still. Measured with only 29 vehicles on the whole map - a nearly
+ * empty world, no jam possible - a vehicle still spent 27.5% of its life
+ * stationary at a red. That is structural: 124 of the 175 lanes end at a
+ * signal, so a car crossing an island meets one almost every lane, and half of
+ * an 18-second cycle is a nine-second wait.
+ *
+ * Twelve leaves each phase five seconds of green after amber, which measured
+ * as MORE throughput rather than less - the queues clear in shorter bursts and
+ * the vehicle behind does not have time to settle to a stop.
+ *
+ * Worth knowing if this is ever tuned again: the offsets are a hash of the
+ * junction's position, so consecutive lights along an arterial are
+ * uncorrelated and clearing one means arriving at the next on a red about half
+ * the time. Coordinating them into a green wave is the real fix and is a much
+ * bigger change - a ring road's wave runs the wrong way for half the traffic.
+ */
+export const TRAFFIC_CYCLE = 12
+export const TRAFFIC_AMBER = 2
 
 /**
  * Shorter than this and a piece of road between two junctions isn't worth a
@@ -520,7 +614,27 @@ export const LANE_MIN_LENGTH = 11
  *
  * Generous enough for a genuine turn, where the two lanes are on opposite
  * sides of two different roads and about 3.6 units apart at the corner.
+ *
+ * A FIXED SEVEN WAS A WIDTH IN DISGUISE. "About 3.6 units apart at the corner"
+ * is `width / 4` for each of two 7-unit roads, plus slack - so the constant
+ * only ever worked because every road in the world was the same width. Widen
+ * the ring to ARTERIAL_WIDTH and the same corner puts the two lane ends 7
+ * apart before any slack at all, so genuine turns stopped connecting and the
+ * lane network came apart: tests/fire.mjs measured 24 of 170 lanes able to
+ * reach a given fire, against a floor of 80%.
+ *
+ * Expressed as the geometry it always was, `laneJoinTolerance()` returns
+ * exactly 7 for two 7-unit roads, so nothing about the old map moves.
  */
+export const LANE_JOIN_MARGIN = 3.5
+
+export function laneJoinTolerance(a, b) {
+  const wa = (a && a.width) || DEFAULT_ROAD_WIDTH
+  const wb = (b && b.width) || DEFAULT_ROAD_WIDTH
+  return (wa + wb) / 4 + LANE_JOIN_MARGIN
+}
+
+/** Kept for callers that have no lanes to hand. */
 export const LANE_JOIN_TOLERANCE = 7
 
 /**
@@ -541,6 +655,9 @@ export const TRAFFIC_SPEEDS = {
   suv: 12.5,
   police: 15,
   ambulance: 14,
+  // A wrecker is a working truck, not a blue-light vehicle. Slowest thing on
+  // the road bar the bus.
+  tow: 10,
   fire: 11,
   bus: 9
 }
@@ -707,6 +824,46 @@ export const STUCK_LIMIT = 35
 export const RELOCATE_CLEAR_AHEAD = 22
 
 /**
+ * How far away a vehicle may be rescued to, and how close the player may be
+ * when it happens.
+ *
+ * Mike: "Sometimes I see vehicles that just disappear into thin air." That is
+ * this valve, and it was doing two things that made it visible.
+ *
+ * It picked a lane uniformly at random out of all 175 in the world, so a
+ * measured relocation moved a vehicle a MEDIAN of 200-odd units and as much as
+ * 598 - most of the way across the map. A car that leaves the street you are
+ * on and reappears on another island has plainly vanished. Rescued to a lane
+ * round the corner instead, the same car has simply driven off while you were
+ * not looking, which is what it is supposed to look like.
+ *
+ * And it fired regardless of whether anyone could see. The cheapest possible
+ * fix for "things disappear in front of me" is to not do it in front of
+ * anyone: inside RELOCATE_UNSEEN of the player the valve holds off and tries
+ * again shortly. A vehicle genuinely wedged in the player's view is a vehicle
+ * the player can drive round, and it will still be rescued the moment they
+ * look away.
+ */
+/**
+ * How much a cul-de-sac is marked down when a wandering vehicle picks a turn.
+ *
+ * Bigger than the widest spread `straightish` can produce (a straight-on
+ * option scores at most 1.6, a U-turn at worst -3.14), so a dead end always
+ * loses to anything else at the same junction - and still gets chosen when it
+ * is the only way on, which at the end of a spur it is.
+ */
+export const DEAD_END_PENALTY = 6
+
+/** How fast a vehicle may be going as it turns round at the end of a spur. */
+export const UTURN_SPEED = 2.5
+
+/** How far a rescued vehicle must drive before its rescue counts as worked. */
+export const RESCUE_SETTLED = 120
+
+export const RELOCATE_NEARBY = 140
+export const RELOCATE_UNSEEN = 70
+
+/**
  * How long a service vehicle stays in its bay, and how long it works the
  * streets before going home again.
  *
@@ -788,8 +945,44 @@ export const TRAFFIC_FLEET = {
   suv: 15,
   police: 6,
   ambulance: 4,
-  fire: 4,
-  bus: 3
+
+  // FIVE, BECAUSE THERE ARE FIVE FIRE STATIONS.
+  //
+  // This was four, and it matched until the arteries widened: the ring roads
+  // moved, the plots moved with them, and the world sited one more fire
+  // station than there were engines to put in it. `stations.mjs` caught it as
+  // blog-fire never being anybody's home.
+  //
+  // Mike's rule is that a fire station is where fire engines live, so a
+  // station with no engine is a building that does nothing - the number has to
+  // follow the map rather than sit beside it. It cannot be DERIVED from
+  // `getStations()` here, because that function needs the terrain and the
+  // terrain needs this file loaded, so it is written down and `stations.mjs`
+  // asserts the relationship instead: if the map ever sites a sixth, the suite
+  // says so rather than quietly leaving it empty.
+  fire: 5,
+  bus: 3,
+  // Tow trucks DO drive around the city, unlike the monster truck and the
+  // racing car. They have to: Mike's rule for an unattended wreck is that an
+  // AI tow truck turns up and clears it, and the AI ambulance's version of
+  // that works by there being ambulances in the traffic to turn up.
+  //
+  // TWO, and the number was measured rather than picked. `stations.mjs` counts
+  // how long any pair of vehicles stays interpenetrated, and over eight spawns
+  // of ten minutes each the longest such run came out:
+  //
+  //     no tow trucks   0 0 0 0 0 0 1 10     (a sedan and a fire engine)
+  //     one             0 0 0 0 0 0 0 92
+  //     two             0 0 0 0 0 0 0 0
+  //     three           0 0 0 0 0 0 11 173
+  //
+  // Not monotonic, which is the tell: this is a spawn lottery in a pre-existing
+  // part of the traffic model - long vehicles occasionally wedge, and adding
+  // any vehicle reshuffles who is standing where - rather than something the
+  // tow truck introduced. The no-tow column has the same failure with a fire
+  // engine in it. Two is the count that came out clean on every spawn tried,
+  // and two is plenty to answer a wreck.
+  tow: 2
 }
 
 /** How long each kind of vehicle is, for headway and for the meshes. */
@@ -802,6 +995,12 @@ export const TRAFFIC_LENGTHS = {
   suv: 4.8,
   police: 4.6,
   ambulance: 6,
+  // A wrecker: a cab, a service body and a wheel-lift that sticks out past the
+  // tail. 6.4 is the BODY - the boom adds nearly two more when it is run out,
+  // and that overhang is deliberately not in this number, because this number
+  // sizes a collider and a collider that includes the boom would stop the
+  // truck reversing up to the car it is trying to pick up.
+  tow: 6.4,
   fire: 7,
   bus: 11,
 
@@ -811,7 +1010,24 @@ export const TRAFFIC_LENGTHS = {
   // the rush hour. A monster truck in the school run would be a different
   // game.
   monster: 5.4,
-  race: 5.0
+  race: 5.0,
+
+  /**
+   * The monorail, and why this number is 11 rather than 33.
+   *
+   * A train is three eleven-unit cars, so the thing you SEE is 33 long. This
+   * table sizes a collider and, far more importantly, `GARAGE_DEPTH` is a max
+   * over it - so a 33 here would grow the player's garage by twenty-two units,
+   * which moves the plot it stands on, which moves the town around it. The
+   * monster truck already did that once at 100mm too wide.
+   *
+   * It costs nothing to be honest about: a driven monorail is held on the beam
+   * by the timetable, not by physics, so its collider is never asked a
+   * question it could get wrong. Eleven is one car - which is also exactly
+   * what the garage previews when you pick it, and a driver's cab is the right
+   * thing to be shown.
+   */
+  monorail: 11
 }
 
 /**
@@ -829,6 +1045,7 @@ export const TRAFFIC_WIDTHS = {
   suv: 2.05,
   police: 2,
   ambulance: 2.2,
+  tow: 2.3,
   fire: 2.4,
   bus: 2.5,
   // Wide stance and narrow shell - the two silhouettes are most of how you
@@ -844,7 +1061,8 @@ export const TRAFFIC_WIDTHS = {
   // The truck looks wider than the bus anyway, because its wheels are tracked
   // outside the bodywork.
   monster: 2.5,
-  race: 1.95
+  race: 1.95,
+  monorail: 2.4
 }
 
 /** Emergency lights: full flashes a second. */
@@ -1187,6 +1405,9 @@ export function getIslandTerrain(island) {
   // tilted on a slope with daylight under one corner.
   // Rectangles, not the circles round them - `rotation` on a plot is in
   // DEGREES, which is what the map file stores and what the editor shows.
+  // Ground that is paved but keeps its own shape. See claimAt() in terrain.js.
+  const claims = []
+
   const pads = [...getTownPlots(island), ...getRoadsidePlots(island)]
     .map(plot => ({
       x: plot.x,
@@ -1239,7 +1460,7 @@ export function getIslandTerrain(island) {
   // The provisional field has everything except the stations, which is all
   // the siting actually needs.
   terrainCache.set(island.id,
-    makeHeightField({ hills, inlandAt, beach, roads, pads }))
+    makeHeightField({ hills, inlandAt, beach, roads, pads, claims }))
 
   // Fire stations, police stations and hospitals stand on ground too. Without
   // a terrace of their own a hospital sat on the height at its centre while
@@ -1275,9 +1496,53 @@ export function getIslandTerrain(island) {
     })
   }
 
+  // THE PLAYER'S DRIVEWAY: PAVED, BUT NOT RE-SHAPED.
+  //
+  // Mike: "there's still some sort of elevation that makes the cars drive
+  // strange (not smooth) on the driveway out of the garage... like its falling
+  // from some elevation."
+  //
+  // The garage stands on the hub's plaza, which is a paved pad, and the
+  // driveway road claims its own corridor - but the fourteen units of apron
+  // BETWEEN them claimed nothing. The collider stands SURFACE_PAVED (0.06)
+  // proud of the height field on claimed ground and SURFACE_GRASS (0.30) proud
+  // off it, so the way out of the garage went:
+  //
+  //     in the garage   claim 1.00   lift 0.06   wheels on 0.462
+  //     on the apron    claim 0.00   lift 0.30   wheels on 0.570   <- ramp UP
+  //     on the drive    claim 1.00   lift 0.06   wheels on 0.060   <- then DROP
+  //
+  // an eighteen-centimetre climb at the door and a twenty-four-centimetre fall
+  // fourteen units later. The height field itself is smooth the whole way.
+  //
+  // A CLAIM, not a pad, and that distinction is the whole fix. Three pad-based
+  // attempts were measured and each simply moved the step: a pad levels the
+  // ground as well as claiming it, and this apron falls 0.27 from the garage
+  // to the road, so any level rectangle laid over it makes a cliff at whichever
+  // end it does not match. What was wanted was never a terrace. It is concrete
+  // laid on the ground exactly as the ground already is - see claimAt().
+  const garage = sitingGarage ? null : getPlayerGarage()
+  if (garage && garage.island === island.id) {
+    const gx = Math.sin(garage.heading)
+    const gz = Math.cos(garage.heading)
+    // From the back wall to the far edge of the apron, so there is no seam at
+    // the door either - inside the garage the plaza already claims the ground,
+    // and the two overlap rather than meeting.
+    const run = garage.depth + GARAGE_APRON
+    const mid = (garage.depth / 2 + GARAGE_APRON) - run / 2
+
+    claims.push({
+      x: garage.localX + gx * mid,
+      z: garage.localZ + gz * mid,
+      halfWidth: Math.max(garage.width, garage.doorWidth + 4) / 2,
+      halfDepth: run / 2,
+      heading: garage.heading
+    })
+  }
+
   terracePads(pads)
 
-  const field = makeHeightField({ hills, inlandAt, beach, roads, pads })
+  const field = makeHeightField({ hills, inlandAt, beach, roads, pads, claims })
   terrainCache.set(island.id, field)
   return field
 }
@@ -1329,6 +1594,10 @@ export function groundSlope(x, z) {
 /** Forget the cached height fields. The editor needs this after an edit. */
 export function invalidateTerrain() {
   terrainCache.clear()
+  // The signals hang off the roads, so an edit that moves a road moves them.
+  // Dropping them here rather than asking every caller to remember is the same
+  // bargain the terrain cache already makes.
+  invalidateSignals()
 }
 
 /** Look an island up by id. */
@@ -1585,8 +1854,20 @@ function getFixedRoads(island) {
   const claimed = []
 
   const loop = getIslandRing(island)
+  // `ringWidth` widens ONE island's ring road without touching any other.
+  //
+  // The speedway's circuit IS its ring road, and Mike's note was that the
+  // track is too narrow - which it was: seven units, the same as a residential
+  // street, for six cars racing. Widening DEFAULT_ROAD_WIDTH would have
+  // widened every road in the world and moved every building set back from
+  // one, so the width is a property of the island instead.
   const ring = loop && !island.noAutoRoad
-    ? { points: loop, width: DEFAULT_ROAD_WIDTH, ring: true, closed: true }
+    ? {
+      points: loop,
+      width: ringWidthOf(island),
+      ring: true,
+      closed: true
+    }
     : null
 
   // The road out to the quay. An ordinary road as far as everything else
@@ -1749,6 +2030,45 @@ export function getStoredRing(island) {
     : null
 }
 
+/**
+ * How wide this island's ring road is.
+ *
+ * One function rather than `island.ringWidth || DEFAULT_ROAD_WIDTH` repeated
+ * at each site, because it was repeated at three sites and two of them were
+ * the plain default - see the kerb reach and the street-crowding test, both of
+ * which had been wrong for the speedway since the day it got a wide ring.
+ */
+export function ringWidthOf(island) {
+  if (island.ringWidth) return island.ringWidth
+
+  // AN ARTERY CARRIES TRAFFIC, so an island the traffic never visits does not
+  // get one. The stunt park is a closed course - `noTraffic` in mapData - and
+  // widening its loop from 7 to 14 would have re-shaped the course itself to
+  // relieve congestion that cannot exist on it.
+  if (island.noTraffic) return DEFAULT_ROAD_WIDTH
+
+  // AND THE ISLAND HAS TO BE BIG ENOUGH TO TURN ONE ROUND.
+  //
+  // A road ribbon folds where its turning radius drops below half its width,
+  // and a ring is pinned between two things it cannot argue with: the coast on
+  // the outside, and its own kerb needing to stay on land. On a small, deeply
+  // indented island those leave bends the smoothing cannot open out - the loop
+  // in getIslandRing() re-clamps to the shore limit on every pass, so a
+  // rounder ring is not always available.
+  //
+  // Measured at ARTERIAL_WIDTH across all eight islands, exactly one failed:
+  // blog, radius 70, whose ring came out with a 4.32-unit bend against the
+  // 7.70 a 14-wide ribbon needs. Every other town island - skills at 79, hub
+  // at 80, contact 84, about 88, projects 100 - cleared it.
+  //
+  // So the threshold is stated as what was measured rather than as a formula:
+  // below this, the island keeps an ordinary two-lane ring. Blog is small and
+  // quiet, and a village does not need a dual carriageway.
+  if ((island.radius || 0) < ARTERIAL_MIN_RADIUS) return DEFAULT_ROAD_WIDTH
+
+  return ARTERIAL_WIDTH
+}
+
 export function getIslandRing(island) {
   if (!island || island.noRing) return null
 
@@ -1821,7 +2141,13 @@ export function getIslandRing(island) {
   // How far the ring may reach on each bearing, whatever the fraction says.
   // The kerb is what has to stay on land, not the centre line: half a road
   // plus a pavement, and then RING_SHORE_CLEAR of grass beyond that.
-  const kerb = DEFAULT_ROAD_WIDTH / 2 + PAVEMENT_WIDTH
+  //
+  // THE RING'S OWN WIDTH, not the world's default. This read
+  // `DEFAULT_ROAD_WIDTH / 2` and was already wrong before the arterials: the
+  // speedway has carried `ringWidth: 13` for some time, so its kerb has been
+  // computed three units narrower than the road actually is and its circuit
+  // has been reaching that much closer to the water than the rule allows.
+  const kerb = ringWidthOf(island) / 2 + PAVEMENT_WIDTH
   const limit = []
 
   for (let i = 0; i < STEPS; i++) {
@@ -1862,8 +2188,18 @@ export function getIslandRing(island) {
 
   let ring = toPoints()
 
+  // WIDE ENOUGH FOR THE ROAD THAT WILL BE ON IT.
+  //
+  // The target was `DEFAULT_ROAD_WIDTH`, a hardcoded 7, and a ring is now
+  // ARTERIAL_WIDTH. A road ribbon folds where the turning radius drops below
+  // half its width, so a 14-wide ring needs 7 and this asked for 7 - no margin
+  // at all, and blog's ring came out with a 4.32-unit bend that
+  // tests/islandroads.mjs caught as a fold. Asking for the full width keeps
+  // the same generous margin the default always had.
+  const needRadius = ringWidthOf(island)
+
   for (let pass = 0; pass < 40; pass++) {
-    if (Math.min(...turningRadii(ring)) >= DEFAULT_ROAD_WIDTH) break
+    if (Math.min(...turningRadii(ring)) >= needRadius) break
 
     const next = radii.map((r, i) => {
       const prev = radii[(i - 1 + STEPS) % STEPS]
@@ -1954,7 +2290,10 @@ export function getTownGrid(island) {
     // culprit: a grid line clipped near the edge of the island can shadow it
     // for most of its length, leaving two carriageways with a sliver of
     // pavement between them.
-    !crowdsAnother(street, [{ points: ring, width: DEFAULT_ROAD_WIDTH }, ...streets]) &&
+    // The ring's REAL width. Hardcoding the default here meant a street could
+    // be laid alongside a wide ring with nothing but a sliver of pavement
+    // between them, which is the exact failure the comment above describes.
+    !crowdsAnother(street, [{ points: ring, width: ringWidthOf(island) }, ...streets]) &&
     // Not meeting the ring at a glancing angle.
     !meetsTooShallow(street, ring) &&
     // Not crossing a district.
@@ -2568,22 +2907,53 @@ function roadsidePlots(island, streets, avoid = streets) {
  * The direction a path runs at the point nearest (x, z), measured on the
  * path's own points rather than any coarser sampling of it.
  */
-function tangentAt(points, x, z) {
-  let best = 0
+export function tangentAt(points, x, z) {
+  // THE NEAREST POINT ON THE PATH, not the nearest VERTEX - and the difference
+  // is a crooked building.
+  //
+  // This used to take the closest vertex and the chord across its neighbours,
+  // which is fine for a point ON the path and badly conditioned for one well
+  // off it. On the inside of a curve, dozens of vertices are within a few
+  // centimetres of equally near, so which one "wins" can jump several vertices
+  // for a fraction of a unit of movement - and the plot's stored position is
+  // rounded to a tenth of a unit, so the placement and any later check could
+  // land on different vertices and disagree by degrees about which way the
+  // road runs.
+  //
+  // Invisible while every road was 7 wide, because the setback is
+  // `width / 2 + PAVEMENT_WIDTH + depth / 2` and a building was 9.9 units off
+  // its kerb. At ARTERIAL_WIDTH it is 13.4, far enough out for the ambiguity
+  // to bite: tests/town.mjs measured a hub frontage 4.47 degrees off square
+  // against a bound of 3.
+  //
+  // Projecting onto each segment is O(n) either way and has no ties to break.
+  let best = null
   let bestDist = Infinity
 
-  for (let i = 0; i < points.length; i++) {
-    const d = Math.hypot(points[i].x - x, points[i].z - z)
-    if (d < bestDist) { bestDist = d; best = i }
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i]
+    const b = points[i + 1]
+    const dx = b.x - a.x
+    const dz = b.z - a.z
+    const lenSq = dx * dx + dz * dz
+    if (lenSq < 1e-12) continue
+
+    // How far along this segment the foot of the perpendicular falls, clamped
+    // to the segment so the ends behave like the vertices they are.
+    const t = Math.max(0, Math.min(1,
+      ((x - a.x) * dx + (z - a.z) * dz) / lenSq))
+    const px = a.x + dx * t
+    const pz = a.z + dz * t
+    const d = Math.hypot(px - x, pz - z)
+
+    if (d < bestDist) {
+      bestDist = d
+      const len = Math.sqrt(lenSq)
+      best = { x: dx / len, z: dz / len }
+    }
   }
 
-  const a = points[Math.max(0, best - 1)]
-  const b = points[Math.min(points.length - 1, best + 1)]
-  const dx = b.x - a.x
-  const dz = b.z - a.z
-  const len = Math.hypot(dx, dz)
-
-  return len < 1e-6 ? null : { x: dx / len, z: dz / len }
+  return best
 }
 
 /**
@@ -2786,6 +3156,21 @@ function runsInsideRing(ring, ox, oz, dirX, dirZ, span) {
  * from its own copy of the arithmetic.
  */
 export function signalState(signal, group, elapsed) {
+  // DEMAND-DRIVEN, once something has driven it. See driveSignals().
+  //
+  // A junction that has been stepped carries `phase` - the group it is
+  // currently showing green to - and the answer comes from that rather than
+  // from the clock. Until then, and for every caller that never steps anything
+  // (the editor, the map tools, a test that only wants to know a lane HAS a
+  // signal), the original fixed cycle still answers. That fallback is not
+  // politeness: it keeps `getTrafficSignals()` a pure function of the map for
+  // everything that treats it as one.
+  const control = signal.control
+  if (control && control.phase !== undefined) {
+    if (group !== control.phase) return 'red'
+    return control.changeAt !== undefined ? 'amber' : 'green'
+  }
+
   const t = (elapsed + (signal.offset || 0)) % TRAFFIC_CYCLE
   const half = TRAFFIC_CYCLE / 2
   const firstGroupsTurn = t < half
@@ -2793,6 +3178,215 @@ export function signalState(signal, group, elapsed) {
 
   if ((group === 0) !== firstGroupsTurn) return 'red'
   return intoPhase > half - TRAFFIC_AMBER ? 'amber' : 'green'
+}
+
+/**
+ * The shortest a green may last, in seconds.
+ *
+ * Not a courtesy: a junction that can flip every frame flips every frame, and
+ * a light that strobes is worse than a light that is wrong. Long enough that
+ * a car which has just been released actually gets across.
+ *
+ * ALL THREE NUMBERS BELOW WERE SWEPT, not chosen. `tools/signalHealth.mjs`
+ * runs the city and reports the fraction of vehicle-time spent moving. Five
+ * seeds, four minutes each - two seeds was not enough and said so, reporting a
+ * 9-point spread between neighbouring settings that five seeds flattened out:
+ *
+ *     BASELINE fixed 12s cycle    53.8%   (51.8 - 55.8)
+ *     min 5  max 9   gap 1.2      62.6%   (57.2 - 69.9)
+ *     min 7  max 11  gap 1.4      64.0%   (60.9 - 69.5)   <- this
+ *     min 5  max 10  gap 1.2      60.5%   (50.6 - 70.6)
+ *     min 6  max 10  gap 1.4      61.1%   (55.4 - 67.8)
+ *
+ * 7/11/1.4 wins on the mean AND on the floor, which is the one that matters:
+ * its worst seed beats the fixed cycle's best seed. 5/10/1.2 has a comparable
+ * mean and a 20-point range, which is a setting that is sometimes excellent
+ * and sometimes worse than doing nothing.
+ */
+export const SIGNAL_MIN_GREEN = 7
+
+/**
+ * How long the green arm has to be EMPTY before the light gives up on it.
+ *
+ * This is the piece the first version did not have, and without it the whole
+ * thing measured worse than the fixed cycle it replaced: 60.3% of vehicle-time
+ * stopped against 45.1%. The reason is worth writing down because it is not
+ * obvious from the rule that caused it.
+ *
+ * "Change when your own side is done" was implemented as "change when nothing
+ * is within sight of the line on the green arm". On a main road carrying a
+ * steady stream, something is ALWAYS within sight of the line - so the
+ * condition never fired, every junction ran to SIGNAL_MAX_GREEN, and the side
+ * roads waited longer than the six seconds the old fixed cycle gave them.
+ * Rest-on-green turned into starve-the-side-road.
+ *
+ * What a real vehicle-actuated signal does instead is watch for a GAP: the
+ * green is extended while traffic keeps coming, and surrendered when the
+ * stream breaks. That is what this measures - the arm has to be clear for this
+ * long, not merely clear on one frame.
+ */
+export const SIGNAL_GAP = 1.4
+
+/**
+ * The longest a green may last while somebody is waiting on the other side.
+ *
+ * With no cap, a steady stream on the main road starves the side road for ever
+ * - which is a worse failure than the one being fixed, because at least a
+ * fixed cycle eventually comes round. This is the fairness floor.
+ */
+export const SIGNAL_MAX_GREEN = 11
+
+/**
+ * How close a vehicle has to be to the line to count as wanting a green.
+ *
+ * The same sight distance the cars themselves use to decide whether a signal
+ * concerns them, so a junction cannot be waiting for demand its own approach
+ * rules have not registered yet.
+ */
+export const SIGNAL_DEMAND_SIGHT = TRAFFIC_STOP_SIGHT
+
+/**
+ * Run every signal in the world from what is actually waiting at it.
+ *
+ * Mike: "I still see a bunch of traffic jams." Measured before this existed,
+ * over 3 seeds x 5 minutes with 70 vehicles:
+ *
+ *     45.1% of all vehicle-time stopped
+ *     61.2% of that stopped time at a red light
+ *     117 of 167 public lanes signalled - 70% of the network
+ *     74.2% of all GREEN time shown to an empty road
+ *     23.1% of all RED time with a queue behind it
+ *
+ * Which is what a fixed twelve-second cycle does to a city of seventy cars
+ * spread over a hundred and sixty-seven lanes: most arms are empty most of the
+ * time, so most green is spent on nobody while a queue sits at the red beside
+ * it. Multi-lane roads do nothing for that - a red light stops two lanes as
+ * easily as one.
+ *
+ * Three rules, in order of how much they are worth:
+ *
+ *   1. REST ON GREEN. Never change to a group with nothing waiting. A junction
+ *      nobody is using simply stays green on whichever arm it last served, so
+ *      a car arriving at an empty crossroads drives through it. This is the
+ *      one that matters, and it also de-signals the dead junctions without
+ *      removing a single pole from the map.
+ *   2. CHANGE WHEN YOUR OWN SIDE IS DONE. Green with nobody on it and a queue
+ *      on the other side changes as soon as SIGNAL_MIN_GREEN allows.
+ *   3. AND CHANGE ANYWAY EVENTUALLY. SIGNAL_MAX_GREEN, so a busy main road
+ *      cannot starve a side road for ever.
+ *
+ * Called from stepTraffic before anything reads a light, so every vehicle in
+ * a step sees the same aspect.
+ */
+/**
+ * The three numbers, in one place a measurement harness can reach.
+ *
+ * Exported as a mutable object rather than as three constants because tuning
+ * these is the whole job and the only honest way to tune them is to run the
+ * city and look. `tools/signalHealth.mjs` sweeps this; nothing in the game
+ * writes to it.
+ *
+ * `enabled: false` puts every junction back on the fixed twelve-second cycle,
+ * which is what the before/after numbers are measured against.
+ */
+export const SIGNAL_TUNING = {
+  enabled: true,
+  minGreen: SIGNAL_MIN_GREEN,
+  maxGreen: SIGNAL_MAX_GREEN,
+  gap: SIGNAL_GAP
+}
+
+export function driveSignals(lanes, vehicles, elapsed, delta,
+                             tuning = SIGNAL_TUNING) {
+  if (tuning && tuning.enabled === false) return
+
+  // Who is waiting where. One pass over the vehicles rather than a search per
+  // junction - there are more junctions than there are cars.
+  const demand = new Map()
+
+  for (const v of vehicles) {
+    if (v.parking) continue
+    const lane = lanes[v.lane]
+    if (!lane || !lane.signal) continue
+    if (lane.length - v.at > SIGNAL_DEMAND_SIGHT) continue
+
+    let counts = demand.get(lane.signal)
+    if (!counts) { counts = [0, 0]; demand.set(lane.signal, counts) }
+    counts[lane.signalGroup] = (counts[lane.signalGroup] || 0) + 1
+  }
+
+  // Every signal any lane points at, whether or not anyone is at it - a
+  // junction with no demand still has to be given a phase, or it stays on the
+  // clock for ever and the rest of this does nothing.
+  const all = new Set()
+  for (const lane of lanes) if (lane.signal) all.add(lane.signal)
+
+  for (const signal of all) {
+    const waiting = demand.get(signal) || [0, 0]
+    const control = signal.control
+    if (!control) continue
+
+    // A FRESH SIMULATION, or the first step of this one.
+    //
+    // The signals are cached per island and outlive any one run, so a second
+    // `makeTraffic()` starting at zero would otherwise inherit the last run's
+    // phases. Self-healing beats asking every caller to remember - and
+    // `tests/incident.mjs` is why it has to be right rather than roughly
+    // right: it runs the same simulation twice and requires the two to agree
+    // to the metre.
+    //
+    // `since > elapsed` WAS THE TEST AND IT LEAKED. A junction that rested on
+    // green for a whole run never updated `since`, so it ended the run still
+    // holding the 0 it was given on the first frame - and `0 > 0` is false, so
+    // the next run inherited its phase instead of choosing one from demand.
+    // Three identical runs measured 31694, 31979, 31979: the first differed
+    // from the other two, which is the signature of state surviving a run that
+    // should not have.
+    //
+    // `lastSeen` is updated every step whatever the junction decides, so it
+    // cannot go stale the way `since` could, and the clock going backwards is
+    // then an unambiguous "this is a different simulation".
+    const seen = control.lastSeen
+    control.lastSeen = elapsed
+
+    if (control.phase === undefined || (seen !== undefined && elapsed < seen)) {
+      // First step. Start on whichever side is busier, so the world does not
+      // open with half its junctions facing the wrong way.
+      control.phase = waiting[1] > waiting[0] ? 1 : 0
+      control.since = elapsed
+      control.clearFor = 0
+      control.changeAt = undefined
+      continue
+    }
+
+    // Mid-change: the amber is running.
+    if (control.changeAt !== undefined) {
+      if (elapsed >= control.changeAt + TRAFFIC_AMBER) {
+        control.phase = control.phase === 0 ? 1 : 0
+        control.since = elapsed
+        control.clearFor = 0
+        control.changeAt = undefined
+      }
+      continue
+    }
+
+    const mine = waiting[control.phase] || 0
+    const theirs = waiting[control.phase === 0 ? 1 : 0] || 0
+    const green = elapsed - control.since
+
+    // How long the green arm has been empty. A GAP, not an instant - see
+    // SIGNAL_GAP for the measurement that made the difference.
+    control.clearFor = mine ? 0 : (control.clearFor || 0) + delta
+
+    // RULE 1. Nothing wants the other side, so there is nothing to change for.
+    if (!theirs) continue
+
+    // RULE 2 and 3.
+    const done = green >= tuning.minGreen && control.clearFor >= tuning.gap
+    const overdue = green >= tuning.maxGreen
+
+    if (done || overdue) control.changeAt = elapsed
+  }
 }
 
 /**
@@ -2988,7 +3582,8 @@ export function getLaneNetwork() {
       // were 56 units apart. A car taking it teleported across the island.
       const end = lane.points[lane.points.length - 1]
       const start = other.points[0]
-      if (Math.hypot(end.x - start.x, end.z - start.z) > LANE_JOIN_TOLERANCE) continue
+      if (Math.hypot(end.x - start.x, end.z - start.z) >
+          laneJoinTolerance(lane, other)) continue
       // Not straight back the way you came - the same piece of road, the
       // other way. Identified by piece id; comparing coordinates got this
       // wrong, because the two directions start at opposite ends.
@@ -3007,6 +3602,7 @@ export function getLaneNetwork() {
   }
 
   attachSignals(lanes)
+  markDeadEnds(lanes)
 
   return { lanes, nodes: net.nodes, segments: net.segments }
 }
@@ -3148,6 +3744,34 @@ function slicePath(measured, from, to) {
  * the road they govern, so the arm a lane belongs to is the one pointing
  * most nearly opposite the lane's own direction of travel.
  */
+/**
+ * Which lanes are cul-de-sacs: the only way out is back the way you came.
+ *
+ * Eleven of the 175, fed by twenty-one others - the quay spurs, the driveways,
+ * the odd street that stops at the water. A vehicle that drives down one has
+ * no choice but to turn round at the end, and that is where 113 of the 120
+ * U-turns in a five-minute run came from. Mike, driving it: "they drive weird
+ * routes (sudden U Turns)."
+ *
+ * It is not a routing bug - a dead end really does end - so the answer is not
+ * to forbid the turn. It is to stop WANDERING traffic choosing to go down
+ * there in the first place, the way a driver with nowhere particular to be
+ * does not turn into a close, and to make the turn that does still happen look
+ * like a manoeuvre rather than a car spinning on the spot.
+ *
+ * Marked here, once, at network build time: it is a fact about the shape of
+ * the roads and it cannot change while the game runs.
+ */
+function markDeadEnds(lanes) {
+  for (const lane of lanes) {
+    lane.deadEnd = false
+    if (lane.next.length !== 1) continue
+    const out = pointAlong(lane, lane.length).heading
+    const into = pointAlong(lanes[lane.next[0]], 0).heading
+    lane.deadEnd = Math.abs(angleDelta(into, out)) > 2.4
+  }
+}
+
 function attachSignals(lanes) {
   const all = []
   for (const island of ISLANDS) {
@@ -3221,7 +3845,33 @@ function attachSignals(lanes) {
  * lets a vehicle pull in without any pathfinding, by leaving its lane at a
  * known point and driving a straight line to a known place.
  */
-export function getStations(network = getLaneNetwork()) {
+/**
+ * Sited once and kept, like the helipads and the garage.
+ *
+ * This function re-sites every station in the world from scratch: it sweeps
+ * candidate sites on every island, asks the monorail how much headroom each
+ * has, and scores them. `getIslandTerrain()` calls it once per island and
+ * `getBusStops()` now calls it too - so without this the world paid for the
+ * whole search a dozen times over, and adding one caller took thirty seconds
+ * of start-up.
+ *
+ * See the note inside about why the network argument does not key the cache.
+ */
+let stationCache = null
+
+export function getStations(network) {
+  // ONE cache, whatever network it is handed.
+  //
+  // Keying on the network object was tried and is worse than useless here:
+  // getLaneNetwork() is not cached either, so every `getStations()` with no
+  // argument built a fresh network, missed the cache, and re-sited the world -
+  // twenty-four seconds a time, and getTrafficSignals() now asks once per
+  // island. The stations are a deterministic function of the map, so the
+  // argument cannot change the answer; it is kept because callers already pass
+  // the network they happen to hold.
+  if (stationCache) return stationCache
+
+  const lanes = network || getLaneNetwork()
   const stations = []
   const route = getMonorailRoute()
 
@@ -3256,7 +3906,7 @@ export function getStations(network = getLaneNetwork()) {
 
   for (const { island, kind } of wanted) {
     const spec = STATION_KINDS[kind]
-    const site = findStationSite(network, island, spec, stations, route)
+    const site = findStationSite(lanes, island, spec, stations, route)
     if (!site) continue
 
     // spec first, site second: the site's `bays` array must win
@@ -3266,10 +3916,11 @@ export function getStations(network = getLaneNetwork()) {
       // anywhere. Without it a vehicle only goes home if its wandering happens
       // to take it past the door - which over ten minutes happened twice out
       // of twenty-two.
-      toHome: hopsToLane(network, site.lane)
+      toHome: hopsToLane(lanes, site.lane)
     })
   }
 
+  stationCache = stations
   return stations
 }
 
@@ -3363,6 +4014,45 @@ export function stationApron(station) {
     depth,
     offset: station.depth / 2 + depth / 2
   }
+}
+
+/**
+ * The ground in front of a station's doors, which nothing may stand on.
+ *
+ * Mike: "check the services buildings like police stations, hospitals and fire
+ * stations to make sure that their entrances are not blocked by things like
+ * lamp posts, signal lights or bus stations."
+ *
+ * They were, and by all three. Nothing was doing anything wrong: a station
+ * fronts a street, and lamps, bus stops and signal poles are all placed ALONG
+ * streets - so the one piece of kerb an engine has to cross is exactly the
+ * kerb the street furniture is spread along. Measured on the finished world, a
+ * bus shelter with its bench and pole stood fourteen units in front of the
+ * hub hospital, square across the way out.
+ *
+ * The rectangle runs from the front wall to the kerb and is a little wider
+ * than the building, because a pole beside the last bay still blocks it. Say
+ * it once, here, and let everything that dresses a street ask.
+ */
+export const STATION_DOOR_MARGIN = 2.5
+
+export function blocksStationEntrance(x, z, stations = getStations(), margin = 0) {
+  for (const station of stations) {
+    const fx = Math.sin(station.heading)
+    const fz = Math.cos(station.heading)
+    const out = station.depth / 2 + STATION_SETBACK / 2
+
+    const dx = x - (station.x + fx * out)
+    const dz = z - (station.z + fz * out)
+    const along = Math.abs(dx * fx + dz * fz)
+    const across = Math.abs(dx * -fz + dz * fx)
+
+    if (along <= STATION_SETBACK / 2 + margin &&
+        across <= station.width / 2 + STATION_DOOR_MARGIN + margin) {
+      return true
+    }
+  }
+  return false
 }
 
 /**
@@ -3679,8 +4369,16 @@ function bayPositions(on, sx, sz, lane, spec) {
  * pier serves nobody. Spaced out along each lane, and never within a stop's
  * length of the lane's end, so a stopped bus is never sitting in a junction.
  */
+/** How much kerb a shelter, its bench and its pole actually take up. */
+export const BUS_STOP_REACH = 5
+
 export function getBusStops(network = getLaneNetwork()) {
   const stops = []
+
+  // Asked for ONCE. getStations() is not cached - it re-sites every station in
+  // the world on every call - and asking it per candidate stop turned this
+  // function from milliseconds into minutes.
+  const stations = getStations(network)
 
   network.lanes.forEach((lane, index) => {
     if (lane.kind !== 'ring' && lane.kind !== 'road') return
@@ -3692,6 +4390,18 @@ export function getBusStops(network = getLaneNetwork()) {
       if (at < BUS_STOP_CLEARANCE || lane.length - at < BUS_STOP_CLEARANCE) continue
 
       const point = pointAlong(lane, at)
+
+      // NOT ACROSS A STATION'S DOORS. See blocksStationEntrance(): a shelter,
+      // its bench and its pole take up eight units of kerb, and the kerb a
+      // station opens onto is the one place in the city that has to stay
+      // clear. The stop is simply dropped rather than nudged along - a bus
+      // route with one fewer stop on a long lane is nothing; a fire station
+      // with a bus shelter across it is a fire station that cannot turn out.
+      //
+      // Measured against the shelter's own reach rather than a bare point, or
+      // a stop just outside the box still puts its pole inside it.
+      if (blocksStationEntrance(point.x, point.z, stations, BUS_STOP_REACH)) continue
+
       stops.push({
         lane: index, at,
         x: point.x, z: point.z, heading: point.heading,
@@ -3717,7 +4427,7 @@ export function getBusStops(network = getLaneNetwork()) {
  * you can't drive out of.
  */
 export function makeTraffic(network, fleet = TRAFFIC_FLEET, stops = null,
-                            stations = null) {
+                            stations = null, seed = 424242) {
   const vehicles = []
   const lanes = network.lanes
   if (!lanes.length) return vehicles
@@ -3757,10 +4467,25 @@ export function makeTraffic(network, fleet = TRAFFIC_FLEET, stops = null,
     }
   }
 
-  let seed = 424242
+  // The spawn's own random stream. SEEDABLE, which it was not until the tow
+  // truck was added to the fleet.
+  //
+  // The reason is worth writing down. `relocations` - the count of vehicles the
+  // simulation gave up on and teleported - is the metric that catches jams, and
+  // it turns out to be both chaotic AND front-loaded: most of them happen in
+  // the first few minutes while the fleet settles out of its spawn, and the
+  // count over any one window swings between 2 and 34 for the same world.
+  // Measured as ONE run it proved that tow trucks at 10 units a second jam the
+  // city, that at 11 they do not, and that at 12 they do again. All three of
+  // those were noise.
+  //
+  // One number from one seed is an anecdote. With this, a test can run the same
+  // fleet from a dozen different spawns and assert on what usually happens.
+  let state = (seed | 0) % 2147483647
+  if (state <= 0) state += 2147483646
   const rand = () => {
-    seed = (seed * 16807) % 2147483647
-    return (seed - 1) / 2147483646
+    state = (state * 16807) % 2147483647
+    return (state - 1) / 2147483646
   }
 
   // Buses only run where there are stops to call at. `noTraffic` is set in
@@ -3791,10 +4516,44 @@ export function makeTraffic(network, fleet = TRAFFIC_FLEET, stops = null,
     const free = pool.filter((i) => !used.has(i))
     const choose = free.length ? free : pool
 
+    // A SERVICE VEHICLE STARTS AT ITS OWN STATION.
+    //
+    // Mike: "I'm not seeing the environment's firetrucks, ambulances and
+    // police cars do their own missions... if I see a fire, I don't see other
+    // environmental fire trucks coming in to put out of the fire."
+    //
+    // The homing worked and the callouts worked; the SPAWN did not. Every one
+    // of the fourteen service vehicles was placed on a lane picked at random
+    // from the whole world, and measured on the finished map not one of them
+    // started on its own island: the hub's fire engine began 264 units away,
+    // the CONTACT engine 582. So no island had cover, every callout was a
+    // cross-water trip through the city traffic, and a fire on the hub went
+    // unattended for four minutes because the nearest engine was crawling over
+    // a bridge in a queue.
+    //
+    // Homed first, then the general pool. It is drawn BEFORE the loop below so
+    // the number of rand() calls per spawn is unchanged whichever branch runs -
+    // moving a draw reshuffles the whole city, which is the lesson orderedNext()
+    // is covered in.
+    const home = (spareBays[kind] && spareBays[kind].length)
+      ? spareBays[kind].shift()
+      : null
+
+    // The lanes worth starting on: its own station's lane first, then anything
+    // else on the same island. A vehicle that begins where it lives spends its
+    // shift on the streets it serves.
+    let start = choose
+    if (home && home.station) {
+      const island = home.station.island
+      const mine = pool.filter((i) =>
+        lanes[i] === lanes[home.station.lane] || lanes[i].island === (island && island.id))
+      if (mine.length) start = mine
+    }
+
     // Somewhere with room. Ten tries, then give up on this one rather than
     // force it in on top of something.
     for (let attempt = 0; attempt < 10; attempt++) {
-      const laneIndex = choose[Math.floor(rand() * choose.length)]
+      const laneIndex = start[Math.floor(rand() * start.length)]
       const lane = lanes[laneIndex]
       const at = TRAFFIC_HEADWAY + rand() * (lane.length - TRAFFIC_HEADWAY * 2)
 
@@ -3803,10 +4562,6 @@ export function makeTraffic(network, fleet = TRAFFIC_FLEET, stops = null,
       if (crowded) continue
 
       used.add(laneIndex)
-
-      const home = (spareBays[kind] && spareBays[kind].length)
-        ? spareBays[kind].shift()
-        : null
 
       vehicles.push({
         kind,
@@ -3913,6 +4668,22 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
   const lanes = network.lanes
   if (!lanes.length) return vehicles
 
+  // THE LIGHTS, FIRST - and "first" means the first statement in the step, not
+  // merely early in it.
+  //
+  // It was placed a hundred lines further down to begin with, which LOOKED
+  // early and was after `heldAtRed`. That cost a whole afternoon. On the very
+  // first step of a run, `heldAtRed` found `phase === undefined` and fell back
+  // to the clock; on the first step of the NEXT run the phase was still set
+  // from the previous one, so the same frame took the demand branch instead.
+  // Two runs of an identical fleet then diverged on step zero - three runs
+  // measured 31694, 31979, 31979 - and `tests/incident.mjs`, which requires
+  // two identical runs to agree to the metre, caught it.
+  //
+  // The invariant is simply stated: nothing in a step may read a signal before
+  // that signal has been driven for that step.
+  driveSignals(lanes, vehicles, elapsed, delta)
+
   // Who is on each lane, in order. Rebuilt each step because they move; with a
   // few dozen vehicles that costs nothing and cannot go stale.
   const byLane = new Map()
@@ -3963,7 +4734,28 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
     //
     // So the whole of the short-lane rule is the half below: don't go in.
     const state = signalState(lane.signal, lane.signalGroup, elapsed)
-    if (state === 'red' || (state === 'amber' && toEnd > 8)) heldAtRed.add(v)
+    // WHETHER IT HAS ALREADY PASSED THE STOP LINE, not "is it within eight
+    // units of the end".
+    //
+    // The eight was a width in disguise, like LANE_JOIN_TOLERANCE before it.
+    // A junction's patch is `hypot(wa / 2, wb / 2) + 0.6` across, which is 5.55
+    // where two 7-unit roads meet and 10.5 where two arteries do - so on a wide
+    // junction a vehicle eight units from the lane end is already INSIDE the
+    // box, well past its own stop line, and telling it to stop there would
+    // park it across the traffic that has the green. Told to carry on, it was
+    // still crossing when the light went red: tests/traffic.mjs caught exactly
+    // one jumped red in five minutes.
+    //
+    // `lane.stopLine` is where the vehicle is actually asked to stop, set from
+    // the junction's own radius, so the distance from there to the end of the
+    // lane is precisely "how much of this lane is inside the junction".
+    const committed = lane.stopLine !== undefined
+      ? lane.length - lane.stopLine
+      : 8
+
+    if (state === 'red' || (state === 'amber' && toEnd > committed)) {
+      heldAtRed.add(v)
+    }
   }
 
   // Where each junction is claimed, so an unsignalled one gets some
@@ -4010,6 +4802,42 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
   // against the same picture. Evaluating against positions that have already
   // been updated gives whoever happens to be first in the list an advantage,
   // and makes the result depend on array order.
+  // WHERE EVERYONE WAS, captured before ANYTHING in this step moves them.
+  //
+  // `resolveOverlaps()` puts a vehicle back here when its move turned out to
+  // be unsafe, so this has to be the state at the top of the step or the undo
+  // is not an undo.
+  //
+  // `sidestep` belongs in here too. Rolling back the position but keeping the
+  // swerve left a vehicle parked inside the one it had just swerved into -
+  // 7,530 overlapping frames from one missing field.
+  //
+  // AND SO DOES THE KNOCK, for the same reason and with one extra subtlety.
+  // It was first captured AFTER the decay below, which meant "undoing" a step
+  // restored the very displacement that step had just applied. Setting it to
+  // null instead was tried and traded one bug for a worse one: a knock has a
+  // YAW, so dropping it snaps the vehicle's heading in a single frame, and
+  // tests/traffic.mjs measured a bus turning 4.2 degrees in one frame against
+  // a bound of 4 - the exact "jagged turn" class of defect this project has
+  // fixed twice before. Restoring last frame's value is smooth by
+  // construction: it is one frame of a damped spring, backwards.
+  //
+  // Copied, not referenced, because stepKnock() mutates in place.
+  const was = vehicles.map(v => ({
+    lane: v.lane,
+    at: v.at,
+    sidestep: v.sidestep || 0,
+    knock: v.knock ? { ...v.knock } : null
+  }))
+
+  // BEING SHOVED WEARS OFF. After `was` and before the snapshot, so the undo
+  // above sees the start of the step and everything below - the veto, the
+  // queueing, the junction claims - sees where the vehicle is NOW rather than
+  // where it was when it got hit. See impacts.js for the spring.
+  for (const v of vehicles) {
+    if (v.knock) v.knock = stepKnock(v.knock, delta)
+  }
+
   const snapshot = vehicles.map(v => ({ v, ...trafficPosition(network, v) }))
   const indexOf = new Map(vehicles.map((v, i) => [v, i]))
 
@@ -4019,24 +4847,61 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
   // above to avoid, so none of it would ever have fired.
   const obstacles = incident && incident.blocks ? incident.blocks : null
 
-  // Where everyone was, so anything that ends up overlapping can be put back
-  // `sidestep` belongs in here too. Rolling back the position but keeping the
-  // swerve left a vehicle parked inside the one it had just swerved into -
-  // 7,530 overlapping frames from one missing field.
-  const was = vehicles.map(v => ({ lane: v.lane, at: v.at, sidestep: v.sidestep || 0 }))
 
   for (const v of vehicles) {
     const lane = lanes[v.lane]
 
-    // A vehicle in or entering its station is off the road network entirely -
-    // it is following a two-point path of its own and nothing else can be in
-    // the way, because a bay belongs to one vehicle.
+    // A CALL TURNS THEM OUT.
+    //
+    // Mike: "if I see a fire, I don't see other environmental fire trucks
+    // coming in to put out of the fire."
+    //
+    // They were asleep in their garages. `v.mission` - the hops table a
+    // callout writes - is only ever consulted by `orderedNext()`, which is
+    // only reached by a vehicle already driving on a lane. An engine sitting
+    // in its bay hit the `dwell` branch below and stayed there for the full
+    // STATION_DWELL of seventy seconds, then did an entire patrol before the
+    // routing got a look at it. Measured on the finished world: with a fire
+    // on the hub and an engine a hundred metres away at the hub's own fire
+    // station, no engine reached the fire in FOUR MINUTES.
+    //
+    // A fire station whose engines finish their nap before turning out is not
+    // a fire station. So the three places a vehicle can be asleep all now ask
+    // whether it has been called, and a call wins:
+    //
+    //   PARKED IN A BAY   the parking run reverses - see stepParking(), which
+    //                     already knows how to back out, because that is what
+    //                     it does at the end of every dwell.
+    //   DWELLING          the dwell is cut short and the backing-out starts.
+    //   ON PATROL         it does not turn in to go home while it is on a
+    //                     call, which it otherwise would - the shift clock
+    //                     keeps running while a crew is at a fire.
+    const called = !!v.mission
+
     if (v.parking) {
+      // ANY phase but 'out' - and getting that wrong is the whole bug in
+      // miniature. The run is `in` for a second and a half, then `waiting` for
+      // up to seventy seconds, then `out`. An engine in its bay is almost
+      // always in `waiting`, so a fix that only reversed `in` would turn out
+      // exactly the engines that had just arrived and leave every other one
+      // asleep - which is the behaviour it was meant to remove.
+      //
+      // Turned round rather than teleported: an engine that pops onto the
+      // carriageway is worse to look at than one that takes a second and a
+      // half to reverse off its own apron.
+      if (called && v.parking.phase !== 'out') v.parking.phase = 'out'
       stepParking(v, delta)
       continue
     }
 
     if (v.dwell > 0) {
+      if (called) {
+        v.dwell = 0
+        v.parking = { phase: 'out', progress: 1 }
+        v.speed = 0
+        stepParking(v, delta)
+        continue
+      }
       v.dwell -= delta
       v.speed = 0
       continue
@@ -4045,7 +4910,10 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
     // Time to go home? Only from the lane the station opens onto, and only
     // near the point it opens at - which is what makes the turn-in a straight
     // line off the carriageway rather than a piece of pathfinding.
-    if (v.home) {
+    //
+    // Never while on a call. The shift clock goes on running, so a crew that
+    // has been out all day still goes home the moment the call is over.
+    if (v.home && !called) {
       v.patrol -= delta
       if (v.patrol <= 0 && v.lane === v.home.station.lane) {
         const gap = v.home.station.at - v.at
@@ -4065,6 +4933,19 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
 
     // How long it has been standing still, which the patience valve reads
     v.stopped = v.speed < 0.3 ? (v.stopped || 0) + delta : 0
+
+    // And how much credit a recent rescue still has. A vehicle that has been
+    // driving properly for a while has clearly been fixed, so the next rescue
+    // it needs starts polite again. Counted in distance rather than time: a
+    // vehicle sitting still for thirty seconds has not proved anything.
+    if (v.rescuedRecently > 0 && v.speed > 1) {
+      v.rescuedCredit = (v.rescuedCredit || 0) + v.speed * delta
+      if (v.rescuedCredit > RESCUE_SETTLED) {
+        v.rescuedRecently--
+        v.rescueFailed = 0
+        v.rescuedCredit = 0
+      }
+    }
 
     let limit = v.cruise
     // Why it is going as slowly as it is. Costs a string assignment and has
@@ -4119,8 +5000,39 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
     const committed = lane.stopLine === undefined || noseGap(lane, v) <= 0
     const toStopLine = noseGap(lane, v)
 
+    // WHICH WAY IT IS ACTUALLY GOING, decided on the approach rather than at
+    // the line.
+    //
+    // This is the single biggest cause of what Mike reported as cars that
+    // "stutter or have irregular movement": 43% of all visible speed swings
+    // bottomed out on the rule below. The onward lane used to be chosen at the
+    // moment of crossing, so twenty-six units earlier - which is where that
+    // rule runs - nothing knew which way the car was going, and it therefore
+    // braked for a vehicle sitting in the entrance of ANY branch out of the
+    // junction, including the three it was not going to take. The instant that
+    // stranger moved, the constraint vanished and the car surged.
+    //
+    // A driver picks their exit on the approach. So does this now, and the
+    // choice is remembered - `onwardFrom` guards that it is made exactly ONCE
+    // per lane, which matters for more than tidiness: orderedNext() draws one
+    // v.rand() per option, and calling it twice for the same junction would
+    // shift every subsequent route in the city.
+    if (toEnd < TRAFFIC_STOP_SIGHT && lane.next.length) {
+      if (v.onwardFrom !== v.lane) {
+        v.onward = orderedNext(lanes, lane, v, incident, shutLanes)
+        v.onwardFrom = v.lane
+      }
+    } else if (v.onwardFrom !== v.lane) {
+      v.onward = null
+    }
+
+    // Only the branch it has chosen. Falling back to every branch when it has
+    // not chosen yet keeps the old behaviour for the one frame that can happen
+    // in, rather than briefly seeing nothing at all.
+    const watching = (v.onward && v.onward.length) ? [v.onward[0]] : lane.next
+
     if (toEnd < TRAFFIC_STOP_SIGHT) {
-      for (const nextIndex of lane.next) {
+      for (const nextIndex of watching) {
         for (const other of byLane.get(nextIndex) || []) {
           const entrance = (other.length + v.length) / 2 + 2
           if (other.at > entrance) continue
@@ -4133,6 +5045,16 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
         }
       }
     }
+
+    // A U-TURN IS A MANOEUVRE, NOT A CORNER.
+    //
+    // At the end of a cul-de-sac the only way on is back the way you came, and
+    // taken at cruising speed that draws as a car pivoting on the spot - which
+    // is the other half of what "sudden U Turns" looked like. Slowed to a
+    // walking pace for the last few units, it draws as a car turning round,
+    // which is what it is. stopSpeed rather than a flat limit so it eases down
+    // rather than dropping to it.
+    if (lane.deadEnd) hold(Math.max(UTURN_SPEED, stopSpeed(toEnd, v)), 'turning round')
 
     // Lights. Amber counts as red for anything not already committed - a
     // vehicle inside the stopping distance carries on, which is what a
@@ -4289,7 +5211,14 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
     if (v.speed > 0) {
       const step = v.speed * delta
       const crossing = v.at + step >= lane.length && lane.next.length > 0
-      const options = crossing ? orderedNext(lanes, lane, v, incident, shutLanes) : [null]
+      // The choice made on the approach, reused. Only asked afresh if the
+      // vehicle somehow arrived without one - a lane shorter than
+      // TRAFFIC_STOP_SIGHT that it entered already past the sight line.
+      const options = crossing
+        ? ((v.onwardFrom === v.lane && v.onward)
+            ? v.onward
+            : orderedNext(lanes, lane, v, incident, shutLanes))
+        : [null]
 
       // Straight ahead first, then a step to one side, then further out.
       //
@@ -4423,7 +5352,9 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
         }
       }
 
-      if (relocate(network, v, snapshot, byLane, incident, obstacles)) {
+      const stoodAt = pointAlong(lane, v.at)
+      if (relocate(network, v, snapshot, byLane, incident, obstacles,
+                   player, stoodAt)) {
         v.blockedFor = 0
         v.stopped = 0
         v.sidestep = 0
@@ -4502,7 +5433,141 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
   // and makes an overlap impossible rather than unlikely.
   resolveOverlaps(network, vehicles, was)
 
+  // AND THE PLAYER IS JUST ANOTHER BOX IN IT.
+  //
+  // Last, because it works on where everything ACTUALLY ended up. Running it
+  // before resolveOverlaps meant a car knocked clear of the player was
+  // promptly rewound into it as an "overlap", and the two of them chattered.
+  bumpPlayer(network, vehicles, player, delta)
+
   return vehicles
+}
+
+/**
+ * The player hitting the traffic, and the traffic hitting the player.
+ *
+ * Mike: "whenever a car hits me, I sometimes go flying or at least my vehicle
+ * is budged out of the way. Can we make this go both ways so that any car
+ * hitting another car will make both cars react?"
+ *
+ * `player` is optional and has been `{ x, z }` for most of this project's
+ * life - the traffic only ever needed a point to queue behind. For an impact
+ * it also wants `heading`, `speed`, and `kind`, and it stays back-compatible:
+ * with no heading there is no box, and this does nothing at all. That matters
+ * because half the tests in this repo pass a bare `{ x, z }`.
+ *
+ * The player's half of the exchange is written back onto the same object as
+ * `player.impact`, rather than returned, because `stepTraffic()` returns the
+ * vehicle list and a hundred call sites read it. World.js builds this object
+ * fresh every frame, so there is nothing to go stale.
+ */
+function bumpPlayer(network, vehicles, player, delta) {
+  if (!player || typeof player.heading !== 'number') return
+
+  const kind = player.kind || 'sedan'
+  const pfx = Math.sin(player.heading)
+  const pfz = Math.cos(player.heading)
+  const pmass = massOf(kind)
+  const pspeed = player.speed || 0
+
+  const pbox = {
+    x: player.x, z: player.z,
+    fx: pfx, fz: pfz,
+    halfLength: (player.length || TRAFFIC_LENGTHS[kind] || 4.4) / 2,
+    halfWidth: (player.wide || TRAFFIC_WIDTHS[kind] || 1.9) / 2
+  }
+
+  // Only the ones near enough to be worth the separating-axis test. A circle
+  // is the right broad phase here and the wrong one everywhere else in this
+  // file: it is being used to SKIP work, not to decide a collision, so being
+  // generous costs nothing but a few wasted tests.
+  const reach = pbox.halfLength + 8
+
+  for (const v of vehicles) {
+    if (v.parking) continue
+
+    const at = trafficPosition(network, v)
+    if (Math.abs(at.x - player.x) > reach || Math.abs(at.z - player.z) > reach) {
+      v.touchingPlayer = false
+      continue
+    }
+
+    const hit = contactBetween(pbox, vehicleBox(at, v))
+    if (!hit) { v.touchingPlayer = false; continue }
+
+    const vfx = Math.sin(at.heading)
+    const vfz = Math.cos(at.heading)
+
+    const a = { mass: pmass, vx: pfx * pspeed, vz: pfz * pspeed }
+    const b = { mass: massOf(v.kind), vx: vfx * v.speed, vz: vfz * v.speed }
+
+    const response = impactResponse(a, b, hit.nx, hit.nz)
+    const closing = response.closing
+
+    // A HIT AND A LEAN ARE DIFFERENT THINGS, and treating them the same is
+    // what makes contact buzz. Above IMPACT_SPEED this is a collision and
+    // gets the momentum exchange once, on the frame it starts. Below it - or
+    // for as long as the two stay touching afterwards - they simply ease
+    // apart, which is a rate rather than an impulse and so cannot resonate.
+    const fresh = !v.touchingPlayer
+    v.touchingPlayer = true
+
+    // Where along the vehicle it was hit, so a clip on the nose slews it round
+    // and a hit square on the flank does not.
+    const arm = (player.x - at.x) * vfx + (player.z - at.z) * vfz
+
+    if (fresh && closing > IMPACT_SPEED) {
+      // A BANG. The full exchange, once, on the frame contact starts.
+      v.knock = addKnock(v.knock, response.b.dvx, response.b.dvz, arm)
+      v.speed = stunnedSpeed(
+        speedAfterImpact(v.speed, response.b.dvx, response.b.dvz, vfx, vfz),
+        response.b.dvx, response.b.dvz)
+
+      // The player's half. Applied in World.js, because the player is a real
+      // dynamic body and setting its velocity from in here would mean this
+      // module knowing about Rapier.
+      player.impact = {
+        dvx: response.a.dvx,
+        dvz: response.a.dvz,
+        // What it hit, so the caller can make a noise about it.
+        kind: v.kind,
+        closing
+      }
+
+      // Being hit is a reason to stop, and it is not one of the three that
+      // `blockedFor` counts - so a car knocked into the kerb by the player
+      // must not start its stuck timer over it.
+      v.blockedFor = 0
+    } else if (closing > 0) {
+      // A PUSH. Still closing, so momentum keeps crossing - at a rate rather
+      // than as a second impulse. This is what makes a car shiftable: without
+      // it you get one hop and then a vehicle that holds its ground however
+      // hard you lean on it, which is the most obvious possible way to notice
+      // the physics only work one way.
+      const share = PUSH_RATE * delta
+      v.knock = addKnock(
+        v.knock, response.b.dvx * share, response.b.dvz * share, arm * 0.5)
+      v.speed = speedAfterImpact(
+        v.speed, response.b.dvx * share, response.b.dvz * share, vfx, vfz)
+      v.blockedFor = 0
+
+      // The player feels the push too, or a car being shoved would be a car
+      // that costs nothing to shove.
+      player.impact = {
+        dvx: response.a.dvx * share,
+        dvz: response.a.dvz * share,
+        kind: v.kind,
+        closing,
+        // So the caller does not sound a crash thirty times a second while
+        // the two are merely rubbing along each other.
+        sustained: true
+      }
+    } else {
+      // Touching but no longer closing: just ease them apart.
+      const push = separation(hit.depth, massOf(v.kind), pmass) * delta
+      v.knock = addKnock(v.knock, hit.nx * push * 8, hit.nz * push * 8, 0)
+    }
+  }
 }
 
 /** Put back anything that ended the step inside something else. */
@@ -4511,6 +5576,7 @@ function resolveOverlaps(network, vehicles, was) {
     vehicles[i].lane = was[i].lane
     vehicles[i].at = was[i].at
     vehicles[i].sidestep = was[i].sidestep
+    vehicles[i].knock = was[i].knock ? { ...was[i].knock } : null
     vehicles[i].speed = 0
     vehicles[i].why = 'blocked'
   }
@@ -4544,6 +5610,49 @@ function resolveOverlaps(network, vehicles, was) {
         // nothing behind them moved either.
         vehicles[b].sidestep = 0
 
+        // AND THE SHOVE GOES WITH IT, in THIS branch only.
+        //
+        // A knock carries a yaw, so dropping one snaps the vehicle's heading
+        // in a frame - which is why `rewind()` above restores last frame's
+        // knock instead of clearing it, and why clearing it there cost a bus
+        // 4.2 degrees in one frame. Here the vehicle is already being
+        // straightened up and shuffled along its lane, and it has got this far
+        // precisely because nothing gentler worked.
+        //
+        // Raising the pass count from three to five was tried first and
+        // changed nothing: the pair is not short of attempts, it is wedged by
+        // a displacement none of the attempts can undo. tests/impacts.mjs
+        // measured two overlapping pairs with the player ramming the fleet on
+        // 14-wide arteries, where a sidestep alone reaches four units.
+        vehicles[b].knock = null
+
+        // AND IT SHOWS. Two AI vehicles that got this far are genuinely
+        // interpenetrating - the optimistic double-booking above was already
+        // dealt with by the rewind - so this is the only place in the traffic
+        // model where one car has really hit another, and until now it looked
+        // like nothing at all.
+        //
+        // Deliberately NOT applied to every pair that trips the rewind. Most
+        // of those are two cars that merely aimed at the same gap and never
+        // touched, and knocking them made the whole city twitch at junctions:
+        // 41 knocks a second across the fleet, against 0.6 here.
+        //
+        // The knock also helps rather than fights the unjam below, because it
+        // pushes them along the axis of least overlap - which is the direction
+        // the shuffle is looking for anyway.
+        const contact = contactBetween(boxes[a], boxes[b])
+        if (contact) {
+          const ma = massOf(vehicles[a].kind)
+          const mb = massOf(vehicles[b].kind)
+          const kick = Math.min(4, contact.depth * 3)
+          vehicles[a].knock = addKnock(vehicles[a].knock,
+            -contact.nx * kick * (mb / (ma + mb)),
+            -contact.nz * kick * (mb / (ma + mb)), 0)
+          vehicles[b].knock = addKnock(vehicles[b].knock,
+            contact.nx * kick * (ma / (ma + mb)),
+            contact.nz * kick * (ma / (ma + mb)), 0)
+        }
+
         // Backwards first, then forwards. Backwards alone was not enough: a
         // vehicle a metre PAST a junction node sits at at≈0 on its new lane
         // and has nothing to reverse into, so it stayed welded in place for
@@ -4558,6 +5667,42 @@ function resolveOverlaps(network, vehicles, was) {
             if (at < 0 || at > lane.length) continue
             vehicles[b].at = at
             boxes[b] = vehicleBox(trafficPosition(network, vehicles[b]), vehicles[b])
+            if (!boxesOverlap(boxes[a], boxes[b])) { freed = true; break }
+          }
+        }
+
+        if (freed) continue
+
+        // AND NOW THE OTHER ONE, which is what the comment at the top of this
+        // function has always claimed happens and what the code has never
+        // actually done. Only `b` was ever touched.
+        //
+        // That hole is invisible almost all the time, because `b` can nearly
+        // always find a clear metre. It showed up as ONE overlapping frame in
+        // five minutes of seventy vehicles, and the pair was diagnostic: a
+        // convertible on lane 69 at 30.58 still MOVING at 2.33 with a 0.50
+        // swerve on, overlapping a pickup stopped on lane 64 - which is one of
+        // lane 69's onward lanes. The pickup had already been rewound and had
+        // nowhere to go; the convertible had driven into it and, having the
+        // lower index, was never asked to give anything back.
+        //
+        // `a` moved into `b` here as surely as the other way round, so if `b`
+        // cannot get clear then `a`'s move was the unsafe one and it goes back
+        // too. Neither move is kept, which is exactly what the comment says.
+        rewind(a)
+        boxes[a] = vehicleBox(trafficPosition(network, vehicles[a]), vehicles[a])
+        if (!boxesOverlap(boxes[a], boxes[b])) continue
+
+        vehicles[a].sidestep = 0
+        vehicles[a].knock = null
+        const laneA = network.lanes[was[a].lane]
+
+        for (let shift = 0.4; shift <= UNJAM_REVERSE && !freed; shift += 0.4) {
+          for (const direction of [-1, 1]) {
+            const at = was[a].at + direction * shift
+            if (at < 0 || at > laneA.length) continue
+            vehicles[a].at = at
+            boxes[a] = vehicleBox(trafficPosition(network, vehicles[a]), vehicles[a])
             if (!boxesOverlap(boxes[a], boxes[b])) { freed = true; break }
           }
         }
@@ -4616,6 +5761,15 @@ function orderedNext(lanes, lane, v, incident = null, shut = null) {
         score = -(goingHome[index] ?? 999) * 10 + v.rand()
       } else {
         score = straightish
+        // A DRIVER WITH NOWHERE TO BE DOES NOT TURN INTO A CLOSE.
+        //
+        // See markDeadEnds(). A penalty rather than a veto, deliberately: some
+        // of these are proper roads - one is 138 units long - and a city where
+        // nothing ever drives down the quay spur is a city with eleven empty
+        // streets in it. This makes a cul-de-sac the last choice at a junction
+        // that has any other, which is enough: the U-turns that remain are the
+        // ones a real driver would also be making.
+        if (lanes[index].deadEnd) score -= DEAD_END_PENALTY
       }
 
       // Routed away from the incident - AFTER the draw, never instead of it.
@@ -4693,8 +5847,20 @@ function lawfulWait(v) {
 }
 
 function relocate(network, v, snapshot, byLane, incident = null,
-                  obstacles = null) {
+                  obstacles = null, player = null, from = null) {
   const lanes = network.lanes
+
+  // NOT WHILE ANYBODY IS WATCHING.
+  //
+  // See RELOCATE_UNSEEN. This is the whole of the fix for "vehicles that just
+  // disappear into thin air": the valve is correct, it is just rude about
+  // when it fires. Refusing near the player costs nothing - the caller backs
+  // off a few seconds and asks again - and the vehicle is still rescued as
+  // soon as the player has driven on.
+  if (player && from &&
+      Math.hypot(from.x - player.x, from.z - player.z) < RELOCATE_UNSEEN) {
+    return false
+  }
 
   // Where everyone is NOW, not where they were at the start of the step.
   //
@@ -4706,11 +5872,77 @@ function relocate(network, v, snapshot, byLane, incident = null,
   // relocations in five minutes.
   const live = snapshot.map(s => ({ v: s.v, ...trafficPosition(network, s.v) }))
 
-  for (let tries = 0; tries < 30; tries++) {
-    const index = Math.floor(v.rand() * lanes.length)
-    const lane = lanes[index]
+  // ROUND THE CORNER, NOT ACROSS THE WORLD.
+  //
+  // Candidates are gathered nearest-first out to RELOCATE_NEARBY and only then
+  // does it fall back to anywhere at all. Picking uniformly from all 175 lanes
+  // moved a vehicle a median of 200 units, which is not a rescue, it is a
+  // teleport - and it is what you see.
+  const near = []
+  const far = []
+  for (let i = 0; i < lanes.length; i++) {
+    const lane = lanes[i]
+
+    // NOT ONTO A CLOSED COURSE.
+    //
+    // Mike: "other environment city vehicles (buses, cars, trucks, etc.)
+    // should not be allowed to drive into the race track." They could not
+    // DRIVE there - `noTraffic` prunes every link into those lanes and has
+    // since the courses were built - but they could be PUT there. This picked
+    // a lane at random out of all 175 and four of them are the racing circuit
+    // and the stunt arena, so roughly one relocation in forty-four dropped a
+    // saloon onto the track.
+    //
+    // Found by simulating five minutes and asking which island each vehicle
+    // was standing on: one sedan, on the stunt island, with `relocations: 1`
+    // against its name. The rescue valve was the only way in and nothing was
+    // checking it.
+    if (lane.noTraffic) continue
     if (lane.length < v.length * 3) continue
     if (v.kind === 'bus' && !lane.stops.length) continue
+
+    if (from) {
+      const mid = pointAlong(lane, lane.length / 2)
+      const away = Math.hypot(mid.x - from.x, mid.z - from.z)
+      // And not so close that it is a jump across the junction it is stuck at,
+      // which reads as a car hopping forward through the queue.
+      if (away < RELOCATE_UNSEEN) continue
+      ;(away < RELOCATE_NEARBY ? near : far).push(i)
+    } else {
+      far.push(i)
+    }
+  }
+
+  // Fifteen tries among the near lanes, then fifteen anywhere. Thirty in
+  // total, as before, so the cost of a failed rescue has not moved.
+  //
+  // ESCALATING, and this half is not optional. A rescue round the corner is
+  // kinder to look at and worse at working: it puts the vehicle back into the
+  // same congested district, where it can get stuck again. Measured, that took
+  // the rescue rate from 0.15 per vehicle per five minutes to 0.39, and left
+  // one vehicle that had covered 63 units in five minutes because it was being
+  // shuffled around inside the same jam.
+  //
+  // So a vehicle that has just been rescued and is stuck AGAIN skips the local
+  // pool entirely and goes wherever there is room. The first rescue is polite;
+  // the second one is a rescue.
+  //
+  // A FAILED rescue escalates too, and that half was missing. A vehicle whose
+  // local attempt finds nowhere clear backs off five seconds and asks again -
+  // and asked again with the same local-only pool it fails again, for ever.
+  // Measured: the longest a vehicle stood still went from 36s on the unchanged
+  // world to 80s, entirely on vehicles that were being politely offered
+  // nowhere to go. Counted separately from successes, because "the rescue did
+  // not work" and "there was no rescue" are different failures with the same
+  // remedy.
+  const escalate = (v.rescuedRecently || 0) > 0 || (v.rescueFailed || 0) > 0
+  for (let tries = 0; tries < 30; tries++) {
+    const pool = (!escalate && tries < 15 && near.length)
+      ? near
+      : (far.length ? far : near)
+    if (!pool.length) break
+    const index = pool[Math.floor(v.rand() * pool.length)]
+    const lane = lanes[index]
 
     const at = v.length + v.rand() * (lane.length - v.length * 2)
 
@@ -4733,19 +5965,30 @@ function relocate(network, v, snapshot, byLane, incident = null,
     // in the city guaranteed to be blocked, so dropping a car there trips the
     // valve again within the minute - and a car materialising inside the
     // wreck is the worst-looking bug this whole feature could have.
-    if (incident &&
-        Math.hypot(pointAlong(lane, at).x - incident.x,
-                   pointAlong(lane, at).z - incident.z) < INCIDENT_RADIUS) continue
-
     const where = pointAlong(lane, at)
+    if (incident &&
+        Math.hypot(where.x - incident.x, where.z - incident.z) < INCIDENT_RADIUS) continue
+
+    // Nor in the player's lap, wherever it came from.
+    if (player &&
+        Math.hypot(where.x - player.x, where.z - player.z) < RELOCATE_UNSEEN) continue
+
     if (blocked(where, v, live, obstacles)) continue
 
     v.lane = index
     v.at = at
     v.nextStop = -1
+    v.onward = null
+    v.onwardFrom = -1
+    // Counts down again once the vehicle is demonstrably driving - see
+    // the decay in stepTraffic. Two rescues in quick succession means the
+    // first one did not work.
+    v.rescuedRecently = 2
+    v.rescueFailed = 0
     return true
   }
 
+  v.rescueFailed = (v.rescueFailed || 0) + 1
   return false
 }
 
@@ -4888,7 +6131,7 @@ function forwardGap(me, other, v) {
 }
 
 /** Shortest signed difference between two headings. */
-function angleDelta(a, b) {
+export function angleDelta(a, b) {
   let d = a - b
   while (d > Math.PI) d -= Math.PI * 2
   while (d < -Math.PI) d += Math.PI * 2
@@ -4969,7 +6212,8 @@ export function trafficPosition(network, v) {
   }
 
   const lane = network.lanes[v.lane]
-  const at = pointAlong(lane, v.at)
+  // SMOOTHED. This is where a vehicle IS, which is motion - see pointAlong().
+  const at = pointAlong(lane, v.at, false, true)
 
   // Including however far it has pulled out to get round something. This has
   // to live here rather than in the renderer: the collision veto asks for a
@@ -4979,6 +6223,22 @@ export function trafficPosition(network, v) {
   if (sidestep) {
     at.x -= Math.cos(at.heading) * sidestep
     at.z += Math.sin(at.heading) * sidestep
+  }
+
+  // AND HOWEVER FAR IT HAS BEEN SHOVED. See impacts.js.
+  //
+  // In world space, not lane space, and added last. A knock is not a decision
+  // the vehicle made, so unlike the sidestep above it is not something the
+  // collision veto gets to refuse - it is where the car IS after being hit,
+  // and the veto's job from here is to keep everyone else out of it.
+  //
+  // It has to be inside this function for the same reason the sidestep is: the
+  // veto asks trafficPosition() where a vehicle is, and an answer that left
+  // the shove out would be checking a place the car is not.
+  if (v.knock) {
+    at.x += v.knock.x
+    at.z += v.knock.z
+    at.heading += v.knock.yaw
   }
 
   return { ...at, stopped: v.speed < 0.2 }
@@ -6052,10 +7312,21 @@ export function getSeaGraph() {
   const edges = new Map()   // node index -> [{ to, cost }]
 
   const add = (node) => { nodes.push(node); edges.set(nodes.length - 1, []); return nodes.length - 1 }
+
+  // The decks, so every edge can be asked how much air it has under it.
+  //
+  // Mike: "fix the ships clipping/going through the bridges." Before the decks
+  // were arched they sat at sea level, so this question had no answer worth
+  // having; now it does, and it is asked ONCE per edge here rather than every
+  // time a ship picks a voyage. Measured, the old flat decks were sailed
+  // through 2,601 times in ten minutes across three of the seven crossings.
+  const bridges = getBridges()
+
   const join = (a, b) => {
     const cost = Math.hypot(nodes[a].x - nodes[b].x, nodes[a].z - nodes[b].z)
-    edges.get(a).push({ to: b, cost })
-    edges.get(b).push({ to: a, cost })
+    const clearance = legClearance(nodes[a], nodes[b], bridges)
+    edges.get(a).push({ to: b, cost, clearance })
+    edges.get(b).push({ to: a, cost, clearance })
   }
 
   const ports = getPorts()
@@ -6155,7 +7426,98 @@ export function getSeaGraph() {
     }
   }
 
+  // THE MARKED CHANNEL UNDER EACH ARCH.
+  //
+  // Without these the routing works and the world is duller for it: once a
+  // deck is high enough to matter, every leg that crossed one is refused and
+  // the boats simply go round. Measured over ten minutes that was 0 clipping
+  // frames and 0 passes - which is half the point of building an arch.
+  //
+  // A node on the bridge's centre line at midspan gives the graph a legal way
+  // THROUGH, at the one place the deck is at full height, exactly as a marked
+  // navigation span works on a real river. Legs into and out of it leave the
+  // footprint sideways, so they stay at t = 0.5 and keep the crown's full
+  // clearance rather than sliding down the arch.
+  //
+  // Cargo is not excluded here by hand: it is 13.45 tall against 5.46 of air,
+  // so `seaPath()` refuses these edges for it on the numbers. One rule, no
+  // special cases.
+  for (const bridge of bridges) {
+    const channel = add({
+      kind: 'channel', bridge,
+      x: bridge.x, z: bridge.z
+    })
+
+    let joined = 0
+    const reachable = [
+      ...ports.map((port) => approachOf.get(port.id)),
+      ...lane
+    ]
+
+    for (const other of reachable) {
+      if (!seaLegIsClear(nodes[channel], nodes[other])) continue
+      join(channel, other)
+      joined++
+    }
+
+    // A channel nothing can reach is a node the router will never visit. It
+    // costs nothing to leave in place, and dropping it would mean deleting a
+    // node other indices have already been handed out around.
+    if (!joined) continue
+  }
+
   return { nodes, edges, lane, radius }
+}
+
+/**
+ * The widest half-beam in the fleet, used as the margin on every clearance
+ * test.
+ *
+ * ONE number for every edge, deliberately. Clearance is stored on the graph's
+ * edges and the graph is shared by the whole fleet, so it has to be the answer
+ * for the widest hull - work it out per vessel and the same edge would need a
+ * different number for a boat and a cargo ship. Being conservative here costs
+ * a small boat a couple of units of channel it could have used; getting it
+ * wrong costs a container ship's flank through a parapet.
+ */
+export const WIDEST_HALF_BEAM = 5
+
+/**
+ * How much air a leg has under it, over its whole length.
+ *
+ * Infinity where it never passes under a deck, which is almost everywhere -
+ * the lane ring sits at radius 493 and every bridge is inside 300, so only the
+ * short legs from a port out to the ring, and the port-to-port shortcuts, can
+ * cross one at all.
+ *
+ * Walked in steps for the same reason `seaLegIsClear()` is: the alternative is
+ * a segment-versus-rotated-rectangle intersection that has to be right for
+ * seven different bearings, and stepping asks the question the hull will ask.
+ * The step is finer than the bridge is wide, so a leg cannot hop across a deck
+ * between samples.
+ */
+export function legClearance(a, b, bridges, step = 3) {
+  const dx = b.x - a.x
+  const dz = b.z - a.z
+  const span = Math.hypot(dx, dz)
+  if (span === 0) return Infinity
+
+  const steps = Math.max(1, Math.ceil(span / step))
+  let least = Infinity
+
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const x = a.x + dx * t
+    const z = a.z + dz * t
+
+    for (const bridge of bridges) {
+      const frame = bridgeFrame(bridge, x, z, WIDEST_HALF_BEAM)
+      if (!frame) continue
+      least = Math.min(least, bridgeClearance(frame.t, bridge.length))
+    }
+  }
+
+  return least
 }
 
 /**
@@ -6186,7 +7548,7 @@ export function seaLegIsClear(a, b, step = 9) {
  * which the caller has to handle - a port cut off by a change to the map
  * shouldn't crash the world.
  */
-export function seaPath(graph, from, to) {
+export function seaPath(graph, from, to, airDraft = 0) {
   if (from === to) return [from]
 
   const dist = new Map([[from, 0]])
@@ -6204,6 +7566,14 @@ export function seaPath(graph, from, to) {
     seen.add(current)
 
     for (const edge of graph.edges.get(current) || []) {
+      // TOO TALL TO GO UNDER IT. `clearance` is Infinity on the overwhelming
+      // majority of edges - only a port's runs out to the lane ring, and the
+      // port-to-port shortcuts, can pass beneath a deck at all - so this is a
+      // cheap comparison that almost never bites, and when it does it is the
+      // difference between a container ship going round and a container ship
+      // going through.
+      if (edge.clearance !== undefined && edge.clearance < airDraft) continue
+
       const through = best + edge.cost
       if (through < (dist.has(edge.to) ? dist.get(edge.to) : Infinity)) {
         dist.set(edge.to, through)
@@ -6221,8 +7591,8 @@ export function seaPath(graph, from, to) {
  * A voyage: the path a ship will follow, measured so it can be walked at a
  * constant speed.
  */
-export function seaVoyage(graph, from, to) {
-  const route = seaPath(graph, from, to)
+export function seaVoyage(graph, from, to, airDraft = 0) {
+  const route = seaPath(graph, from, to, airDraft)
   if (!route) return null
 
   return {
@@ -6295,6 +7665,11 @@ export function makeShips(graph, cargo = CARGO_SHIPS, boats = SMALL_BOATS) {
       kind,
       speed: kind === 'cargo' ? SHIP_SPEED_CARGO : SHIP_SPEED_BOAT,
       dwellFor: kind === 'cargo' ? SHIP_DWELL_CARGO : SHIP_DWELL_BOAT,
+      // How tall it is, which is now a routing constraint. See bridgeDeck.js:
+      // a cargo ship at 13.45 is more than twice the crown of any deck on this
+      // map, so it never takes a leg that passes under one; a small boat at
+      // 4.35 clears the navigable channel by 0.83.
+      airDraft: kind === 'cargo' ? CARGO_AIR_DRAFT : BOAT_AIR_DRAFT,
       berthOptions: home,
       offworld,
       at: berth,
@@ -6349,7 +7724,22 @@ export function nextVoyage(graph, ship, fleet = []) {
     target = elsewhere.length ? pick(elsewhere) : pick(ship.offworld)
   }
 
-  const voyage = seaVoyage(graph, ship.at, target)
+  let voyage = seaVoyage(graph, ship.at, target, ship.airDraft || 0)
+
+  // Nowhere it can get to without going under something. Rather than leave the
+  // ship sitting in its berth for the rest of the session - which is what a
+  // bare `return null` does, and it is how a routing constraint quietly
+  // becomes a dead port - fall back to sailing off the edge of the world,
+  // which is always reachable because the lane ring is outside every bridge.
+  if (!voyage && target !== ship.at) {
+    const away = ship.offworld.find(
+      (o) => seaPath(graph, ship.at, o, ship.airDraft || 0))
+    if (away !== undefined) {
+      voyage = seaVoyage(graph, ship.at, away, ship.airDraft || 0)
+      target = away
+    }
+  }
+
   if (!voyage) return null
 
   ship.voyage = voyage
@@ -6427,7 +7817,7 @@ export function shipPosition(graph, ship) {
     return { x: node.x, z: node.z, heading: node.heading || 0, docked: true }
   }
 
-  const at = pointAlong(ship.voyage, ship.distance)
+  const at = pointAlong(ship.voyage, ship.distance, false, true)
   return { ...at, docked: ship.dwell > 0 }
 }
 
@@ -6711,7 +8101,7 @@ export function getMonorailRoute() {
     return {
       island,
       id: island.id,
-      name: island.name || island.id,
+      name: islandName(island),
       accent: island.accent,
       x: points[bestAt].x,
       z: points[bestAt].z,
@@ -7037,6 +8427,32 @@ export function monorailFloors(route, x, z, floors, floorHeight = 2.5, roof = 0.
   return Math.max(0, Math.min(floors, fit))
 }
 
+/**
+ * What an island is CALLED, for anything a player will read.
+ *
+ * Found while ironing out the vehicle names, and it is the same fault one
+ * level up. Five places wrote `island.name || island.id`, and the HUB's name
+ * is deliberately the empty string - it has no nameplate, because the sign in
+ * its plaza says MIKE SUKHYUNG LEE instead. So all five fell through to the
+ * id, and the internal word "hub" went on the screen in lower case: on the
+ * monorail driver's panel while every other station read BLOG or SKILLS, and
+ * inside "FIRE AT HUB" and "CAR CRASH AT HUB".
+ *
+ * `ZoneManager` was the one place that got it right, with
+ * `island.name || id.toUpperCase()`. That rule now lives here, once, and the
+ * hub has a real name - CENTRAL, which is what the middle station on a railway
+ * is called and reads properly in a callout.
+ *
+ * Upper case, because that is what island names are in this world: ABOUT,
+ * EXPERIENCE, SKILLS, STUNT PARK. An island added tomorrow without a `name`
+ * gets a shouted id, which is wrong but not obviously broken - and
+ * `tests/cityui.mjs` will say so.
+ */
+export function islandName(island) {
+  if (!island) return ''
+  return (island.name || island.id || '').toUpperCase()
+}
+
 /** Which island a world-space point is standing on, or null for open water. */
 export function islandAt(x, z) {
   for (const island of ISLANDS) {
@@ -7069,7 +8485,7 @@ export function measurePath(points) {
  * needs to know it has been round. Without it the distance is clamped, so a
  * ship that overruns its voyage sits at the end rather than flying off.
  */
-export function pointAlong(path, distance, wrap = false) {
+export function pointAlong(path, distance, wrap = false, smooth = false) {
   const { points, cumulative, length } = path
   if (points.length < 2) return { x: points[0].x, z: points[0].z, heading: 0 }
 
@@ -7093,10 +8509,86 @@ export function pointAlong(path, distance, wrap = false) {
   const span = cumulative[i + 1] - cumulative[i]
   const t = span > 1e-9 ? (d - cumulative[i]) / span : 0
 
+  // THE HEADING IS INTERPOLATED FOR ANYTHING THAT MOVES, AND SNAPPED FOR
+  // ANYTHING THAT IS BUILT. `smooth` is which.
+  //
+  // This used to be `atan2(b.x - a.x, b.z - a.z)` - the bearing of the segment
+  // you happen to be standing on - which is PIECEWISE CONSTANT. The position
+  // slid smoothly along the polyline and the heading jumped at every vertex.
+  //
+  // Mike, watching the traffic: "some of the driving mechanics (especially
+  // with buses) seem a bit wonky. They kind of jitter or make jagged turns
+  // when turning on the road. I think the problem may be the way the road is
+  // curved and how the vehicles need to turn in accordance to the road shape."
+  // That is exactly right, and "especially with buses" is the tell: a ring
+  // road is resampled every few units, so a bus eleven units long swings its
+  // whole length through the vertex angle in a single frame while a saloon
+  // barely shows it. Everything that walks a path was doing it - the traffic,
+  // the trains, the ships, and the aircraft on approach.
+  //
+  // The fix is the standard one: give each VERTEX a tangent, being the average
+  // of the two segments meeting there, and interpolate between the two vertex
+  // tangents across the span. Directions are averaged as vectors rather than
+  // as angles, because angles wrap and an average of 179 and -179 degrees is
+  // not zero.
+  //
+  // A straight path is unaffected to the last bit: every segment direction is
+  // identical, so both tangents equal it and the interpolation is a no-op.
+  //
+  // WHY IT IS NOT THE DEFAULT. Layout asks this question too - where a station
+  // faces, which way a bus stop points, where a forecourt goes - and a layout
+  // decision wants the definite local fact, not an average with its
+  // neighbours. Turned on everywhere, `tools/mapFingerprint.mjs` showed the
+  // stations moving and one of them disappearing altogether: a rendering fix
+  // had quietly relocated buildings. Motion is smoothed; construction is not.
+  if (!smooth) {
+    const out = {
+      x: a.x + (b.x - a.x) * t,
+      z: a.z + (b.z - a.z) * t,
+      heading: Math.atan2(b.x - a.x, b.z - a.z)
+    }
+    if (a.y !== undefined || b.y !== undefined) {
+      out.y = (a.y || 0) + ((b.y || 0) - (a.y || 0)) * t
+    }
+    return out
+  }
+
+  const last = points.length - 1
+  const dirOf = (p, q) => {
+    const dx = q.x - p.x
+    const dz = q.z - p.z
+    const len = Math.hypot(dx, dz)
+    return len > 1e-9 ? { x: dx / len, z: dz / len } : null
+  }
+  // On a closed path the ends are neighbours, so the seam gets a real tangent
+  // instead of a corner. A closed path repeats its first point at the end,
+  // which is why the wrap steps over it.
+  const closed = wrap && Math.hypot(points[0].x - points[last].x,
+                                    points[0].z - points[last].z) < 1e-6
+  const before = i > 0 ? i - 1 : (closed ? last - 1 : -1)
+  const after = i + 2 <= last ? i + 1 : (closed ? 0 : -1)
+
+  const here = dirOf(a, b) || { x: 0, z: 1 }
+  const prev = before >= 0 ? dirOf(points[before], points[before + 1]) : null
+  const next = after >= 0 ? dirOf(points[after], points[after + 1]) : null
+
+  const blend = (u, v) => {
+    if (!v) return u
+    const x = u.x + v.x
+    const z = u.z + v.z
+    const len = Math.hypot(x, z)
+    // A hairpin doubling straight back on itself averages to nothing. There is
+    // no sensible tangent there, so keep the segment's own.
+    return len > 1e-6 ? { x: x / len, z: z / len } : u
+  }
+  const tanA = blend(here, prev)
+  const tanB = blend(here, next)
+
   const out = {
     x: a.x + (b.x - a.x) * t,
     z: a.z + (b.z - a.z) * t,
-    heading: Math.atan2(b.x - a.x, b.z - a.z)
+    heading: Math.atan2(tanA.x + (tanB.x - tanA.x) * t,
+                        tanA.z + (tanB.z - tanA.z) * t)
   }
 
   // Height, when the path has any. Everything that used this before was flat -
@@ -7120,7 +8612,7 @@ export function pointAlong(path, distance, wrap = false) {
 
 /** The monorail loop is a measured path that wraps. */
 export function monorailPointAt(route, distance) {
-  return pointAlong(route, distance, true)
+  return pointAlong(route, distance, true, true)
 }
 
 /**
@@ -7240,6 +8732,14 @@ export function stepMonorailTrains(route, trains, delta) {
       while (gap < 0) gap += route.length
       if (gap < gapAhead) gapAhead = gap
     }
+
+    // The gap is worked out for EVERY train including the driven one, because
+    // the driven one's signal depends on it - but the timetable does not then
+    // move it. Mike: "we'll be spawning into an existing train", so one of the
+    // three stops obeying the schedule and starts obeying the player, and the
+    // other two go on running around it.
+    train.gapAhead = gapAhead
+    if (train.driven) continue
 
     stepMonorailTrain(route, train, delta, gapAhead)
   }
@@ -7430,7 +8930,60 @@ export function buildNetwork(segments) {
  * four, a T has three, and a bend has two and gets no lights at all.
  * That's what stops a plain corner sprouting signals.
  */
+/**
+ * The signals, cached per island - and this is load-bearing, not an
+ * optimisation.
+ *
+ * `getTrafficSignals()` built a fresh set of objects on every call, and TWO
+ * separate callers rely on them: `getLaneNetwork()` hangs one on each lane so
+ * the cars know what to obey, and `World.createIslands()` keeps another so the
+ * lamps know what to show. Two object graphs describing the same junctions.
+ *
+ * That was harmless while a signal was a pure function of the clock - both
+ * copies computed the same answer from `elapsed` and `offset`, so nobody could
+ * tell. It stops being harmless the moment a signal has STATE. A junction that
+ * decides to hold its green because the other arm is empty has to make that
+ * decision once, and the cars and the lamps have to read the same decision, or
+ * you get cars crossing on a red the lamp is not showing - which is exactly
+ * what the comment above `signalState()` says this project already fixed once.
+ *
+ * So: one set of objects per island, handed to both. It is also a good deal
+ * faster - building them across the six islands took about 700ms every time
+ * anything asked.
+ */
+/**
+ * KEYED BY THE ISLAND OBJECT, not by its id, and that is not fussiness.
+ *
+ * `tests/streetedit.mjs` calls this twice with two `structuredClone`s of the
+ * same island - one before an edit and one after - to check what the edit did
+ * to the signals. Both clones carry id 'projects'. An id-keyed cache hands the
+ * second call the FIRST one's answer and the test compares a number with
+ * itself, passing whatever happens. A WeakMap sees two objects and builds two
+ * answers, while the real ISLANDS members stay the same objects from one call
+ * to the next, which is all the sharing this needs.
+ *
+ * Weak so a discarded clone does not pin its signals for the session.
+ */
+let signalCache = new WeakMap()
+
 export function getTrafficSignals(island) {
+  if (signalCache.has(island)) return signalCache.get(island)
+  const built = buildTrafficSignals(island)
+  signalCache.set(island, built)
+  return built
+}
+
+/**
+ * Forget the cached signals. The editor needs this after an edit.
+ *
+ * A WeakMap cannot be cleared, so the map itself is replaced - which drops
+ * every entry at once and lets the old ones be collected.
+ */
+export function invalidateSignals() {
+  signalCache = new WeakMap()
+}
+
+function buildTrafficSignals(island) {
   // Bridge approaches count. They're marked `auto` because they're drawn
   // as part of the continuous bridge run rather than separately, but where
   // one meets the ring a driver arrives at a T-junction and expects to be
@@ -7605,6 +9158,23 @@ export function getTrafficSignals(island) {
 
       signals.push({
         x: cluster.x, z: cluster.z, radius: cluster.radius, arms: withPoles,
+
+        // THE MUTABLE PART, IN A BOX OF ITS OWN - and the box is the point.
+        //
+        // `attachSignals()` builds a world-space copy of every signal with a
+        // spread, because the lanes need world coordinates and these are
+        // island-local. A spread is SHALLOW, so the copy and the original end
+        // up holding the same `control` object while everything else about
+        // them differs. That is exactly what is wanted: the cars read the
+        // copy, `World` lights its lamps from the original, and both see one
+        // set of phases.
+        //
+        // Putting `phase` directly on the signal was the first attempt and it
+        // silently did nothing - the spread copied the value, the cars drove
+        // one cycle and the lamps showed another. Verified after the fix: 40
+        // signals reached from the lanes, 40 from the islands, 40 sharing a
+        // control.
+        control: { phase: undefined, since: 0, changeAt: undefined, clearFor: 0 },
         // Where this junction is in its cycle, derived from where it is in
         // the world. It used to come from the renderer's random number
         // generator, which meant nothing outside the renderer could know it.
@@ -7723,6 +9293,23 @@ function clearSpotBeside(cluster, arm, roads) {
         if (distanceToNearestRoad(roads, spot.x, spot.z) >= POLE_CLEARANCE) {
           return spot
         }
+
+        // NOT filtered against blocksStationEntrance(), and it was tried.
+        //
+        // Three of the world's hundred and thirty signal poles do stand in a
+        // station's way, and rejecting those spots here works - this function
+        // already searches four setbacks on both sides, so the pole simply
+        // moves. What does not work is FINDING OUT: getStations() sites its
+        // stations by asking the terrain how high the ground is, and
+        // getIslandTerrain() asks getStations() back for the station terraces.
+        // The existing cycle is broken by a provisional terrain cached
+        // half-way through; adding a third caller here re-enters it before
+        // that cache exists and the world never finishes loading.
+        //
+        // The bus stops and the street lamps - which is what was actually
+        // standing across the hospital doors - are filtered where they are
+        // placed, and both of those are downstream of the stations rather than
+        // upstream of them.
       }
     }
   }
@@ -7968,8 +9555,11 @@ export function getBridgeRoadPaths() {
     // where points are packed tightly the junction stays sharp, and a
     // sharp corner pinches the road ribbon shut.
     paths.push({
-      points: smoothRoad(points, DEFAULT_ROAD_WIDTH),
-      width: DEFAULT_ROAD_WIDTH
+      // AN ARTERY. Every crossing between two islands carries the whole of
+      // the traffic between them, with no way round - lane 164, a 156-unit
+      // bridge lane, is the single worst lane in the world for stopped time.
+      points: smoothRoad(points, ARTERIAL_WIDTH),
+      width: ARTERIAL_WIDTH
     })
   }
 
@@ -8183,8 +9773,12 @@ export function getAirGraph(airport = getAirport()) {
       at,
       dir,
       heading: Math.atan2(dir.x, dir.z),
-      // Where the wheels touch: into the runway, not on its very edge.
-      touchdown: { x: at.x + dir.x * PLANE_LENGTH, z: at.z + dir.z * PLANE_LENGTH },
+      // Where the wheels touch: properly into the runway, not one aircraft
+      // length past the threshold. See AIRPORT_TOUCHDOWN.
+      touchdown: {
+        x: at.x + dir.x * AIRPORT_TOUCHDOWN,
+        z: at.z + dir.z * AIRPORT_TOUCHDOWN
+      },
       // Lined up on the approach, out and high.
       approach: {
         x: at.x - dir.x * AIRPORT_APPROACH_RUN,
@@ -8290,11 +9884,144 @@ export function makePlanes(graph, fleet = PLANE_FLEET) {
  * use. There is no second implementation of "something moving along a fixed
  * line at a known rate" anywhere in this project and there should not be one.
  */
+/**
+ * Replace every corner in a polyline with a curve.
+ *
+ * Mike, watching a landing: "I just noticed an aircraft land and then
+ * immediately turn left in an instant turn motion. It's not a smooth turn to
+ * the side."
+ *
+ * `pointAlong()` already interpolates the heading between vertex tangents, and
+ * that is enough for a road resampled every few units - the vertices are close
+ * together, so the sweep is short but continuous. It is NOT enough for a
+ * taxiway, where two legs meet at a right angle with nothing in between: there
+ * is exactly one corner, so the whole ninety degrees is spread over the two
+ * segments touching it, and if those segments are twenty units long the turn
+ * happens in the length of an aircraft.
+ *
+ * The answer is to put a real curve in the path. Each interior corner becomes
+ * a quadratic Bezier tangent to both legs - which is not a true circular arc,
+ * and does not need to be: it leaves and rejoins along the legs, its curvature
+ * is continuous, and at the scale of a taxiway nothing can tell the difference.
+ *
+ * `radius` is how far back along each leg the curve starts, clamped so a
+ * short leg cannot be eaten by the curves at both of its ends.
+ */
+export function roundCorners(points, radius, steps = 6) {
+  if (!points || points.length < 3 || radius <= 0) return points
+
+  const out = [points[0]]
+  for (let i = 1; i < points.length - 1; i++) {
+    const a = points[i - 1]
+    const b = points[i]
+    const c = points[i + 1]
+
+    const inLen = Math.hypot(b.x - a.x, b.z - a.z)
+    const outLen = Math.hypot(c.x - b.x, c.z - b.z)
+    if (inLen < 1e-6 || outLen < 1e-6) continue
+
+    // A corner that is not a corner is left exactly alone. Without this a
+    // straight line resampled into three points comes back with a Bezier
+    // through the middle of it - harmless to look at and a lie about what the
+    // function does, which is the sort of thing that is believed later.
+    const turn = Math.abs(angleDelta(
+      Math.atan2(b.x - a.x, b.z - a.z),
+      Math.atan2(c.x - b.x, c.z - b.z)))
+    if (turn < 0.03) { out.push(b); continue }
+
+    // Never eat more than 45% of a leg, so two corners on one leg cannot
+    // overlap and turn a straight into an S.
+    const back = Math.min(radius, inLen * 0.45, outLen * 0.45)
+    if (back < 0.5) { out.push(b); continue }
+
+    const p = {
+      x: b.x + (a.x - b.x) / inLen * back,
+      z: b.z + (a.z - b.z) / inLen * back,
+      y: b.y
+    }
+    const q = {
+      x: b.x + (c.x - b.x) / outLen * back,
+      z: b.z + (c.z - b.z) / outLen * back,
+      y: b.y
+    }
+
+    out.push(p)
+    for (let k = 1; k < steps; k++) {
+      const t = k / steps
+      const m = 1 - t
+      out.push({
+        x: m * m * p.x + 2 * m * t * b.x + t * t * q.x,
+        z: m * m * p.z + 2 * m * t * b.z + t * t * q.z,
+        y: b.y
+      })
+    }
+    out.push(q)
+  }
+  out.push(points[points.length - 1])
+
+  // Strip anything that landed on top of its neighbour: measurePath divides by
+  // segment length and a zero-length one is a NaN heading.
+  return out.filter((pt, i) =>
+    i === 0 || Math.hypot(pt.x - out[i - 1].x, pt.z - out[i - 1].z) > 1e-6)
+}
+
+/**
+ * How the runway is used.
+ *
+ * Mike: "the landing animation is too short. It's a very very short landing
+ * and then an instant turn. Can we make the planes use the runway for takeoff
+ * and landing in a longer run?"
+ *
+ * He was describing the numbers exactly. The wheels touched down ONE AIRCRAFT
+ * LENGTH past the threshold - 26 units into a 208-unit runway - and the
+ * roll-out then went to whichever taxiway end was NEAREST, which is the one
+ * beside that same threshold, 27 units away and 28 of those units sideways. So
+ * an arrival landed and immediately turned almost square across the runway.
+ * The departure was the mirror image: it rotated 26 units after lining up.
+ *
+ * A runway exists to be run along. These say how much of it gets used.
+ */
+export const AIRPORT_TOUCHDOWN = 34
+/** Where the nose lifts, as a fraction of the runway from the threshold. */
+export const AIRPORT_ROTATE_AT = 0.74
+/** How far back along each leg a taxi turn begins. */
+export const TAXI_CORNER = 22
+
 function planePath(graph, plane) {
   const end = graph.ends[plane.end]
   const other = graph.ends[1 - plane.end]
   const stand = graph.stands.find(s => s.index === plane.stand) || graph.stands[0]
-  const exit = nearestPoint(graph.exits, end.touchdown)
+  const runLength = graph.airport.runway.length
+
+  // WHERE A LANDING TURNS OFF: the taxiway end FURTHEST from the touchdown, not
+  // the nearest.
+  //
+  // `nearestPoint` was the whole of the short-landing problem. The taxiway's
+  // two ends sit fourteen units in from the two thresholds, so the one nearest
+  // an arrival's touchdown is the one right beside it - twenty-seven units
+  // away, twenty-eight of them sideways. The aircraft touched down and turned
+  // almost square across the runway in its own length.
+  //
+  // Taking the far end instead means the roll-out runs the length of the
+  // runway, which is what a runway is for, and there is somewhere to put a
+  // curve at the end of it.
+  const exit = farthestPoint(graph.exits, end.touchdown)
+
+  // A point on the runway centre line level with a taxiway end, so the turn
+  // off is a right angle onto the taxiway rather than a diagonal across it.
+  const onRunway = (from, dir, target) => {
+    const d = (target.x - from.x) * dir.x + (target.z - from.z) * dir.z
+    return { x: from.x + dir.x * d, z: from.z + dir.z * d, y: 0 }
+  }
+  // And a point a little way along the taxiway from one of its ends, toward
+  // the other - so a phase that ends on the taxiway ends ALIGNED with it.
+  const intoTaxiway = (fromEnd, by = 34) => {
+    const other2 = graph.exits.find((e) => e !== fromEnd) || fromEnd
+    const dx = other2.x - fromEnd.x
+    const dz = other2.z - fromEnd.z
+    const len = Math.hypot(dx, dz) || 1
+    return { x: fromEnd.x + dx / len * by, z: fromEnd.z + dz / len * by, y: 0 }
+  }
 
   switch (plane.phase) {
     case 'inbound':
@@ -8303,43 +10030,109 @@ function planePath(graph, plane) {
         { ...end.approach }
       ])
 
-    case 'finals':
+    case 'finals': {
+      // A FLARE. The last stretch before the wheels touch is nearly level -
+      // without it the approach is a straight line into the tarmac, and the
+      // nose is still pointing down at the moment of touchdown.
+      const flare = {
+        x: end.touchdown.x - end.dir.x * 55,
+        z: end.touchdown.z - end.dir.z * 55,
+        y: 2.6
+      }
       return measurePath([
         { ...end.approach },
+        flare,
         { x: end.touchdown.x, z: end.touchdown.z, y: 0 }
-      ])
-
-    case 'rollout':
-      return measurePath([
-        { x: end.touchdown.x, z: end.touchdown.z, y: 0 },
-        { x: exit.x, z: exit.z, y: 0 }
-      ])
-
-    case 'taxiIn':
-      return measurePath([
-        { x: exit.x, z: exit.z, y: 0 },
-        { x: stand.hold.x, z: stand.hold.z, y: 0 },
-        { x: stand.x, z: stand.z, y: 0 }
-      ])
-
-    case 'taxiOut': {
-      // Out to the far end and line up: you take off INTO the direction the
-      // other threshold faces, which is why this walks to `other`.
-      const lineup = nearestPoint(graph.exits, other.at)
-      return measurePath([
-        { x: stand.x, z: stand.z, y: 0 },
-        { x: stand.hold.x, z: stand.hold.z, y: 0 },
-        { x: lineup.x, z: lineup.z, y: 0 },
-        { x: other.at.x, z: other.at.z, y: 0 }
       ])
     }
 
-    case 'takeoff':
+    case 'rollout': {
+      // Touch down, run the runway, turn off at the far end, and finish
+      // ALIGNED along the taxiway - so the phase that follows carries straight
+      // on instead of starting with a ninety-degree jump.
+      const turnOff = onRunway(end.at, end.dir, exit)
+      return measurePath(roundCorners([
+        { x: end.touchdown.x, z: end.touchdown.z, y: 0 },
+        { x: turnOff.x, z: turnOff.z, y: 0 },
+        { x: exit.x, z: exit.z, y: 0 },
+        intoTaxiway(exit)
+      ], TAXI_CORNER))
+    }
+
+    case 'taxiIn':
+      return measurePath(roundCorners([
+        intoTaxiway(exit),
+        { x: stand.hold.x, z: stand.hold.z, y: 0 },
+        { x: stand.x, z: stand.z, y: 0 }
+      ], TAXI_CORNER))
+
+    case 'taxiOut': {
+      // Out to the departure threshold's end of the taxiway, turn onto the
+      // runway, and stop LINED UP - not short of the threshold facing across
+      // it. You take off INTO the direction the other threshold faces, which
+      // is why this walks to `other`.
+      const lineup = nearestPoint(graph.exits, other.at)
+      const onto = onRunway(other.at, other.dir, lineup)
+      // AND THEN A SHORT LEG DOWN THE RUNWAY. Without it the phase ends on the
+      // leg that crosses onto the runway, so it finishes pointing ACROSS - and
+      // the take-off that follows starts pointing along, which is a
+      // ninety-degree jump in one frame at the exact moment you are watching.
+      // Lining up is a turn, and the turn belongs to the taxi.
+      const aligned = {
+        x: onto.x + other.dir.x * 26,
+        z: onto.z + other.dir.z * 26,
+        y: 0
+      }
+      const path = measurePath(roundCorners([
+        { x: stand.x, z: stand.z, y: 0 },
+        { x: stand.hold.x, z: stand.hold.z, y: 0 },
+        { x: lineup.x, z: lineup.z, y: 0 },
+        { x: onto.x, z: onto.z, y: 0 },
+        aligned
+      ], TAXI_CORNER))
+      // HOW FAR OF THIS IS A PUSHBACK. An aircraft parks nose-in to the
+      // terminal, so the first thing it does is go BACKWARDS onto the taxiway -
+      // and while it is doing that it is still facing the terminal, not the way
+      // it is moving. Without this the heading flips 180 degrees the instant
+      // the phase changes, which measured as the largest single jump left in
+      // the whole cycle after everything else was fixed.
+      path.pushback = Math.hypot(stand.hold.x - stand.x, stand.hold.z - stand.z)
+      return path
+    }
+
+    case 'takeoff': {
+      // FROM WHERE IT LINED UP, down the runway, and rotate three-quarters of
+      // the way along. It used to lift off twenty-six units after lining up,
+      // which is an aircraft length: a hop, not a take-off.
+      const lineup = nearestPoint(graph.exits, other.at)
+      // Where the taxi finished lining up, which is 26 units past the point it
+      // crossed onto the runway - see taxiOut. Starting anywhere else is a
+      // jump the moment the phase changes.
+      const crossed = onRunway(other.at, other.dir, lineup)
+      const start = {
+        x: crossed.x + other.dir.x * 26,
+        z: crossed.z + other.dir.z * 26,
+        y: 0
+      }
+      const rotate = {
+        x: other.at.x + other.dir.x * runLength * AIRPORT_ROTATE_AT,
+        z: other.at.z + other.dir.z * runLength * AIRPORT_ROTATE_AT,
+        y: 0
+      }
+      // A point just after rotation, so the climb starts gently rather than
+      // the whole gradient appearing in one segment.
+      const unstick = {
+        x: rotate.x + other.dir.x * 70,
+        z: rotate.z + other.dir.z * 70,
+        y: AIRPORT_APPROACH_HEIGHT * 0.22
+      }
       return measurePath([
-        { x: other.at.x, z: other.at.z, y: 0 },
-        { x: other.touchdown.x, z: other.touchdown.z, y: 0 },
+        { x: start.x, z: start.z, y: 0 },
+        rotate,
+        unstick,
         { ...other.climbout }
       ])
+    }
 
     case 'outbound':
       return measurePath([
@@ -8347,10 +10140,34 @@ function planePath(graph, plane) {
         { ...graph.offworld[plane.from], y: PLANE_CRUISE_HEIGHT }
       ])
 
-    default:
-      return measurePath([{ x: stand.x, z: stand.z, y: 0 },
-                          { x: stand.x, z: stand.z, y: 0 }])
+    default: {
+      // PARKED, FACING THE TERMINAL. This was two copies of the same point - a
+      // zero-length path - and `pointAlong` cannot get a direction out of one
+      // of those, so it fell back to due north. Every aircraft on stand
+      // therefore swung to face north the instant it arrived, which measured
+      // as a 176-degree jump between taxiing in and standing.
+      //
+      // A short segment along the stand's own heading gives the same position
+      // and the right direction.
+      const nose = {
+        x: stand.x + Math.sin(stand.heading) * 0.5,
+        z: stand.z + Math.cos(stand.heading) * 0.5,
+        y: 0
+      }
+      return measurePath([{ x: stand.x, z: stand.z, y: 0 }, nose])
+    }
   }
+}
+
+/** Whichever of these is furthest from a point. */
+function farthestPoint(points, from) {
+  let best = points[0]
+  let bd = -Infinity
+  for (const p of points) {
+    const d = Math.hypot(p.x - from.x, p.z - from.z)
+    if (d > bd) { bd = d; best = p }
+  }
+  return best
 }
 
 /** Whichever of these is closest to a point. */
@@ -8365,18 +10182,59 @@ function nearestPoint(points, to) {
 }
 
 /** How fast an aircraft moves in each phase. */
-function planeSpeed(phase) {
+/**
+ * How fast an aircraft should be going, given where it is in its phase.
+ *
+ * Mike: "for the airplanes, can you make the takeoff, landing and taxiing
+ * sequence look smoother? They're way too jagged at this point."
+ *
+ * The speed used to be one number per PHASE, so it stepped at every boundary:
+ * an aircraft taxied at 6, then the instant the phase flipped it was doing 26
+ * down the runway, and at the far end it was doing 46. Three instantaneous
+ * jumps on the way out and three more on the way in. Nothing was accelerating;
+ * it was teleporting between speeds.
+ *
+ * Now the two phases where an aircraft is actually changing speed - the
+ * takeoff roll and the landing rollout - RAMP across their own length, which
+ * is both smoother and what an aircraft does. `planeAccel()` then limits how
+ * fast even this may change, so the remaining boundaries are rounded off too.
+ */
+export function planeSpeedAt(phase, progress = 0) {
+  const at = Math.max(0, Math.min(1, progress))
   switch (phase) {
     case 'inbound':
     case 'outbound': return PLANE_SPEED_CRUISE
-    case 'finals': return PLANE_SPEED_APPROACH
-    case 'rollout': return PLANE_SPEED_APPROACH * 0.7
-    case 'takeoff': return PLANE_SPEED_APPROACH
+    // Slowing from cruise to approach speed down the glideslope.
+    case 'finals': return PLANE_SPEED_CRUISE +
+      (PLANE_SPEED_APPROACH - PLANE_SPEED_CRUISE) * Math.min(1, at * 1.6)
+    // Braking: touchdown speed down to a fast taxi by the far end.
+    //
+    // The end speed is 1.8x taxi, not taxi, and that number is set by the
+    // RUNWAY rather than by realism. Ramping all the way down to 6 dropped the
+    // average rollout speed from the old flat 18.2 to about 16, the runway
+    // stayed occupied longer, and tests/airport.mjs caught the consequence
+    // immediately: the longest hold went from under a minute to 97 seconds.
+    // Ending at 10.8 keeps the average where it was while still being a
+    // deceleration rather than a step.
+    case 'rollout': return PLANE_SPEED_APPROACH +
+      (PLANE_SPEED_TAXI * 1.8 - PLANE_SPEED_APPROACH) * at
+    // The roll: taxi speed at the hold, rotate speed at the far end.
+    case 'takeoff': return PLANE_SPEED_TAXI +
+      (PLANE_SPEED_CRUISE - PLANE_SPEED_TAXI) * at
     case 'taxiIn':
     case 'taxiOut': return PLANE_SPEED_TAXI
     default: return 0
   }
 }
+
+/**
+ * How hard an aircraft may change speed, in units per second per second.
+ *
+ * A jet accelerates and brakes hard, and this is not trying to be a
+ * performance model - it exists so that no phase change can produce a step,
+ * which is the thing that reads as jagged.
+ */
+export const PLANE_ACCEL = 18
 
 /** What each phase does when it finishes. */
 const PLANE_NEXT = {
@@ -8417,7 +10275,28 @@ export function stepPlanes(graph, planes, delta) {
   }
 
   for (const plane of planes) {
-    if (plane.phase === 'stand') {
+    // THE SPEED IS EASED FIRST, BEFORE ANY BRANCH CAN SKIP IT.
+    //
+    // It was updated in the middle of the loop, after the two `continue`s that
+    // handle standing at a gate and holding for the runway - so an aircraft
+    // that stood at a stand for half a minute kept whatever speed it had when
+    // it stopped, and one that had braked for a hold kept the zero. Either way
+    // the value was stale the moment the next phase began, and the first frame
+    // of the taxi out jumped from 0 to 6 in one step. Measured: exactly 6.00,
+    // which is PLANE_SPEED_TAXI, which is how it was found.
+    //
+    // At a stand and holding on the ground the target is a dead stop, so the
+    // easing does the braking too and there is one rule rather than three.
+    const standing = plane.phase === 'stand'
+    const groundHold = plane.holding && plane.phase === 'taxiOut'
+    const want = (standing || groundHold)
+      ? 0
+      : planeSpeedAt(plane.phase, plane.progress)
+    if (plane.speed === undefined) plane.speed = want
+    const step = PLANE_ACCEL * delta
+    plane.speed += Math.max(-step, Math.min(step, want - plane.speed))
+
+    if (standing) {
       plane.timer -= delta
       plane.boarding = true
       if (plane.timer <= 0) {
@@ -8442,13 +10321,24 @@ export function stepPlanes(graph, planes, delta) {
     // the runway in six minutes.
     const canHold = plane.phase === 'taxiOut' || plane.phase === 'inbound'
     if (canHold && plane.progress >= 0.999 && runway && runway !== plane) {
+      // ON THE GROUND it brakes to a stop; IN THE AIR it does not.
+      //
+      // An aircraft held at the holding point is stopped at a line. One held
+      // at the approach fix is flying a racetrack until it is called in - it
+      // has not slowed down and it certainly has not stopped, and pretending
+      // otherwise costs the whole of its acceleration back to approach speed
+      // every time. With one runway and four aircraft that is enough to push
+      // an arrival out of a slot it would otherwise have made, which
+      // tests/airport.mjs sees as the longest hold trebling: 34 seconds
+      // becomes 97. The braking itself is done by the easing above, which
+      // takes `holding` into account.
       plane.holding = true
       continue
     }
     plane.holding = false
 
     const length = plane.path.length || 1
-    plane.progress += (planeSpeed(plane.phase) * delta) / length
+    plane.progress += (plane.speed * delta) / length
 
     if (plane.progress >= 1) {
       plane.progress = 1
@@ -8490,17 +10380,35 @@ function advance(graph, plane) {
  * anything with logic in it belongs where a test can run it.
  */
 export function planePosition(graph, plane) {
-  const at = pointAlong(plane.path, plane.progress * plane.path.length)
-  const ahead = pointAlong(plane.path,
-    Math.min(plane.path.length, plane.progress * plane.path.length + 2))
+  const total = plane.path.length
+  const d = plane.progress * total
+  const at = pointAlong(plane.path, d, false, true)
 
-  const dx = ahead.x - at.x
-  const dz = ahead.z - at.z
-  const heading = (dx || dz) ? Math.atan2(dx, dz) : 0
+  // THE HEADING IS THE PATH'S OWN, not the bearing of a two-unit chord.
+  //
+  // It used to be `atan2` between here and a point two units ahead, and the
+  // point ahead was NOT smoothed - so the heading was a finite difference
+  // between a smooth value and a stepped one, which is a worse signal than
+  // either. Two units is also a quarter of an aircraft's own length: on a
+  // taxiway corner the nose was chasing a target sampled from inside the turn.
+  // Facing BACKWARDS while being pushed off the stand - see `pushback`.
+  const reversing = plane.phase === 'taxiOut' &&
+                    plane.path.pushback !== undefined &&
+                    d < plane.path.pushback
+  const heading = reversing ? at.heading + Math.PI : at.heading
 
-  // Pitch from the climb or descent actually being flown, not from the phase.
-  const run = Math.hypot(dx, dz) || 1
-  const pitch = Math.atan2((ahead.y || 0) - (at.y || 0), run)
+  // PITCH from a chord that spans the aircraft, and symmetric about it.
+  //
+  // Same problem in the vertical. Height is interpolated linearly per segment,
+  // so the gradient over any two units is piecewise CONSTANT and jumps at
+  // every vertex - a nose that steps between attitudes all the way down the
+  // glideslope. Sixteen units, centred, gives a gradient that changes
+  // gradually and is still short enough to follow the flare.
+  const span = 8
+  const back = pointAlong(plane.path, Math.max(0, d - span), false, true)
+  const fore = pointAlong(plane.path, Math.min(total, d + span), false, true)
+  const run = Math.hypot(fore.x - back.x, fore.z - back.z) || 1
+  const pitch = Math.atan2((fore.y || 0) - (back.y || 0), run)
 
   return {
     x: at.x,
@@ -8508,6 +10416,7 @@ export function planePosition(graph, plane) {
     z: at.z,
     heading,
     pitch,
+    reversing,
     onGround: !ON_RUNWAY.has(plane.phase) || (at.y || 0) < 0.5,
     boarding: plane.phase === 'stand'
   }
@@ -8553,6 +10462,18 @@ export const HELIPAD_HEADROOM = HELI_ROTOR + 4
 export const HELIPAD_FLOORS = 5
 export const FLOOR_HEIGHT = 2.5
 
+/**
+ * How tall the building under a rooftop pad has to actually be.
+ *
+ * Three storeys, the same bar `getHelipads()` sets when it proposes the site.
+ * Restated in world units because by the time `fitRoofPads()` runs there are
+ * no storeys left to count - see below.
+ */
+export const ROOF_PAD_MIN_HEIGHT = 3 * FLOOR_HEIGHT
+
+/** How near a building's centre has to be to count as the one under a pad. */
+export const ROOF_PAD_MATCH = 2
+
 /** Cruise height, speeds, and how long one sits on the pad. */
 export const HELI_CRUISE_HEIGHT = 46
 export const HELI_SPEED_CRUISE = 22
@@ -8571,6 +10492,26 @@ let helipadCache = null
  * air above it. `monorailCeiling()` states how tall anything may be at a
  * point, and a pad has to clear that by a rotor's width, not merely fit under
  * it: a machine that can sit on a pad and never leave is worse than no pad.
+ *
+ * A ROOFTOP PAD'S `y` HERE IS A PROPOSAL, NOT AN ANSWER.
+ * ------------------------------------------------------
+ * Mike, having flown over the towns: "the ceilings of buildings and helipads
+ * seem to be acting weird. Some are floating in the air."
+ *
+ * They were, by 7 units, and every rooftop pad in the world was. This function
+ * works out how many storeys the beam allows at the plot - five, nearly
+ * everywhere - and puts the pad at `ground + 5 * FLOOR_HEIGHT`. But nothing
+ * makes the building underneath it five storeys tall. World.js builds towns
+ * from .glb models scaled to the plot's WIDTH, so the height that comes out is
+ * whatever that model's proportions give, and it is never 12.5; and where the
+ * plot clashes with a hand-placed building it is skipped altogether, so some
+ * pads had no building under them at all.
+ *
+ * The height cannot be settled here, because the building does not exist yet
+ * and cannot: it is a mesh, measured after the loader has scaled it. So this
+ * proposes the SITE and `fitRoofPads()` settles the height against what was
+ * really built - the same rule the Christmas lights already follow, which is
+ * why they hang off `b.height` rather than off a floor count.
  */
 export function getHelipads() {
   if (helipadCache) return helipadCache
@@ -8606,7 +10547,10 @@ export function getHelipads() {
       pads.push({
         kind: 'roof', island: island.id, x, z, y: roof,
         heading: (plot.rotation || 0) * Math.PI / 180,
-        floors
+        floors,
+        // Flagged rather than assumed, so `fitRoofPads()` can tell a pad it
+        // has not settled yet from one it has, and refuse to draw the first.
+        provisional: true
       })
       taken++
     }
@@ -8631,6 +10575,29 @@ export function getHelipads() {
  * units nowhere.
  */
 function findGroundPad(island, roads, route) {
+  // NOT ON A COURSE. Mike: "some are in the middle of a stadium."
+  //
+  // One was: the STUNT PARK's pad came out at island-local (0, 37.8), which is
+  // between the double's take-off at z 21.7 and its landing at z 44.7 - a
+  // six-metre concrete square across the run-in of the biggest jump on the
+  // island. The SPEEDWAY had the same pad in the same place relative to its
+  // circuit.
+  //
+  // The reason is that every other test below is about ROADS, and these two
+  // islands have no roads in the sense this function means. The stunt park has
+  // none at all, so `distanceToNearestRoad` returns Infinity and the very
+  // first candidate offered - ring 0.35, angle 0 - is accepted without
+  // anything having been checked; the speedway's one road is its racing line,
+  // which the pad then sits politely just off.
+  //
+  // There is no position to search for here, because the whole point of these
+  // two islands is that their entire surface is the course: the stunt pad is
+  // the coastline inset by five, and the circuit's infield is the grid. So the
+  // honest rule is not "search harder" but "there is no ground here to have" -
+  // and it is stated as a property of the island rather than as a list of
+  // ids, because the next course island would otherwise get a pad in it too.
+  if (isCourseIsland(island)) return null
+
   const reach = islandReach(island)
 
   for (let ring = 0.35; ring <= 0.75; ring += 0.1) {
@@ -8660,6 +10627,89 @@ function findGroundPad(island, roads, route) {
   }
 
   return null
+}
+
+/**
+ * An island whose ground IS a built course, and therefore not somewhere to
+ * put anything on.
+ *
+ * Both flags together rather than either alone, because each on its own means
+ * something narrower: `bare` says "sow no ground cover here", and `noTraffic`
+ * says "the city's buses do not drive here". An island that is both is one
+ * that was graded end to end for motorsport - the stunt park and the speedway
+ * are the two - and the useful thing to know about those is that every square
+ * metre of them is already spoken for.
+ */
+export function isCourseIsland(island) {
+  return !!(island && island.bare && island.noTraffic)
+}
+
+/**
+ * Settle each rooftop pad against the building that was actually built under
+ * it, and drop the ones with nothing to stand on.
+ *
+ * `buildings` is World's own record of what it put up: `{ x, z, width, depth,
+ * height, rotation }` in world coordinates, with `height` measured from the
+ * building's base - which is `groundHeight(x, z)`, because that is where
+ * addBuilding() puts it. Exactly the list, and exactly the convention, that
+ * the festive lights already hang off.
+ *
+ * Four ways a proposed pad does not survive:
+ *
+ *   NOTHING THERE     the plot was dropped for clashing with a hand-placed
+ *                     building, so the pad would hang over open ground.
+ *   TOO SHORT         a pad on a bungalow is odd, and after the models are
+ *                     measured plenty of "five storey" plots came out at four
+ *                     units tall.
+ *   ROOF TOO SMALL    a six-metre deck needs a roof to sit on. Checked against
+ *                     the footprint that was BUILT, not the plot that was
+ *                     asked for.
+ *   NO HEADROOM       re-asked with the real height. A building that came out
+ *                     shorter than planned has MORE room above it, so this can
+ *                     only ever let pads through - but a taller one would eat
+ *                     the rotor's clearance and has to go.
+ *
+ * Pure, and takes the buildings as an argument rather than reaching for them,
+ * so a test can hand it a building list it made up and check every rule
+ * without a browser anywhere near it.
+ */
+export function fitRoofPads(pads, buildings = [], opts = {}) {
+  const route = opts.route === undefined ? getMonorailRoute() : opts.route
+  const size = opts.size ?? HELIPAD_SIZE
+  const out = []
+
+  for (const pad of pads) {
+    if (pad.kind !== 'roof') { out.push(pad); continue }
+
+    let under = null
+    let best = ROOF_PAD_MATCH
+    for (const b of buildings) {
+      const d = Math.hypot(b.x - pad.x, b.z - pad.z)
+      if (d < best) { best = d; under = b }
+    }
+    if (!under) continue
+    if (!(under.height >= ROOF_PAD_MIN_HEIGHT)) continue
+    if (Math.min(under.width, under.depth) < size + 1) continue
+
+    const ceiling = route ? monorailCeiling(route, pad.x, pad.z) : Infinity
+    if (ceiling !== Infinity && ceiling - under.height < HELIPAD_HEADROOM) continue
+
+    out.push({
+      ...pad,
+      provisional: false,
+      // The roof, in world units, from the same base every decoration on this
+      // building already measures from.
+      y: groundHeight(pad.x, pad.z) + under.height,
+      // Square to the building rather than to the plot it came from. They
+      // agree today; they would not if a building were ever placed by hand
+      // over a pad site, and a deck at four degrees to its own roof is the
+      // kind of thing you cannot un-see.
+      heading: under.rotation || 0,
+      roof: { width: under.width, depth: under.depth, height: under.height }
+    })
+  }
+
+  return out
 }
 
 /**
@@ -8808,7 +10858,8 @@ export function helicopterPosition(pads, machine, delta = 0) {
   } else if (machine.phase === 'descend') {
     y = pad.y + HELI_CRUISE_HEIGHT * (1 - machine.progress)
   } else if (machine.phase === 'cruise' && machine.path) {
-    const at = pointAlong(machine.path, machine.progress * machine.path.length)
+    const at = pointAlong(machine.path, machine.progress * machine.path.length,
+                          false, true)
     x = at.x
     z = at.z
     y = at.y
@@ -8853,6 +10904,17 @@ export const GARAGE_HEIGHT = 7
 
 /** How far in front of the doors a vehicle finishes rolling out. */
 export const GARAGE_APRON = 14
+
+/**
+ * When the garage door opens for you, and how long it takes.
+ *
+ * Measured from the middle of the bay, so it takes in the whole apron and a
+ * little of the driveway: the door is already moving as you turn in, which is
+ * what a door with a sensor on it does. Any less and you arrive at a shut
+ * door and wait; any more and it stands open across half the plaza.
+ */
+export const GARAGE_DOOR_NEAR = GARAGE_DEPTH / 2 + GARAGE_APRON + 8
+export const GARAGE_DOOR_SECONDS = 1.6
 
 /**
  * The drive from the garage doors out to the street.
@@ -8963,6 +11025,14 @@ export function getGarageDriveway() {
   // From the far edge of the apron - in front of the doors, past where the
   // car finishes rolling out - so the drive leads forwards and never runs
   // back through the building it starts at.
+  //
+  // Starting it AT the doors was tried, to make the apron part of the road and
+  // so claim its ground - see the terrace below for why that ground needs
+  // claiming. It does claim it, and it also drags the road's height blend six
+  // units back INSIDE the building, which pulled the garage floor down to
+  // street level and left the car driving down a ramp before it reached the
+  // door. The apron is terraced instead, which claims the same ground without
+  // touching the road network.
   const from = {
     x: garage.localX + Math.sin(garage.heading) * (GARAGE_DEPTH / 2 + GARAGE_APRON),
     z: garage.localZ + Math.cos(garage.heading) * (GARAGE_DEPTH / 2 + GARAGE_APRON)
@@ -9145,3 +11215,64 @@ function siteGarage(island) {
     }
   }
 }
+
+/**
+ * Is a point inside the garage's bay?
+ *
+ * A RECTANGLE, not a radius, because a garage is a rectangle - and because
+ * the vehicle selector has been testing exactly this since it was written
+ * (`checkEntered`) and the tow truck's drop-off has to agree with it. Two
+ * different answers to "am I in the garage" is one more than this world needs,
+ * and the two would drift the first time the garage changed size.
+ *
+ * `margin` shrinks the box; the selector wants the strict bay, and a truck
+ * with a car hanging off the back wants a little forgiveness.
+ */
+export function inGarageBay(garage, x, z, margin = 0) {
+  if (!garage) return false
+  const dx = x - garage.x
+  const dz = z - garage.z
+  const fx = Math.sin(garage.heading)
+  const fz = Math.cos(garage.heading)
+  const along = dx * fx + dz * fz
+  const across = dx * fz - dz * fx
+  return Math.abs(along) < garage.depth / 2 - margin &&
+         Math.abs(across) < garage.width / 2 - margin
+}
+
+/**
+ * Where recovered wrecks are parked inside the bay.
+ *
+ * Mike, on where a towed car ends up: "Inside the garage bay, but once the
+ * game is done, you can make the cars disappear."
+ *
+ * Two things decide these. They are near the DOOR end rather than the back,
+ * because a towed car hangs off the yoke BEHIND the truck and the truck drives
+ * in nose-first - so the car is already at the door end when it is unhooked,
+ * and a slot at the back would mean sliding it the length of the garage past
+ * the truck that brought it. And they are pushed out to the sides, leaving the
+ * middle of the bay clear, because the middle of the bay is where the player's
+ * own vehicle parks and where the picker opens.
+ *
+ * `heading` faces OUT of the door, which is how you would leave a car you
+ * expect to move again.
+ */
+export function garageBaySlots(garage, count = 2) {
+  if (!garage) return []
+  const fx = Math.sin(garage.heading)
+  const fz = Math.cos(garage.heading)
+  const along = garage.depth / 2 - 4.2
+  const slots = []
+  for (let i = 0; i < count; i++) {
+    // -1, +1 for two; evenly spread either side of the middle for more.
+    const side = count === 1 ? 0 : -1 + (2 * i) / (count - 1)
+    const across = side * (garage.width / 2 - 2.4)
+    slots.push({
+      x: garage.x + fx * along + fz * across,
+      z: garage.z + fz * along - fx * across,
+      heading: garage.heading
+    })
+  }
+  return slots
+}
+

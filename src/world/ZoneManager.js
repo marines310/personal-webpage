@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { Game } from '../core/Game.js'
-import { getIsland } from './islandLayout.js'
+import { getIsland, islandName } from './islandLayout.js'
 import { ZONE_CONTENT } from '../content.js'
 
 /**
@@ -225,7 +225,7 @@ export class ZoneManager {
         x: island.x,
         z: island.z,
         color: island.accent,
-        title: island.name || id.toUpperCase()
+        title: islandName(island)
       }
     }
 

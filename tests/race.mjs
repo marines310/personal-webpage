@@ -1,34 +1,41 @@
 /**
- * The race, and the geometry the stunt park is built from.
+ * The stunt arena's geometry, and the race.
  *
- * Both are pure modules with no THREE in them, which is the point of them
- * being pure modules: a ramp is arithmetic and a race is a state machine, and
+ * Both are pure modules with no THREE in them, which is the point of them being
+ * pure modules: a mound is arithmetic and a race is a state machine, and
  * neither needs a browser to be wrong in front of you.
  *
  * What is NOT here, and could not be: whether the monster truck can actually
- * clear the big jump. That is the physics engine's answer, not arithmetic's,
- * and it was measured in the running game - the numbers are written down on
- * STUNT_BIG_JUMP.landing. What this file guards is that the LAYOUT still
- * matches those measurements, so that moving a ramp without re-measuring is a
- * failing test rather than a quiet regression.
+ * get over any of this. That is the physics engine's answer, not arithmetic's,
+ * and it was measured in the running game - the numbers are on MAX_FACE and on
+ * STUNT_DOUBLE.landing. What this file guards is that the LAYOUT still matches
+ * those measurements, so that moving a mound without re-measuring is a failing
+ * test rather than a quiet regression.
  */
 import {
-  wedgeSolid, humpWedges, flightRange, pointAlongRing,
-  COURSE_GROUND, RAMP_BURY, STUNT_COURSE, STUNT_BIG_JUMP,
-  RACE_LAPS, RACE_FIELD, RACE_LIGHTS, RACE_COUNTDOWN, RACE_LINE_AT, lightAt
+  moundSolid, flightRange, pointAlongRing, walkLoop, outsetLoop, faceRun,
+  COURSE_GROUND, RAMP_BURY, MAX_FACE, MIN_RUN,
+  STUNT_COURSE, STUNT_MOUNDS, STUNT_DOUBLE, MEASURED_DOUBLE,
+  CRUSH_PILE, crushSolid, crushFitsOn,
+  RACE_LAPS, RACE_FIELD, RACE_LIGHTS, RACE_COUNTDOWN, RACE_LINE_AT, lightAt,
+  CIRCUIT_GATE, GRID_COLUMN_OFFSET, pitStraightPlan, RUN_OFF
 } from '../src/world/course.js'
 import {
   newRaceState, stepRace, raceHud, loopDelta, lapsFrom, makeField,
   standings, carSpeed, gridOffset, gridSide,
   FORM_UP_TIME, GRID_PATIENCE, GRID_TOLERANCE, COOLDOWN, FIELD_PACE, RACE_PACE
 } from '../src/world/raceGame.js'
-import { getIsland, getIslandRing, islandOutline } from '../src/world/islandLayout.js'
+import {
+  getIsland, getIslandRing, islandOutline, getMonorailPiers, getBridgeLandings,
+  DEFAULT_ROAD_WIDTH
+} from '../src/world/islandLayout.js'
 import { chooseMission } from '../src/world/missions.js'
 import {
   tuningFor, airborneVelocity, isGrounded, groundedWithCoyote, airYaw,
-  COYOTE_TIME, GROUND_REACH, AIR_YAW
+  COYOTE_TIME, GROUND_REACH, AIR_YAW,
+  tiltRates, uprightError, pathError, isFlipped, TILT
 } from '../src/world/driving.js'
-import { distanceToEdge } from '../src/world/shapes.js'
+import { distanceToEdge, insetPolygon } from '../src/world/shapes.js'
 
 let pass = 0, fail = 0
 const chk = (n, c, d = '') => {
@@ -36,185 +43,378 @@ const chk = (n, c, d = '') => {
     : (fail++, console.log('  FAIL  ' + n + '  ' + d))
 }
 const near = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol
+const deg = (r) => r * 180 / Math.PI
 
 // ---------------------------------------------------------------------------
-console.log('1. A ramp is a closed solid\n')
+console.log('1. A mound is a closed solid with no vertical face on it\n')
 
-const ramp = wedgeSolid({ x: 0, z: 0, heading: 0, length: 10, width: 6, height: 3 })
+const mound = moundSolid({
+  x: 0, z: 0, heading: 0,
+  topWidth: 10, topDepth: 6, height: 3, runIn: 8, runOut: 4, runSide: 7
+})
 
-chk('it has triangles', ramp.positions.length > 0 && ramp.positions.length % 9 === 0,
-    `${ramp.positions.length} floats`)
-chk('every vertex has an index', ramp.indices.length === ramp.positions.length / 3)
+chk('it has triangles', mound.positions.length > 0 && mound.positions.length % 9 === 0,
+    `${mound.positions.length} floats`)
+chk('every vertex has an index', mound.indices.length === mound.positions.length / 3)
 chk('the indices are the plain sequence a trimesh wants',
-    ramp.indices.every((v, i) => v === i))
+    mound.indices.every((v, i) => v === i))
 
-// Twelve triangles: two for the drivable face, four for the sides, two for the
-// cliff under the lip, two for the back, two for the floor. A shell with any
-// of those missing is something a fast vehicle can pass through - see the
-// note on wedgeSolid().
+// Twelve triangles: eight for the four sloped faces, two for the flat top, two
+// for the floor. A shell with any of them missing is something a fast vehicle
+// can pass through - a Rapier trimesh is infinitely thin.
 chk('it is closed - twelve triangles, no open faces',
-    ramp.indices.length === 36, `${ramp.indices.length / 3} triangles`)
+    mound.indices.length === 36, `${mound.indices.length / 3} triangles`)
 
 const ys = []
-for (let i = 1; i < ramp.positions.length; i += 3) ys.push(ramp.positions[i])
+for (let i = 1; i < mound.positions.length; i += 3) ys.push(mound.positions[i])
 chk('its floor is buried under the ground',
-    near(Math.min(...ys), COURSE_GROUND - RAMP_BURY),
-    `${Math.min(...ys)}`)
-chk('its lip is exactly the height asked for',
+    near(Math.min(...ys), COURSE_GROUND - RAMP_BURY), `${Math.min(...ys)}`)
+chk('its top is exactly the height asked for',
     near(Math.max(...ys), COURSE_GROUND + 3), `${Math.max(...ys)}`)
-chk('and the lip is reported where the geometry puts it',
-    near(ramp.lip.z, 10) && near(ramp.lip.x, 0) && near(ramp.lip.y, COURSE_GROUND + 3),
-    JSON.stringify(ramp.lip))
-chk('the angle is the one the height and length imply',
-    near(ramp.angle, Math.atan2(3, 10)), `${ramp.angle}`)
+chk('and the crest is reported where the geometry puts it',
+    near(mound.crest.y, COURSE_GROUND + 3) && near(mound.crest.x, 0),
+    JSON.stringify(mound.crest))
 
-// Heading is atan2(x, z) like every other bearing in the project: 0 is +Z.
-const east = wedgeSolid({ x: 0, z: 0, heading: Math.PI / 2, length: 10, width: 6, height: 3 })
-chk('heading pi/2 points the ramp at +x',
-    near(east.lip.x, 10, 1e-9) && near(east.lip.z, 0, 1e-9),
-    JSON.stringify(east.lip))
-
-const south = wedgeSolid({ x: 0, z: 0, heading: Math.PI, length: 10, width: 6, height: 3 })
-chk('and heading pi points it at -z',
-    near(south.lip.z, -10, 1e-9), JSON.stringify(south.lip))
-
-// ---------------------------------------------------------------------------
-console.log('\n2. A hump is two ramps that meet at a crest\n')
-
-const hump = humpWedges({ x: 0, z: 0, heading: 0, up: 8, down: 12, width: 10, height: 2 })
-chk('a hump is two wedges', hump.length === 2)
-
-const upSolid = wedgeSolid(hump[0])
-const downSolid = wedgeSolid(hump[1])
-chk('their lips meet at the same point - no step to catch a wheel on',
-    near(upSolid.lip.x, downSolid.lip.x, 1e-9) &&
-    near(upSolid.lip.z, downSolid.lip.z, 1e-9) &&
-    near(upSolid.lip.y, downSolid.lip.y, 1e-9),
-    `${JSON.stringify(upSolid.lip)} vs ${JSON.stringify(downSolid.lip)}`)
-chk('the crest is `up` units along from the start', near(upSolid.lip.z, 8, 1e-9))
-chk('and the far side runs back the other way, from the far end',
-    near(hump[1].heading, Math.PI) && near(hump[1].z, 20, 1e-9),
-    JSON.stringify(hump[1]))
-
-// ---------------------------------------------------------------------------
-console.log('\n3. The ballistics agree with what was measured in the game\n')
-
-// Measured on the real kicker, in the running browser: the saloon left the lip
-// at 17.96 and covered 23.9 units before it touched anything. See
-// STUNT_BIG_JUMP.landing for the full table.
-const kicker = STUNT_BIG_JUMP.takeOff
-const angle = Math.atan2(kicker.height, kicker.length)
-const sedan = flightRange(17.96, angle, kicker.height)
-
-chk('a ramp that shallow is one a slow vehicle can climb',
-    angle < 0.28, `${(angle * 180 / Math.PI).toFixed(1)} degrees`)
-chk('the predicted saloon flight is within a few units of the measured 23.9',
-    Math.abs(sedan.distance - 23.9) < 6, `predicted ${sedan.distance.toFixed(1)}`)
-chk('a faster vehicle always flies further - which is why size cannot be the gate',
-    flightRange(27.9, angle, kicker.height).distance >
-    flightRange(14, angle, kicker.height).distance)
-
-chk('flightRange copes with a lip at ground level',
-    flightRange(14, angle, 0).distance > 0)
-chk('and with no speed at all',
-    flightRange(0, angle, 3).distance === 0)
-
-// ---------------------------------------------------------------------------
-console.log('\n4. The big jump lands where the measurements say it should\n')
-
-const landing = STUNT_BIG_JUMP.landing
-const westEdge = landing.x - landing.width / 2
-const eastEdge = landing.x + landing.width / 2
-const nearEdge = landing.z
-const farEdge = landing.z - landing.up - landing.down
-
-// Every one of these is a measured landing point from the running game. If a
-// ramp moves in course.js and these stop holding, the jump has quietly stopped
-// being a monster-truck jump and this is the failure that says so.
-const measured = [
-  { who: 'monster', x: -2.2, z: -46.9, shouldLand: true },
-  { who: 'monster + boost', x: -4.8, z: -47.5, shouldLand: true },
-  { who: 'monster, no steer', x: 5.4, z: -57.4, shouldLand: false },
-  { who: 'saloon', x: 5.0, z: -61.0, shouldLand: false },
-  { who: 'saloon + boost', x: 4.8, z: -89.0, shouldLand: false },
-  { who: 'racing car', x: -13.3, z: -78.8, shouldLand: false }
-]
-
-for (const m of measured) {
-  const on = m.x >= westEdge && m.x <= eastEdge && m.z <= nearEdge && m.z >= farEdge
-  chk(`${m.who.padEnd(18)} ${m.shouldLand ? 'lands on' : 'misses'} the landing`,
-      on === m.shouldLand,
-      `at (${m.x}, ${m.z}); landing x ${westEdge}..${eastEdge}, z ${farEdge}..${nearEdge}`)
+// THE WHOLE POINT. Mike's son's report on the first arena was that most of the
+// obstacles were walls: "if I drive into them, I'm not jumping, I'm more like
+// crashing into a wall." That was true, and it was true because a wedge has one
+// sloped face and three vertical ones. A mound has four sloped faces and no
+// vertical one, which is what lets you hit it from any direction.
+// AND IT FACES OUTWARDS. Rapier collides with a trimesh from either side, so
+// the physics was right for two whole rounds of screenshots while the picture
+// was inside out: three.js culls back faces, so every mound rendered as the
+// unlit inside of its own far slope - a black hole in a tan floor. Colour was
+// changed twice before winding was checked once.
+{
+  const p = mound.positions
+  let cx = 0, cy = 0, cz = 0
+  for (let i = 0; i < p.length; i += 3) { cx += p[i]; cy += p[i + 1]; cz += p[i + 2] }
+  const n = p.length / 3
+  cx /= n; cy /= n; cz /= n
+  let outward = 0
+  for (let t = 0; t < p.length; t += 9) {
+    const ux = p[t + 3] - p[t], uy = p[t + 4] - p[t + 1], uz = p[t + 5] - p[t + 2]
+    const vx = p[t + 6] - p[t], vy = p[t + 7] - p[t + 1], vz = p[t + 8] - p[t + 2]
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
+    const dx = (p[t] + p[t + 3] + p[t + 6]) / 3 - cx
+    const dy = (p[t + 1] + p[t + 4] + p[t + 7]) / 3 - cy
+    const dz = (p[t + 2] + p[t + 5] + p[t + 8]) / 3 - cz
+    if (nx * dx + ny * dy + nz * dz > 0) outward++
+  }
+  chk('every triangle is wound so its front face points out of the solid',
+      outward === 12, `${outward} of 12`)
 }
 
-// And with margin, because a measurement that only just holds is a measurement
-// that will not hold once a child is driving instead of an autopilot.
-const margin = Math.min(
-  ...measured.filter(m => !m.shouldLand).map(m => Math.max(
-    westEdge - m.x, m.x - eastEdge, m.z - nearEdge, farEdge - m.z)))
-chk('and the nearest miss misses by a clear margin', margin > 3,
-    `${margin.toFixed(1)} units`)
+chk('every face is sloped - none of them is vertical',
+    mound.angles.in < Math.PI / 2 && mound.angles.out < Math.PI / 2 &&
+    mound.angles.side < Math.PI / 2)
+chk('the three runs give the three angles they should',
+    near(deg(mound.angles.in), deg(Math.atan2(3, 8)), 1e-9) &&
+    near(deg(mound.angles.out), deg(Math.atan2(3, 4)), 1e-9) &&
+    near(deg(mound.angles.side), deg(Math.atan2(3, 7)), 1e-9))
 
-// The other half: the truck has to land comfortably ON it, not clip the edge.
-// It is 2.5 wide, so a centre a unit inside the edge is half a truck hanging
-// off - which is a landing but does not look like one.
-const landedInside = Math.min(
-  ...measured.filter(m => m.shouldLand).map(m => Math.min(
-    m.x - westEdge, eastEdge - m.x, nearEdge - m.z, m.z - farEdge)))
-chk('and the truck lands well inside it, not on the lip',
-    landedInside > 2.5, `${landedInside.toFixed(1)} units from the nearest edge`)
+// A run of zero would BE a vertical face, so it cannot be allowed through even
+// by accident.
+const flat = moundSolid({
+  x: 0, z: 0, heading: 0, topWidth: 6, topDepth: 6, height: 3,
+  runIn: 0, runOut: -5, runSide: 0
+})
+chk('a run of zero is clamped rather than believed',
+    flat.angles.in < Math.PI / 2 && flat.angles.out < Math.PI / 2,
+    `${deg(flat.angles.in).toFixed(1)} / ${deg(flat.angles.out).toFixed(1)} degrees`)
+chk('and the clamp is MIN_RUN', near(flat.angles.in, Math.atan2(3, MIN_RUN)))
+
+// Heading is atan2(x, z), like every other bearing in the project: 0 is +Z.
+const east = moundSolid({
+  x: 0, z: 0, heading: Math.PI / 2,
+  topWidth: 10, topDepth: 6, height: 3, runIn: 8, runOut: 4, runSide: 7
+})
+chk('heading pi/2 puts the far face at +x',
+    near(east.lip.x, 7, 1e-9) && near(east.lip.z, 0, 1e-9), JSON.stringify(east.lip))
 
 // ---------------------------------------------------------------------------
-console.log('\n5. The course fits on the island it is built on\n')
+console.log('\n2. Nothing on the floor is steeper than the truck can climb\n')
+
+console.log(`   the measured limit is ${deg(MAX_FACE).toFixed(0)} degrees` +
+            ` - see MAX_FACE for the table it came from`)
+
+const everything = [
+  ...STUNT_MOUNDS,
+  { name: 'the double: take-off', ...STUNT_DOUBLE.takeOff },
+  { name: 'the double: landing', ...STUNT_DOUBLE.landing }
+]
+
+for (const spec of everything) {
+  const solid = moundSolid(spec)
+  const worst = Math.max(solid.angles.in, solid.angles.out, solid.angles.side)
+  chk(`${spec.name.padEnd(22)} steepest face ${deg(worst).toFixed(1)} degrees`,
+      worst <= MAX_FACE + 1e-9,
+      `over the measured limit of ${deg(MAX_FACE).toFixed(0)}`)
+}
+
+chk('and none of them is a gentle rise either - they are meant to be jumps',
+    everything.every((s) => moundSolid(s).angles.in > 18 * Math.PI / 180),
+    everything.filter((s) => moundSolid(s).angles.in <= 18 * Math.PI / 180)
+              .map((s) => s.name).join(' '))
+
+chk('faceRun() and FACE agree with each other',
+    near(Math.atan2(3, faceRun(3)), 25 * Math.PI / 180, 1e-9))
+
+// ---------------------------------------------------------------------------
+console.log('\n3. The ballistics still describe what the game does\n')
+
+// Measured in the running browser on a three-unit test mound with 26-degree
+// faces: the truck went over at 14 and came down 21 units past the crest.
+const takeOff = STUNT_DOUBLE.takeOff
+const overCrest = flightRange(14, 0, takeOff.height)
+chk('leaving a crest horizontally still gives a real flight',
+    overCrest.distance > 8, `${overCrest.distance.toFixed(1)} units`)
+chk('a faster vehicle always flies further, which is why size cannot be the gate',
+    flightRange(27.9, 0, takeOff.height).distance >
+    flightRange(14, 0, takeOff.height).distance)
+chk('flightRange copes with no height at all',
+    flightRange(14, 0, 0).distance === 0)
+chk('and with no speed at all', flightRange(0, 0.3, 3).distance === 0)
+
+// ---------------------------------------------------------------------------
+console.log('\n4. The double still does what it was measured doing\n')
+
+// These are not predictions. They were taken off the running game with
+// probe/double.mjs, and their job here is to fail the moment somebody resizes
+// the mound or retunes a vehicle without re-taking them - which is exactly
+// what happened the last time this jump changed shape and nobody re-measured.
+{
+  const solid = moundSolid(STUNT_DOUBLE.takeOff)
+  const land = moundSolid(STUNT_DOUBLE.landing)
+  const crest = STUNT_DOUBLE.takeOff.z
+  const m = MEASURED_DOUBLE.monster
+
+  chk('the truck comes down past the take-off, not on it',
+      crest + m.flight > crest + solid.reach.along,
+      `lands ${(crest + m.flight).toFixed(1)}, take-off reaches ` +
+      `${(crest + solid.reach.along).toFixed(1)}`)
+
+  const nearFoot = STUNT_DOUBLE.landing.z - land.reach.along
+  const topFrom = STUNT_DOUBLE.landing.z - STUNT_DOUBLE.landing.topDepth / 2
+  const farFoot = STUNT_DOUBLE.landing.z + land.reach.along
+
+  chk('and it comes down ON the landing rather than in the gap',
+      m.landsAt > nearFoot && m.landsAt < farFoot,
+      `${m.landsAt} against ${nearFoot.toFixed(1)}..${farFoot.toFixed(1)}`)
+
+  // The saloon and the racing car are FASTER, so they go further. That is the
+  // whole argument for gating the arena by physics rather than by vehicle
+  // kind: nothing here is locked, the jump simply suits one truck.
+  chk('the saloon flies further than the truck, so the gate is speed not kind',
+      MEASURED_DOUBLE.sedan.flight > m.flight,
+      `${MEASURED_DOUBLE.sedan.flight} against ${m.flight}`)
+  chk('and the saloon lands beyond the landing crest, not on the same spot',
+      MEASURED_DOUBLE.sedan.landsAt > STUNT_DOUBLE.landing.z)
+  chk('the racing car does not come down inside the arena at all',
+      MEASURED_DOUBLE.race.landsAt === null &&
+      MEASURED_DOUBLE.race.peak > 12)
+
+  // The measured peak has to be consistent with the ballistics the pure module
+  // predicts. Not equal - the game is a physics engine and this is a parabola
+  // - but the same order, or one of the two is describing a different world.
+  const predicted = flightRange(m.lipSpeed, 0, STUNT_DOUBLE.takeOff.height)
+  chk('and the measured flight is within half of the parabola for it',
+      Math.abs(predicted.distance - m.flight) < m.flight * 0.5,
+      `parabola says ${predicted.distance.toFixed(1)}, game says ${m.flight}`)
+
+  chk('the landing is far enough past the take-off to be a gap',
+      nearFoot - (crest + solid.reach.along) >= 2,
+      `${(nearFoot - (crest + solid.reach.along)).toFixed(1)} units`)
+  chk('and the truck clears that gap',
+      crest + m.flight > nearFoot,
+      `${(crest + m.flight).toFixed(1)} against a foot at ${nearFoot.toFixed(1)}`)
+
+  console.log(`   the truck leaves at ${m.lipSpeed}, peaks at ${m.peak},` +
+              ` flies ${m.flight} and lands ${(m.landsAt - topFrom).toFixed(1)}` +
+              ` short of the flat top`)
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n5. Everything fits on the floor it is built on\n')
 
 const stunt = getIsland('stunt')
 chk('the stunt island exists', !!stunt)
 
 if (stunt) {
-  const outline = islandOutline(stunt)
   const ring = getIslandRing(stunt)
-  const inside = (x, z) => distanceToEdge(outline, x, z)
+  const floor = insetPolygon(ring, STUNT_COURSE.padInset)
+  const barrier = insetPolygon(ring, STUNT_COURSE.barrier.inset)
 
-  const pieces = [
-    ['kicker base', kicker.x, kicker.z],
-    ['kicker lip', kicker.x, kicker.z - kicker.length],
-    ['landing near', landing.x, landing.z],
-    ['landing far', landing.x, landing.z - landing.up - landing.down],
-    ['landing west', westEdge, landing.z - landing.up],
-    ['landing east', eastEdge, landing.z - landing.up],
-    ['first roller', 0, STUNT_COURSE.rollers.from],
-    ['last roller', 0, STUNT_COURSE.rollers.from +
-      (STUNT_COURSE.rollers.count - 1) * STUNT_COURSE.rollers.spacing],
-    ['tabletop start', 0, STUNT_COURSE.tabletop.z],
-    ['tabletop end', 0, STUNT_COURSE.tabletop.z + STUNT_COURSE.tabletop.up +
-      STUNT_COURSE.tabletop.top + STUNT_COURSE.tabletop.down],
-    ['scrap', STUNT_COURSE.scrap.x, STUNT_COURSE.scrap.z]
-  ]
+  // Every mound's footprint has to be inside the barrier, which is the wall
+  // round the arena. A mound half-buried in the wall is not a jump, it is a
+  // ramp into a fence - and this is exactly the class of mistake that is
+  // invisible in a plan view and obvious the moment somebody drives at it.
+  const inFloor = (x, z) => distanceToEdge(barrier, x, z)
 
-  for (const [name, x, z] of pieces) {
-    chk(`${name.padEnd(16)} is on dry land`, inside(x, z) > 6,
-        `${inside(x, z).toFixed(1)} from the water`)
-  }
-
-  // Nothing on the course may sit on the ring road, which is the way in and
-  // the way out and the only road on the island.
-  if (ring) {
-    const toRing = (x, z) => {
-      let best = Infinity
-      for (let i = 1; i < ring.length; i++) {
-        const ax = ring[i - 1].x, az = ring[i - 1].z
-        const dx = ring[i].x - ax, dz = ring[i].z - az
-        const l2 = dx * dx + dz * dz
-        const t = l2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)) : 0
-        best = Math.min(best, Math.hypot(x - (ax + dx * t), z - (az + dz * t)))
+  for (const spec of everything) {
+    const solid = moundSolid(spec)
+    const fx = Math.sin(spec.heading)
+    const fz = Math.cos(spec.heading)
+    let worst = Infinity
+    let where = null
+    // The four corners of the footprint, which is where it sticks out.
+    for (const along of [-solid.reach.along, solid.reach.along]) {
+      for (const across of [-solid.reach.across, solid.reach.across]) {
+        const x = spec.x + fx * along + fz * across
+        const z = spec.z + fz * along - fx * across
+        const d = inFloor(x, z)
+        if (d < worst) { worst = d; where = [+x.toFixed(1), +z.toFixed(1)] }
       }
-      return best
     }
-    for (const [name, x, z] of pieces) {
-      chk(`${name.padEnd(16)} is clear of the ring road`, toRing(x, z) > 4.5,
-          `${toRing(x, z).toFixed(1)}`)
+    // 1.5, not 0. A footprint corner that just touches the barrier still has
+    // the barrier's own thickness built through it.
+    chk(`${spec.name.padEnd(22)} is inside the barrier`, worst > 1.5,
+        `corner ${JSON.stringify(where)} is ${worst.toFixed(1)} from the wall`)
+  }
+
+  // The monorail crosses this island - `monorail: false` keeps a STATION off,
+  // not the railway - and it stands on piers. A pier inside a mound is a
+  // concrete column sticking out of a jump.
+  const piers = getMonorailPiers()
+    .map((p) => ({ x: p.x - stunt.x, z: p.z - stunt.z }))
+    .filter((p) => distanceToEdge(floor, p.x, p.z) > -8)
+
+  console.log(`   ${piers.length} monorail piers stand on this island`)
+  chk('there are piers to avoid, so this check is doing something',
+      piers.length > 0)
+
+  for (const spec of everything) {
+    const solid = moundSolid(spec)
+    let worst = Infinity
+    for (const pier of piers) {
+      // Distance from the pier to the mound's footprint rectangle, in the
+      // mound's own frame.
+      const dx = pier.x - spec.x
+      const dz = pier.z - spec.z
+      const along = Math.abs(dx * Math.sin(spec.heading) + dz * Math.cos(spec.heading))
+      const across = Math.abs(dx * Math.cos(spec.heading) - dz * Math.sin(spec.heading))
+      const gap = Math.max(along - solid.reach.along, across - solid.reach.across)
+      worst = Math.min(worst, gap)
+    }
+    chk(`${spec.name.padEnd(22)} clears the monorail piers`, worst > 3,
+        `${worst.toFixed(1)} units`)
+  }
+
+  // And they must not be built into each other. Two overlapping trimeshes are
+  // not a bigger mound, they are a pair of surfaces that disagree about where
+  // the ground is, and a vehicle between them gets picked up by whichever one
+  // Rapier resolves second.
+  //
+  // The gap between two mounds is a SEPARATING-AXIS test on their footprint
+  // rectangles, not a distance between bounding circles. The first version of
+  // this check used circles, and a circle round a 30-by-22 rectangle is nine
+  // units bigger than the rectangle in every direction - so it called the two
+  // halves of the double a collision when they are twelve units apart, and
+  // would have gone on calling every workable layout a failure.
+  const rectGap = (a, b) => {
+    const sa = moundSolid(a)
+    const sb = moundSolid(b)
+    const dx = b.x - a.x
+    const dz = b.z - a.z
+    // How far a mound reaches along an arbitrary axis: its two half-extents,
+    // each scaled by how much its own axis lines up with the one being tested.
+    const spread = (heading, solid, ax, az) =>
+      Math.abs(Math.sin(heading) * ax + Math.cos(heading) * az) * solid.reach.along +
+      Math.abs(Math.cos(heading) * ax - Math.sin(heading) * az) * solid.reach.across
+    // Two rectangles are apart if they are apart on ANY axis, and for two
+    // rectangles the only axes that can separate them are their own four
+    // edge normals - so the biggest of these four gaps is the real one.
+    let widest = -Infinity
+    for (const h of [a.heading, a.heading + Math.PI / 2,
+                     b.heading, b.heading + Math.PI / 2]) {
+      const ax = Math.sin(h)
+      const az = Math.cos(h)
+      widest = Math.max(widest, Math.abs(dx * ax + dz * az) -
+        spread(a.heading, sa, ax, az) - spread(b.heading, sb, ax, az))
+    }
+    return widest
+  }
+
+  // Prove the metric before trusting it: two identical mounds on top of each
+  // other must read as overlapping, and the same pair pushed well apart must
+  // not. A gap function that says everything is fine is not a test.
+  const twin = (x, z) => ({ x, z, heading: 0, topWidth: 10, topDepth: 6,
+                            height: 3, runIn: 6, runOut: 6, runSide: 6 })
+  chk('the gap metric calls a mound built on top of itself an overlap',
+      rectGap(twin(0, 0), twin(0, 0)) < 0, `${rectGap(twin(0, 0), twin(0, 0))}`)
+  chk('and two the same size, forty apart, clear by the arithmetic',
+      near(rectGap(twin(0, 0), twin(0, 40)), 40 - 2 * (3 + 6), 1e-9),
+      `${rectGap(twin(0, 0), twin(0, 40))}`)
+
+  let closest = Infinity
+  let pair = ''
+  for (let i = 0; i < everything.length; i++) {
+    for (let j = i + 1; j < everything.length; j++) {
+      const d = rectGap(everything[i], everything[j])
+      if (d < closest) { closest = d; pair = `${everything[i].name} / ${everything[j].name}` }
     }
   }
+  console.log(`   closest pair: ${pair}, ${closest.toFixed(1)} apart`)
+  // Two clear, not zero. Touching footprints put the foot of one mound's
+  // slope in the foot of another's, which is a seam you can catch a wheel in.
+  chk('no two mounds are built into each other', closest > 2, `${pair}`)
+
+  // THE CRUSH PILE IS A RAMP, AND IT HAS TO FIT ON ITS OWN MOUND.
+  //
+  // Mike: "the monster truck stadium has these vehicles that I think we're
+  // supposed to drive over, but because it uses the in-game vehicle model, I
+  // am unable to do anything with the cars." He was right - each wreck had a
+  // static BOX round it, which is a vertical wall at the top of a slope, so
+  // driving at the pile stopped you dead.
+  //
+  // It is one trimesh now, built by the same moundSolid() as everything else
+  // and therefore with the same 25-degree faces. Which means it has the same
+  // problem every mound has: it must fit on the thing it is built on. The
+  // first version did not - 1.15 high with a 5.2 by 3.4 top needs 5.1 units
+  // across and the mound's flat top is 4 - so its buried edge hung in the air
+  // over the parent's slope, the two trimeshes crossed, and driving into the
+  // seam threw the monster truck TWENTY-ONE units into the sky.
+  {
+    const pile = STUNT_MOUNDS.find((m) => m.crush)
+    chk('there is a crush pile to check', !!pile)
+    if (pile) {
+      const fit = crushFitsOn(pile)
+      chk('the crush ramp fits within its mound\'s flat top', fit.fits,
+          `needs ${fit.acrossNeeded.toFixed(2)} x ${fit.alongNeeded.toFixed(2)}, ` +
+          `has ${fit.acrossHave} x ${fit.alongHave}`)
+
+      const parent = moundSolid(pile)
+      const ramp = crushSolid({ x: pile.x, z: pile.z, heading: pile.heading },
+                              parent.crest.y)
+      chk('and it stands on the mound rather than floating over it',
+          ramp.topY > parent.crest.y && ramp.topY < parent.crest.y + 2,
+          `ramp top ${ramp.topY.toFixed(2)}, mound crest ${parent.crest.y.toFixed(2)}`)
+      chk('its faces are climbable, like every other obstacle here',
+          Math.max(ramp.angles.in, ramp.angles.out, ramp.angles.side) <= MAX_FACE + 1e-9)
+      chk('and it is low enough to be a lip on a jump, not a second jump',
+          CRUSH_PILE.height < 1.2, `${CRUSH_PILE.height}`)
+    }
+  }
+
+  // The arena furniture has to resolve too. An outset that comes back null is
+  // a grandstand that never gets built, which is how the first version of the
+  // stands ended up invisible.
+  chk('the barrier loop resolves', !!barrier && barrier.length > 3)
+  for (let tier = 0; tier < STUNT_COURSE.stands.tiers; tier++) {
+    const out = STUNT_COURSE.stands.fromRing + tier * STUNT_COURSE.stands.tread
+    const loop = outsetLoop(ring, out)
+    chk(`seating tier ${tier} resolves and is bigger than the ring`,
+        loop.length === ring.length &&
+        Math.max(...loop.map((p) => p.x)) > Math.max(...ring.map((p) => p.x)),
+        `${loop.length} points`)
+  }
+
+  const blocks = walkLoop([...barrier, barrier[0]], STUNT_COURSE.barrier.blockLength)
+  console.log(`   the barrier is ${blocks.length} blocks round`)
+  chk('the barrier is a whole number of blocks with no short one at the seam',
+      blocks.length > 20)
+  chk('and walkLoop hands back fractions from 0 to just under 1',
+      blocks[0].fraction === 0 && blocks[blocks.length - 1].fraction < 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +694,50 @@ if (circuit) {
 
   chk('pointAlongRing at 0 is the start', near(pointAlongRing(circuit, 0).x, circuit[0].x))
   chk('and it refuses a path that is not one', pointAlongRing([], 0.5) === null)
+
+  // AND THERE IS A WAY IN. The first version of the armco ran unbroken round
+  // the outside of the circuit, which put a steel barrier across the bridge
+  // road: you drove over the bridge, past the traffic lights this island
+  // already has, over the zebra crossing already painted across the track,
+  // and stopped. Nothing failed, because a wall in the wrong place is a
+  // perfectly good wall - so the check has to be for the HOLE.
+  const landings = getBridgeLandings(speedway)
+  chk('a bridge lands on the speedway at all', landings.length > 0)
+
+  // The same corridor test World.circuitGate() builds its predicate from, so
+  // the test and the builder cannot disagree about where the gate is.
+  const inGate = (x, z, width) => landings.some((l) =>
+    x * l.dirX + z * l.dirZ > 0 &&
+    Math.abs(x * l.dirZ - z * l.dirX) < width / 2)
+
+  const armco = outsetLoop(circuit, DEFAULT_ROAD_WIDTH / 2 + 3)
+  const path = armco.map((p) => ({ x: p.x, z: p.z }))
+  path.push({ ...path[0] })
+  const posts = walkLoop(path, 5)
+
+  const blocking = posts.filter((at) => inGate(at.x, at.z, CIRCUIT_GATE))
+  console.log(`   ${blocking.length} of ${posts.length} armco posts fall in the gate`)
+  chk('the gate is somewhere the barrier would otherwise have run',
+      blocking.length > 0, 'nothing to skip means the test proves nothing')
+
+  // The gap has to be wider than the road, not merely non-zero.
+  chk('and it is wider than the road that comes through it',
+      CIRCUIT_GATE > DEFAULT_ROAD_WIDTH + 4,
+      `${CIRCUIT_GATE} against a ${DEFAULT_ROAD_WIDTH}-wide road`)
+
+  // Every landing needs its own hole, not just the first one.
+  for (let i = 0; i < landings.length; i++) {
+    const l = landings[i]
+    const on = posts.filter((at) =>
+      at.x * l.dirX + at.z * l.dirZ > 0 &&
+      Math.abs(at.x * l.dirZ - at.z * l.dirX) < CIRCUIT_GATE / 2)
+    chk(`bridge ${i} to ${l.other.id} gets its own hole`, on.length > 0,
+        `${on.length} posts skipped`)
+  }
+
+  // And the hole is a hole, not a thinning: no post survives inside it.
+  chk('nothing is left standing in the gate',
+      blocking.every((at) => inGate(at.x, at.z, CIRCUIT_GATE)))
 }
 
 // ---------------------------------------------------------------------------
@@ -594,7 +838,103 @@ chk('and is short next to the 1.25s the truck spends in the air',
     COYOTE_TIME < 0.25, `${COYOTE_TIME}s`)
 
 // ---------------------------------------------------------------------------
-console.log('\n13. Standings\n')
+console.log('\n13. Pitch and roll\n')
+
+// Mike, after driving the arena: "the jump mechanics seem kinda flat." They
+// were. Every chassis had pitch and roll LOCKED, and on top of that the
+// driving model wrote `setAngvel({x: 0, y: yawRate, z: 0})` every frame, which
+// threw away any rotation the physics did manage. A car left a four-unit mound
+// level, flew level and landed level.
+{
+  const level = { x: 0, y: 1, z: 0 }
+  const nose = { x: 0, y: 0, z: 1 }
+  const still = { x: 0, y: 0, z: 0 }
+
+  // Run the controller to its steady state, the way the game does - one call
+  // is a rate change, not a rate.
+  const settle = (opts, steps = 200) => {
+    let a = { x: 0, y: 0, z: 0 }
+    for (let i = 0; i < steps; i++) {
+      const r = tiltRates({ ...opts, angVel: a })
+      a = { x: r.x, y: 0, z: r.z }
+    }
+    return a
+  }
+
+  chk('a level car on level ground is asked to do nothing',
+      settle({ up: level, forward: nose, velocity: { x: 0, y: 0, z: 14 },
+               grounded: true, groundNormal: level }).x === 0)
+
+  // The error is a cross product, so its LENGTH is the sine of the angle -
+  // both the axis to turn about and how far. Zero exactly when upright.
+  chk('uprightError is zero for a level car',
+      uprightError(level).x === 0 && uprightError(level).z === 0)
+  chk('and grows with the lean',
+      Math.abs(uprightError({ x: Math.sin(0.5), y: Math.cos(0.5), z: 0 }).z) >
+      Math.abs(uprightError({ x: Math.sin(0.2), y: Math.cos(0.2), z: 0 }).z))
+
+  // THE ONE THAT MAKES A JUMP LOOK LIKE A JUMP. Climbing, the nose comes up;
+  // falling, it drops. Rotation about +x pitches the nose DOWN, so the signs
+  // are the other way round from the intuition and worth pinning here.
+  const climbing = settle({ up: level, forward: nose, grounded: false,
+                            velocity: { x: 0, y: 9, z: 14 } })
+  const falling = settle({ up: level, forward: nose, grounded: false,
+                           velocity: { x: 0, y: -9, z: 14 } })
+  chk('climbing off a ramp pitches the nose UP', climbing.x < -0.5,
+      `${climbing.x.toFixed(2)} rad/s`)
+  chk('and falling pitches it DOWN', falling.x > 0.5, `${falling.x.toFixed(2)} rad/s`)
+  chk('flat flight asks for no pitch at all',
+      Math.abs(settle({ up: level, forward: nose, grounded: false,
+                        velocity: { x: 0, y: 0, z: 14 } }).x) < 1e-9)
+  chk('and neither does standing still in the air - a direction of travel ' +
+      'below walking pace is noise',
+      pathError(nose, { x: 0, y: 0.4, z: 0.2 }).x === 0)
+
+  // ON THE GROUND, LEVEL MEANS THE SLOPE. Aiming at the horizon while standing
+  // on a 25-degree mound means fighting the terrain and winning, which is how
+  // the arena stayed flat even with the lock removed.
+  const onRamp = settle({
+    up: level, forward: nose, grounded: true,
+    velocity: { x: 0, y: 0, z: 14 },
+    groundNormal: { x: 0, y: Math.cos(0.436), z: -Math.sin(0.436) }
+  })
+  chk('a level car on a 25-degree slope is turned to lie along it',
+      Math.abs(onRamp.x) > 1, `${onRamp.x.toFixed(2)} rad/s`)
+  chk('and it is the ground it follows, not the horizon',
+      Math.abs(onRamp.x) >
+      Math.abs(settle({ up: level, forward: nose, grounded: true,
+                        velocity: { x: 0, y: 0, z: 14 },
+                        groundNormal: level }).x))
+
+  // A steep enough contact is not a floor. Standing against a wall must not
+  // roll the car into the wall to lie along it.
+  chk('a near-vertical contact is ignored rather than lain along',
+      settle({ up: level, forward: nose, grounded: true,
+               velocity: { x: 0, y: 0, z: 14 },
+               groundNormal: { x: 0.97, y: 0.2, z: 0 } }).z === 0)
+
+  // The spring is stiff on the ground and weak in the air, which is the whole
+  // shape of the thing: tyres hold a car level, nothing holds it in flight.
+  chk('the upright spring is far stiffer on the ground than in the air',
+      TILT.groundSpring > TILT.airSpring * 5,
+      `${TILT.groundSpring} against ${TILT.airSpring}`)
+
+  // A cap, so a bad landing is a lurch and not a barrel roll.
+  const violent = settle({ up: { x: 0.99, y: 0.14, z: 0 }, forward: nose,
+                           grounded: true, velocity: { x: 0, y: -20, z: 20 },
+                           groundNormal: level })
+  chk('and no input can spin it faster than the cap',
+      Math.hypot(violent.x, violent.z) <= TILT.maxRate + 1e-9,
+      `${Math.hypot(violent.x, violent.z).toFixed(2)} against ${TILT.maxRate}`)
+
+  chk('on its roof is on its roof', isFlipped({ x: 0, y: -0.9, z: 0 }))
+  chk('and leaning hard is not', !isFlipped({ x: 0.9, y: 0.4, z: 0 }))
+  chk('self-righting waits long enough to read as a roll',
+      TILT.flipSeconds > 1.5 && TILT.flipSeconds < 4, `${TILT.flipSeconds}s`)
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n14. Standings\n')
 
 let ranked = newRaceState()
 stepRace(ranked, 0.1, ctx())
@@ -606,6 +946,60 @@ chk('the leader is first', order[0].player === true)
 chk('everybody is in it', order.length === RACE_FIELD + 1)
 chk('and it is sorted by distance covered',
     order.every((e, i) => i === 0 || e.progress <= order[i - 1].progress))
+
+// ---------------------------------------------------------------------------
+console.log('\n15. Nothing alongside the main straight is standing on it\n')
+
+// THE ONE THAT WOULD HAVE CAUGHT IT. Mike asked for a wider racetrack; the
+// ribbon went from seven units to thirteen and the pit wall stayed at its
+// hard-coded 5.5 from the centre line, which put a solid static collider two
+// units inside the tarmac. You find that by driving into it on lap one.
+//
+// So the offsets are computed rather than typed, and this checks them at every
+// width the circuit could plausibly be - not just the one it happens to be.
+for (const width of [7, 9, 11, 13, 16, 20]) {
+  const plan = pitStraightPlan(width)
+  const label = `at ${String(width).padStart(2)} units wide`
+
+  chk(`${label}, nothing is on the tarmac`,
+      plan.spans.every(([, near]) => near > plan.edge),
+      plan.spans.filter(([, near]) => near <= plan.edge)
+        .map(([n, near]) => `${n} at ${near.toFixed(1)} inside edge ${plan.edge}`)
+        .join('; '))
+
+  chk(`${label}, there is run-off before the first thing you can hit`,
+      plan.spans[0][1] - plan.edge >= RUN_OFF - 1e-9,
+      `${(plan.spans[0][1] - plan.edge).toFixed(2)}`)
+
+  // And nothing is inside anything else - the gantry leg used to end up
+  // standing in the middle of the pit building.
+  for (let i = 1; i < plan.spans.length; i++) {
+    const [name, near] = plan.spans[i]
+    const [before, , far] = plan.spans[i - 1]
+    chk(`${label}, the ${name} clears the ${before}`,
+        near >= far, `${near.toFixed(1)} against ${far.toFixed(1)}`)
+  }
+
+  // The gantry straddles the track rather than standing on it.
+  chk(`${label}, the gantry spans the full width of the track`,
+      plan.gantrySpan / 2 - plan.legDepth > plan.edge,
+      `${(plan.gantrySpan / 2).toFixed(1)} against ${plan.edge}`)
+}
+
+// The grid is set out across the track it is actually on. Six cars in two
+// columns either side of the centre line, each of them on tarmac.
+{
+  const width = getIsland('speedway').ringWidth || DEFAULT_ROAD_WIDTH
+  const CAR_HALF_WIDTH = 1.9 / 2
+  chk('the grid columns are wide enough apart to look like a grid',
+      GRID_COLUMN_OFFSET > CAR_HALF_WIDTH * 1.5,
+      `${GRID_COLUMN_OFFSET} against a car half-width of ${CAR_HALF_WIDTH}`)
+  chk('and both columns are entirely on the tarmac',
+      GRID_COLUMN_OFFSET + CAR_HALF_WIDTH < width / 2,
+      `${GRID_COLUMN_OFFSET + CAR_HALF_WIDTH} against a half-width of ${width / 2}`)
+  chk('the circuit is wider than a street, because it is a circuit',
+      width > DEFAULT_ROAD_WIDTH, `${width} against ${DEFAULT_ROAD_WIDTH}`)
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

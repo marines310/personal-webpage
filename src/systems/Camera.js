@@ -258,11 +258,72 @@ export class Camera {
     }
   }
 
+  /**
+   * Put the camera where the driver's head is.
+   *
+   * The offsets are in the CAB'S OWN frame and match buildMonorailCab(): the
+   * eye is behind the console and below the top of the windscreen, and it
+   * looks at a point well down the track rather than at the nose, because a
+   * driver judging a platform is looking at the platform.
+   */
+  sitInCab(vehicle) {
+    const mesh = vehicle.mesh
+    // PITCHED DOWN, by a stated angle rather than by aiming at a height that
+    // happens to come out about right.
+    //
+    // Level, the desk sits below the bottom of the frame. That is not a fault
+    // in the model - it is where a driving desk really is, a third of a metre
+    // under the eye and half a metre in front of it, which is nearly forty
+    // degrees down - but it meant the cab view was a dark ceiling above a
+    // windscreen with nothing between them, and Mike's "it's currently just a
+    // glass window" was half this and half the missing lining. Six degrees
+    // brings the desk into the bottom third and still leaves twenty-four
+    // degrees of sky, which is far more than judging a platform needs.
+    //
+    // MIND THE FRAMES. This is the OUTER mesh, and wrapTrafficMesh() drops the
+    // cab's own group by CAR_HEIGHT / 2 - so 1.82 here is the 2.02 that
+    // buildMonorailCab() would call it, and the two only agree because that is
+    // written down in both places.
+    const CAB_PITCH = -0.105
+    const eye = new THREE.Vector3(0, 1.82, 3.05)
+    const look = new THREE.Vector3(0, 1.82 + Math.tan(CAB_PITCH) * 60, 63)
+    mesh.updateMatrixWorld(true)
+    eye.applyMatrix4(mesh.matrixWorld)
+    look.applyMatrix4(mesh.matrixWorld)
+    this.instance.position.copy(eye)
+    this.instance.lookAt(look)
+    this.instance.updateProjectionMatrix()
+  }
+
   update(delta) {
     const vehicle = this.game.vehicle
     if (!vehicle || !vehicle.mesh) return
 
     const inputs = this.game.inputs
+
+    // --- The monorail driver's cab ---
+    //
+    // Mike, asked which view he wanted: "Cab by default, C to pop outside."
+    // So C stops meaning "reset the camera" for this one vehicle and starts
+    // meaning "get out and look at the train", which is the more useful thing
+    // to be able to do while you are driving one.
+    //
+    // The cab view is not a pose in the rig at all. Everything else here is a
+    // spring behind a car; this is a camera bolted to the inside of a mesh,
+    // and trying to express "no smoothing, no orbit, sitting in the driver's
+    // seat" as a set of rig parameters would be fighting every one of them.
+    if (vehicle.kind === 'monorail') {
+      if (this.cab === undefined) this.cab = true
+      if (inputs && inputs.consumeCameraReset()) this.cab = !this.cab
+      if (this.cab) {
+        this.sitInCab(vehicle)
+        return
+      }
+    } else if (this.cab !== undefined) {
+      // Left the train: forget the toggle, so C is a camera reset again.
+      this.cab = undefined
+      this.initialised = false
+    }
 
     // Save before reset, so pressing both in one frame does the sensible
     // thing rather than saving whatever the reset just produced.

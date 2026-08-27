@@ -135,8 +135,19 @@ const code = src
   .replace(/"(?:[^"\\]|\\.)*"/g, '""')
   .replace(/`(?:[^`\\]|\\.)*`/g, '``')
 
+// The import statements come out too, because their contents are the
+// DECLARATIONS this check measures against and not uses of anything.
+//
+// It only mattered once World.js first imported a SHOUTY name under another:
+// `{ DOOR_SECONDS as RAIL_DOOR_SECONDS }` binds RAIL_DOOR_SECONDS, which is
+// what `fromEverywhere` below correctly records - and then the scan read the
+// left-hand half off the same line and reported DOOR_SECONDS as a constant
+// used and defined nowhere. A false alarm, and exactly the sort that gets a
+// check like this deleted rather than read.
+const codeNoImports = code.replace(/import[\s\S]*?from\s*''/g, ' ')
+
 const usedConsts = new Set(
-  [...code.matchAll(/(?<![.\w$])([A-Z][A-Z0-9_]{2,})\b/g)].map(m => m[1])
+  [...codeNoImports.matchAll(/(?<![.\w$])([A-Z][A-Z0-9_]{2,})\b/g)].map(m => m[1])
 )
 const fromEverywhere = new Set([
   // Everything brought in from anywhere, not just the layout
@@ -173,8 +184,16 @@ const localFunctions = new Set([
   // check deleted rather than read.
   ...defined,
   ...[...code.matchAll(/\bfunction\s+([\w$]+)/g)].map(m => m[1]),
-  ...[...code.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>/g)]
-    .map(m => m[1]),
+  // ANY local declaration, not just an arrow-function one.
+  //
+  // This used to insist the initialiser was literally `=>`, which meant a
+  // function obtained rather than written - `const gate =
+  // this.circuitGate(island, CIRCUIT_GATE)` - was reported as an undefined
+  // function. It is declared; where it came from is not this check's business.
+  // The thing this section exists to catch is a bare call to a name that
+  // appears NOWHERE, which is still caught: a missing import has no
+  // declaration either.
+  ...[...code.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=/g)].map(m => m[1]),
   // Parameters. A function that TAKES a function and calls it - polygonMesh
   // takes `heightAt` - is a bare call to a name that is neither imported nor
   // declared at the top level, and the check has no way to tell that from a

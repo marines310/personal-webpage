@@ -265,6 +265,46 @@ export class Audio {
     }
   }
 
+  /**
+   * A collision, built and thrown away.
+   *
+   * Noise through a low-pass, not a tone: metal hitting metal has no pitch,
+   * and an oscillator - which is what `click()` above uses, and what this was
+   * first - reads as a doorbell rather than a crash. The cutoff drops with the
+   * envelope so the hit darkens as it dies, which is the whole difference
+   * between a thud and a snare.
+   *
+   * `force` is 0..1. It scales the loudness AND the cutoff, so a nudge is a
+   * soft knock and a proper shunt is a bang, from one number.
+   */
+  thud(force) {
+    if (!this.ctx || !this.enabled || !this.noise) return
+    const ctx = this.ctx
+    const now = ctx.currentTime
+    const hit = Math.max(0, Math.min(1, force))
+
+    const source = ctx.createBufferSource()
+    source.buffer = this.noise
+    source.loop = true
+
+    const tone = ctx.createBiquadFilter()
+    tone.type = 'lowpass'
+    tone.frequency.setValueAtTime(300 + hit * 900, now)
+    tone.frequency.exponentialRampToValueAtTime(90, now + 0.22)
+    tone.Q.value = 1.2
+
+    const env = ctx.createGain()
+    env.gain.setValueAtTime(0, now)
+    env.gain.linearRampToValueAtTime(0.10 + hit * 0.30, now + 0.006)
+    env.gain.exponentialRampToValueAtTime(0.0001, now + 0.18 + hit * 0.14)
+
+    source.connect(tone)
+    tone.connect(env)
+    env.connect(this.master)
+    source.start(now)
+    source.stop(now + 0.45)
+  }
+
   /** A single short click, built and thrown away. */
   click(gain) {
     const ctx = this.ctx

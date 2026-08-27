@@ -48,7 +48,21 @@ export const ISLANDS = [
     // The theme still governs the planting; `grid` governs the streets.
     grid: true,
     accent: 0xffffff,
-    name: '',
+    // NAMED, where it used to be deliberately blank.
+    //
+    // The blank was for the sign: this island's plaza carries MIKE SUKHYUNG
+    // LEE rather than an island nameplate, so it wanted no name of its own.
+    // But `name` is not only the nameplate - it is what the monorail's station
+    // is called, and what a callout says a fire is at, and with nothing here
+    // all of those fell through to the id. The driver's panel read "hub" in
+    // lower case while the next station along read SKILLS, and the fire
+    // service was dispatched to HUB.
+    //
+    // CENTRAL is what the middle station on a railway is called, it sits
+    // properly beside ABOUT and EXPERIENCE and SKILLS, and "FIRE AT CENTRAL"
+    // reads like a real callout. The plaza sign is untouched - it never came
+    // from here.
+    name: 'CENTRAL',
     palms: 14,
     shape: 'blob',
     shapeSeed: 12,
@@ -212,9 +226,33 @@ export const ISLANDS = [
   // are unchanged as well.
   {
     id: 'stunt',
-    x: 165.4,
+    // MOVED AND WIDENED so the stadium could grow. Mike: "I also want the
+    // monster truck stadium bigger so I can feel like it's a real stadium."
+    //
+    // It could not simply get a bigger radius. This island is wedged between
+    // ABOUT and PROJECTS - measured coast to coast, six units of water to one
+    // and thirty-one to the other - so growing it in every direction runs it
+    // straight into a neighbour, and growing it along Z (which `long` does
+    // most of) runs it into ABOUT first.
+    //
+    // So it grows ACROSS instead, which is the axis the arena was actually
+    // short of, and shifts EAST by just enough to keep the water gap it had -
+    // seven units now, against six before. Outline: 80 x 198 becomes 104 x 198.
+    //
+    // It does NOT shift along z, and that is not an oversight. The monorail
+    // beam runs island to island in world coordinates, so moving this island
+    // changes where the beam crosses it - and the jump course is laid out down
+    // the spine BETWEEN the three piers. An earlier version shifted six units
+    // south as well, which moved the pier line six units north in island terms
+    // and put a concrete column through the middle of the 'step' mound.
+    // `tests/race.mjs` caught it; `tools/solveCourse.mjs` is the solver that
+    // says where the obstacles can go, which STUNT_MOUNDS always claimed to
+    // have been produced by and which had not actually been kept.
+    x: 173.4,
     z: 159.8,
     radius: 72,
+    /** See makeShape(): 'long' is 0.52 x 1.32 and this widens it in place. */
+    stretch: { x: 1.3, z: 1 },
     theme: 'plain',
     accent: 0xff8c42,
     name: 'STUNT PARK',
@@ -243,6 +281,10 @@ export const ISLANDS = [
     x: -280.2,
     z: -85.7,
     radius: 76,
+    // A RACING CIRCUIT, not a street. Seven units - the width every other road
+    // in this world is - is about three cars abreast, and there are six on the
+    // grid. See `ringWidth` in getFixedRoads().
+    ringWidth: 13,
     theme: 'plain',
     accent: 0xef4444,
     name: 'SPEEDWAY',

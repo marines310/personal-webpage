@@ -112,7 +112,7 @@
         <div class="cond-row" id="cond-holidays">
           <button type="button" data-holiday="none">None</button>
           <button type="button" data-holiday="easter">Easter</button>
-          <button type="button" data-holiday="independence">4th July</button>
+          <button type="button" data-holiday="independence">Fourth of July</button>
           <button type="button" data-holiday="halloween">Halloween</button>
           <button type="button" data-holiday="thanksgiving">Thanksgiving</button>
           <button type="button" data-holiday="christmas">Christmas</button>
@@ -189,6 +189,23 @@
         <div id="mission-bar-label">FIRE CONTAINMENT</div>
         <div id="mission-bar-track"><div id="mission-bar-fill"></div></div>
       </div>
+    </div>
+
+    <!-- The monorail driver's panel: alignment, doors, and the starting
+         signal. Deliberately NOT part of #mission - a callout is something
+         happening elsewhere that you may go and deal with, and this is the
+         instrument panel of the thing you are sitting in. -->
+    <div id="rail" class="hidden">
+      <div id="rail-station"></div>
+      <div id="rail-align">
+        <div id="rail-platform"><div id="rail-train"></div></div>
+        <div id="rail-marks"><span></span><span></span><span></span></div>
+      </div>
+      <div id="rail-row">
+        <div id="rail-signal"><span id="rail-lamp"></span><span id="rail-signal-text"></span></div>
+        <div id="rail-doors"><div id="rail-doors-fill"></div></div>
+      </div>
+      <div id="rail-note"></div>
     </div>
 
     <!-- Zone content panels -->

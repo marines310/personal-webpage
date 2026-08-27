@@ -66,6 +66,16 @@ export class UI {
     this.missionArrowPoint = document.getElementById('mission-arrow-point')
     this.missionArrowDistance = document.getElementById('mission-arrow-distance')
 
+    // The monorail driver's panel.
+    this.railEl = document.getElementById('rail')
+    this.railStation = document.getElementById('rail-station')
+    this.railPlatform = document.getElementById('rail-platform')
+    this.railTrain = document.getElementById('rail-train')
+    this.railLamp = document.getElementById('rail-lamp')
+    this.railSignalText = document.getElementById('rail-signal-text')
+    this.railDoors = document.getElementById('rail-doors-fill')
+    this.railNote = document.getElementById('rail-note')
+
     this.cameraEl = document.getElementById('camera-box')
     this.camPanel = document.getElementById('cam-panel')
     this.camToggle = document.getElementById('cam-toggle')
@@ -306,6 +316,7 @@ export class UI {
     this.updateConditions()
     this.updateCamera()
     this.updateMission()
+    this.updateRail()
   }
 
   /** Clock, weather and season readout. */
@@ -389,6 +400,57 @@ export class UI {
    * draws whatever is in it. That is what lets the ambulance run arrive
    * without touching a line of this.
    */
+  /**
+   * The monorail driver's panel.
+   *
+   * Two bars, as Mike described them: the platform, and the train laid across
+   * it. Everything about where they go comes out of `monorailHud()` in
+   * fractions of the platform's width, so this method does no arithmetic about
+   * trains at all - it turns two numbers into two percentages.
+   *
+   * The train bar is WIDER than the platform bar, because a three-car train is
+   * longer than the platform it calls at. That is not a bug in the drawing, it
+   * is the game: you are centring, not fitting.
+   */
+  updateRail() {
+    const world = this.game.world
+    if (!this.railEl || !world || !world.railHud) return
+
+    const hud = world.railHud()
+    this.railEl.classList.toggle('hidden', !hud)
+    if (!hud) return
+
+    this.railStation.textContent = hud.station || ''
+
+    // The platform bar is the full width. The train sits across it, centred on
+    // `at` - which is -1 at one end of the platform and +1 at the other.
+    const spanPct = Math.min(240, hud.train.span * 100)
+    const centrePct = 50 + hud.train.at * 50
+    this.railTrain.style.width = `${spanPct}%`
+    this.railTrain.style.left = `${centrePct - spanPct / 2}%`
+    this.railTrain.className = hud.showAlign ? hud.grade : ''
+    this.railEl.style.opacity = hud.showAlign ? '1' : '0.55'
+
+    this.railLamp.className = hud.signal
+    this.railSignalText.textContent =
+      hud.clear ? 'RIGHT AWAY' : hud.signal === 'green' ? 'CLEAR' :
+        hud.signal === 'amber' ? 'CAUTION' : 'STOP'
+
+    // One bar for the doors and the passengers together: the doors open, the
+    // passengers get off, the doors shut. It is one continuous thing from the
+    // driver's seat and two bars for it would be two bars for one wait.
+    const busy = hud.phase === 'doors' || hud.phase === 'alighting'
+    this.railDoors.style.width = busy
+      ? `${Math.round((hud.phase === 'doors' ? hud.doors * 0.3
+        : 0.3 + hud.alighting * 0.7) * 100)}%`
+      : '0%'
+
+    this.railNote.textContent = hud.title ||
+      (hud.phase === 'alighting' ? 'PASSENGERS ALIGHTING'
+        : hud.phase === 'held' ? 'DOORS CLOSING'
+          : hud.phase === 'ready' ? 'SIGNAL CLEAR' : '')
+  }
+
   updateMission() {
     const world = this.game.world
     if (!this.missionEl || !world || !world.activeMission) return

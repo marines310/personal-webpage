@@ -224,6 +224,319 @@ export function humpWedges({ x, z, heading, up, down, width, height }) {
 }
 
 /**
+ * A MOUND: a flat-topped hill with every side sloped, in island-local
+ * coordinates.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS, AND WHY IT REPLACED ALMOST EVERY WEDGE
+ * ---------------------------------------------------------------------------
+ * Mike's son drove the first version of this park and the report was that most
+ * of the obstacles were walls: "if I drive into them, I'm not jumping, I'm more
+ * like crashing into a wall."
+ *
+ * He was right, and the bug is in `wedgeSolid()`. A wedge has one sloped face
+ * and three vertical ones - two sides and a cliff under the lip - so it only
+ * works if you hit it along its own heading. Come at it from the side, which is
+ * what actually happens in an arena, and it is a kerb 3.4 units tall. A hump
+ * made of two wedges has the same problem: the ends taper and the SIDES do not.
+ *
+ * A real Monster Jam floor is not made of wedges. It is made of mounds - dirt
+ * piled into flat-topped hills, sloped on every side, which is why a truck can
+ * come at one from any angle and get air off it. That is what this builds: a
+ * truncated pyramid, four sloped faces meeting at four hip edges, closed top
+ * and bottom.
+ *
+ * The three runs are separate on purpose, because a jump is not symmetrical
+ * even when a mound is:
+ *
+ *   runIn    the face you climb, gentle
+ *   runOut   the face you leave by. Short is steep is a launch.
+ *   runSide  the two flanks, which nothing is meant to launch off but
+ *            everything is meant to be able to drive over
+ *
+ * A run of zero would be a vertical face and is exactly the thing this is here
+ * to prevent, so every one of them is clamped to a minimum.
+ *
+ * @param {object} spec
+ * @param {number} spec.x        centre of the flat TOP, island-local
+ * @param {number} spec.z
+ * @param {number} spec.heading  radians, atan2(x, z) - the way you drive over it
+ * @param {number} spec.topWidth   flat top, across the heading
+ * @param {number} spec.topDepth   flat top, along the heading
+ * @param {number} spec.height
+ * @param {number} spec.runIn    horizontal run of the approach face
+ * @param {number} spec.runOut   horizontal run of the far face
+ * @param {number} spec.runSide  horizontal run of each flank
+ */
+export const MIN_RUN = 1.2
+
+export function moundSolid(spec) {
+  const {
+    x, z, heading, topWidth, topDepth, height
+  } = spec
+  const runIn = Math.max(MIN_RUN, spec.runIn ?? 8)
+  const runOut = Math.max(MIN_RUN, spec.runOut ?? runIn)
+  const runSide = Math.max(MIN_RUN, spec.runSide ?? runIn)
+
+  const fx = Math.sin(heading)
+  const fz = Math.cos(heading)
+  const sx = fz
+  const sz = -fx
+
+  const halfW = Math.max(0.5, topWidth / 2)
+  const halfD = Math.max(0.5, topDepth / 2)
+  // `baseY` lets a mound be built ON another mound rather than on the arena
+  // floor - which is what the crush pile is. Left out, it is the floor, which
+  // is what every other mound wants.
+  const base = spec.baseY ?? COURSE_GROUND
+  const floor = base - RAMP_BURY
+  const topY = base + height
+
+  const at = (along, across) => ({
+    x: x + fx * along + sx * across,
+    z: z + fz * along + sz * across
+  })
+
+  // Four base corners and four top corners. The base is the top pushed out by
+  // each face's own run, so the faces are the runs and nothing else.
+  const b = [
+    at(-halfD - runIn, -halfW - runSide),
+    at(-halfD - runIn, halfW + runSide),
+    at(halfD + runOut, halfW + runSide),
+    at(halfD + runOut, -halfW - runSide)
+  ]
+  const t = [
+    at(-halfD, -halfW), at(-halfD, halfW), at(halfD, halfW), at(halfD, -halfW)
+  ]
+
+  const positions = []
+  const indices = []
+  const push = (p, y) => { indices.push(positions.length / 3); positions.push(p.x, y, p.z) }
+
+  // Note the SWAP: the three corners go out in the order a, d, c, not a, c, d.
+  //
+  // Written the obvious way round, every triangle below comes out wound
+  // clockwise seen from outside, which means it faces inwards. Rapier does not
+  // care - a trimesh collides from either side, which is why the physics was
+  // right while this was wrong - but three.js culls back faces by default, so
+  // every mound in the arena rendered as the unlit INSIDE of its own far
+  // slope. That is a black hole in a tan floor, and it survived two rounds of
+  // "the mounds are invisible, make them darker" before anyone thought to
+  // check the winding rather than the colour.
+  const tri = (a, ay, c, cy, d, dy) => { push(a, ay); push(d, dy); push(c, cy) }
+
+  // The four sloped faces, each as a quad in two triangles. The corners where
+  // two faces meet are hips, like a hipped roof, and that is what a heap of
+  // dirt actually looks like.
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4
+    tri(b[i], floor, b[j], floor, t[j], topY)
+    tri(b[i], floor, t[j], topY, t[i], topY)
+  }
+
+  // The flat top you land on and drive across
+  tri(t[0], topY, t[1], topY, t[2], topY)
+  tri(t[0], topY, t[2], topY, t[3], topY)
+
+  // And a floor, so the solid is closed. A Rapier trimesh is an infinitely
+  // thin shell; an open one is something a fast vehicle goes inside.
+  tri(b[0], floor, b[3], floor, b[2], floor)
+  tri(b[0], floor, b[2], floor, b[1], floor)
+
+  return {
+    positions,
+    indices,
+    /** The four corners of the flat top, so a caller can paint it. */
+    top: t.map((p) => ({ x: p.x, z: p.z })),
+    topY,
+    /** The middle of the flat top - what you are aiming at. */
+    crest: { x, z, y: topY },
+    /** Where the far face meets the ground: the point you leave from. */
+    lip: { x: x + fx * (halfD + runOut), z: z + fz * (halfD + runOut), y: COURSE_GROUND },
+    /** Every face's angle, so a test can insist none of them is a wall. */
+    angles: {
+      in: Math.atan2(height, runIn),
+      out: Math.atan2(height, runOut),
+      side: Math.atan2(height, runSide)
+    },
+    /** Half-extents of the footprint, for keeping things off each other. */
+    reach: {
+      along: halfD + Math.max(runIn, runOut),
+      across: halfW + runSide
+    }
+  }
+}
+
+/**
+ * Walk a closed loop, handing back a point every `spacing` units.
+ *
+ * The arena's barrier, its seating tiers and its painted lines are all "a thing
+ * repeated round a ring", and the ring in question is the island's own ring
+ * road pushed in or out. Doing that by index into the point list does not work:
+ * the ring is resampled unevenly, so a fixed number of points comes out packed
+ * together on the straights and yards apart round the ends.
+ *
+ * A whole number of steps, so the last one meets the first cleanly rather than
+ * leaving a short gap wherever the loop happens to begin. And `fraction` comes
+ * back with each point, so a caller can leave a hole somewhere without counting
+ * - see the arena's vehicle entrance.
+ *
+ * @param {Array<{x,z}>} points  a closed loop; the last point may repeat the first
+ * @param {number} spacing
+ * @returns {Array<{x,z,heading,fraction}>}
+ */
+export function walkLoop(points, spacing) {
+  if (!points || points.length < 2 || !(spacing > 0)) return []
+
+  let total = 0
+  for (let i = 1; i < points.length; i++) {
+    total += Math.hypot(points[i].x - points[i - 1].x, points[i].z - points[i - 1].z)
+  }
+  if (!(total > spacing)) return []
+
+  const steps = Math.max(3, Math.round(total / spacing))
+  const step = total / steps
+
+  const out = []
+  let seg = 1
+  let walked = 0
+
+  for (let n = 0; n < steps; n++) {
+    const want = n * step
+    while (seg < points.length) {
+      const a = points[seg - 1]
+      const b = points[seg]
+      const len = Math.hypot(b.x - a.x, b.z - a.z)
+      if (walked + len >= want || seg === points.length - 1) {
+        const t = len > 0 ? (want - walked) / len : 0
+        out.push({
+          x: a.x + (b.x - a.x) * t,
+          z: a.z + (b.z - a.z) * t,
+          heading: Math.atan2(b.x - a.x, b.z - a.z),
+          fraction: want / total
+        })
+        break
+      }
+      walked += len
+      seg++
+    }
+  }
+
+  return out
+}
+
+/**
+ * A closed loop moved OUTWARD by `distance`.
+ *
+ * `insetPolygon()` in shapes.js does the inward half and documents itself as
+ * returning a copy for anything not positive, which is a sensible contract and
+ * exactly wrong for the arena: the seating tiers are the ring road pushed out,
+ * not in. Passing it a negative number silently gave back the ring unchanged,
+ * so five tiers of grandstand were built at five heights in the middle of the
+ * road, which is a thing you notice.
+ *
+ * Same maths, sign flipped: offset each edge, meet the neighbours on the
+ * bisector, and clamp so a needle-sharp corner does not fly off to infinity.
+ * A separate function rather than a flag, so nothing that already calls
+ * insetPolygon has to change.
+ */
+export function outsetLoop(points, distance) {
+  const n = points.length
+  if (n < 3 || !(distance > 0)) return points.map(p => ({ ...p }))
+
+  // Winding, the same way shapes.js decides it.
+  let area = 0
+  for (let i = 0; i < n; i++) {
+    const p = points[i]
+    const q = points[(i + 1) % n]
+    area += p.x * q.z - q.x * p.z
+  }
+  const sign = area > 0 ? 1 : -1
+
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const prev = points[(i - 1 + n) % n]
+    const cur = points[i]
+    const next = points[(i + 1) % n]
+
+    let e1x = cur.x - prev.x, e1z = cur.z - prev.z
+    let e2x = next.x - cur.x, e2z = next.z - cur.z
+    const l1 = Math.hypot(e1x, e1z) || 1
+    const l2 = Math.hypot(e2x, e2z) || 1
+    e1x /= l1; e1z /= l1
+    e2x /= l2; e2z /= l2
+
+    // OUTWARD normals - the inward ones with the sign reversed.
+    const n1x = e1z * sign, n1z = -e1x * sign
+    const n2x = e2z * sign, n2z = -e2x * sign
+
+    let bx = n1x + n2x, bz = n1z + n2z
+    const bl = Math.hypot(bx, bz)
+    if (bl < 1e-6) {
+      out.push({ x: cur.x + n1x * distance, z: cur.z + n1z * distance })
+      continue
+    }
+    bx /= bl; bz /= bl
+
+    // Clamped much harder than the inward version clamps, and for the opposite
+    // reason. Going inward, a sharp corner's bisector runs into the middle of
+    // the shape and the worst case is a fold nobody sees. Going OUTWARD it
+    // shoots away from the shape: the stunt island's ring road has a sharp
+    // southern tip, and at four times the offset the seating tier flew
+    // thirty-seven units out to sea. Stopping at 1.8 pinches the corner
+    // instead, which is a couple of overlapping boxes at the pointy end.
+    const cosHalf = bx * n1x + bz * n1z
+    const scale = Math.min(distance / Math.max(cosHalf, 0.56), distance * 1.8)
+    out.push({ x: cur.x + bx * scale, z: cur.z + bz * scale })
+  }
+
+  return out
+}
+
+/**
+ * The steepest face any mound is allowed, and the most important number in the
+ * arena.
+ *
+ * Every obstacle here is a compromise between two things that pull opposite
+ * ways: shallow enough that the SLOWEST vehicle in the game can drive up it
+ * from any direction, and steep enough that going over it throws you in the
+ * air. The first version of this arena guessed, guessed shallow, and produced
+ * a brown field with some gentle rises in it.
+ *
+ * So it was measured. A row of three-unit mounds at increasing face angle,
+ * built with the game's own builder at runtime, driven at from a standing
+ * start thirty-four units back on the speedway's flat infield:
+ *
+ *     face    monster truck (14)          saloon (18)
+ *     ----    ------------------------    ------------------------
+ *     20      over, peak 4.3              over, peak 4.9
+ *     26      over, peak 6.4, flew 21     over, peak 7.8, flew 28
+ *     32      STOPPED                     over, peak 10.2
+ *     38      STOPPED                     STOPPED
+ *
+ * Twenty-six degrees is a real jump - six and a half units of height off a
+ * three-unit mound - and the truck clears it comfortably. Thirty-two stops the
+ * truck dead. So the limit is 26, with nothing built anywhere near it by
+ * accident: `tests/race.mjs` checks every face of every mound against this.
+ *
+ * The reason a slope can stop a vehicle at all is that every chassis here is an
+ * axis-aligned box with its pitch locked (see Physics.createVehicleChassis), so
+ * it does not tip onto a slope, it has to be lifted bodily up it - and how much
+ * lift the solver finds per frame goes with the approach speed. Which means the
+ * slowest vehicle in the world hits the ceiling first. On a monster truck
+ * course. There is no way round that except to measure it and stay under it.
+ */
+export const MAX_FACE = 26 * Math.PI / 180
+
+/** The face angle everything is actually built at, with a little in hand. */
+export const FACE = 25 * Math.PI / 180
+
+/** The horizontal run a face of `height` needs to come out at FACE. */
+export function faceRun(height) {
+  return height / Math.tan(FACE)
+}
+
+/**
  * Where a vehicle leaving a ramp lands, on flat ground, ignoring air control.
  *
  * A sanity check rather than a simulation: the game's own physics is what
@@ -254,183 +567,344 @@ export function flightRange(speed, angle, lipY, g = 9.81) {
 // ---------------------------------------------------------------------------
 // THE STUNT PARK
 // ---------------------------------------------------------------------------
-// Island `stunt`: 'long', radius 72, so about 75 across and 190 down the Z
-// axis. The ring road runs round the outside at roughly x +-30, z -84..71, and
-// the bridge approach comes in from the south-west and ends at (0, 0). So the
-// entrance is the middle of the island and there are two arms to work with:
-// 84 units of it to the south and 71 to the north.
+// Island `stunt`: 'long', radius 72. The ring road runs round the outside, and
+// inside it is a teardrop of open ground about 135 units north to south and 52
+// across at its widest - which is a Monster Jam arena floor, near enough.
 //
-// The south arm is longer, so it gets the big jump, which needs a run-up.
-// The north arm gets everything a saloon can also enjoy - there is no point
-// building a park a child can only use with one of the three vehicles.
+// ---------------------------------------------------------------------------
+// WHAT THE FIRST VERSION GOT WRONG
+// ---------------------------------------------------------------------------
+// It was built out of wedges and humps, and Mike's son found the flaw in about
+// a minute: "if I drive into them, I'm not jumping, I'm more like crashing into
+// a wall." A wedge has ONE sloped face. Its two flanks and the cliff under its
+// lip are vertical, so unless you arrive along its heading it is a three-metre
+// kerb - and in an arena you arrive from wherever you happen to be.
+//
+// So almost everything here is now a MOUND: a flat-topped hill of dirt with
+// every face sloped, which is what a real arena floor is actually made of. See
+// moundSolid(). You can hit any of them from any direction and get air off it.
+//
+// The one thing that is still asymmetric is the big double's take-off, whose
+// far face is deliberately short and steep, because that is what a launch is.
+// Even that is 35 degrees rather than vertical - a wall you can ride up the
+// back of is a mistake you recover from.
+//
+// ---------------------------------------------------------------------------
+// AND WHAT IS STILL TRUE ABOUT THE MONSTER TRUCK
+// ---------------------------------------------------------------------------
+// The original brief said jumps only the monster truck can do. The first
+// attempt gated that on steering in mid-air, which worked and which nobody
+// asked for; it also forced the whole floor into a shape that suited the gate
+// rather than the driving.
+//
+// The gate now is simpler and it is the one a real arena uses: THE DOUBLE IS
+// SIZED FOR THE TRUCK. Take-off, gap, landing - and the landing is where a
+// vehicle doing 14 comes down. Everything else in the fleet is faster, so
+// everything else sails over the landing and comes down on the floor beyond
+// it. Too far is as much a miss as too short, which is why this works where
+// "a gap too wide to clear" did not: that one favoured whoever was quickest,
+// and the truck is the slowest thing in the world.
+//
+// The rest of the floor is for everybody. A child in a saloon should be able
+// to drive in here and get air off every mound in the place, and does.
 
 /**
- * How far inside the ring road the hardstanding starts.
+ * How far inside the ring road the arena floor starts.
  *
- * The pad is cut from the RING ROAD's own polygon rather than being a
- * rectangle, and that is worth the trouble. A rectangle big enough to hold the
+ * The floor is cut from the RING ROAD's own polygon rather than being a
+ * rectangle, and that is worth the trouble: a rectangle big enough to hold the
  * course pokes out past the ring at the island's narrow ends and lies across
- * the beach - which is what the first version did, and from above it read as a
- * brown slab dropped on an island rather than as a surface belonging to it.
- * Taking the ring and pulling it inwards gives a shape that fits by
- * construction, whatever shape the island turns out to be.
- *
- * Half a road width plus a bit: enough that the pad stops at the kerb rather
- * than running under the tarmac.
+ * the beach, which from above reads as a brown slab dropped on an island.
  */
 export const STUNT_PAD_INSET = 5
 
 /**
- * The scrapyard: two short rows of wrecks down the western side of the park.
+ * The white racing oval painted on the dirt.
  *
- * Scenery, and it earns its place twice. It is what makes the park read as a
- * stunt park from the bridge rather than as a brown field with some ramps on
- * it, and it is made from the fleet's own vehicle builders - so the wrecks
- * are the cars you have spent all session driving past, which is worth far
- * more than any amount of bespoke geometry.
- *
- * NOT in the big jump's run-out, where the first draft put it. That version
- * had the wrecks straight ahead of the lip so anything that could not steer
- * in the air crashed into them, which is a lovely idea and does not fit: the
- * gate turns on how far sideways the truck can go, which is about eight units,
- * and there is no way to put a fifteen-wide landing and a twelve-wide crash
- * zone either side of an eight-unit line. Something had to go, and the
- * scrapyard is the piece that works just as well somewhere else.
+ * Every Monster Jam floor has one and it is doing a job: it is the line the
+ * racing runs on, and it makes an otherwise featureless brown oval read as a
+ * place with a direction. Two of them, an outer and an inner, because that is
+ * what the reference shows and because one line reads as an edge while two
+ * read as a track.
  */
-export const STUNT_SCRAP = {
-  x: -16, z: 4, spacing: 6.2, rows: 2, rowGap: 6.5, perRow: 3
+export const STUNT_LINE_OUTER = 9
+export const STUNT_LINE_INNER = 20
+export const STUNT_LINE_WIDTH = 0.8
+
+/**
+ * The padded barrier round the floor, and the gap you drive in through.
+ *
+ * Waist high and soft-looking, in the red of the reference. It is a real
+ * collider: without one, the interesting half of the arena is "how do I get
+ * back on the floor after overshooting".
+ */
+export const ARENA_BARRIER = {
+  inset: 2.5,
+  height: 2.2,
+  thickness: 1.4,
+  blockLength: 6,
+  gap: 2.6
 }
 
 /**
- * The rollers: a washboard on the way north out of the entrance.
+ * The stands, outside the ring road, between the track and the beach.
  *
- * Low and close together on purpose. They are the first thing you meet, they
- * are impossible to fail, and they teach the one thing the park is about -
- * that going over something at speed lifts you off the ground.
+ * Four tiers stepping up and outward. They go all the way round because Mike
+ * asked for the full arena, and because the island is long and thin - stands
+ * down one side only would read as a bus shelter.
  */
-export const STUNT_ROLLERS = {
-  from: 6, spacing: 6, count: 5, width: 16, height: 0.75, length: 3.2
+/**
+ * The grandstand, and why it is the size it is.
+ *
+ * Mike: "I also want the monster truck stadium bigger so I can feel like it's
+ * a real stadium." Four tiers of 1.5 is six units of seating - a school sports
+ * pavilion. Eight tiers of 1.7 is 13.6, which is a wall of people you have to
+ * look UP at from the floor, and that change of eye line is most of what makes
+ * somewhere feel like a stadium rather than a field with benches round it.
+ *
+ * The stands are built by pushing the ring road outward, so they got wider for
+ * free when the island did - see the `stretch` on the stunt island in
+ * mapData.js. What could not come for free is height, because height is the
+ * bit you feel.
+ *
+ * The outermost tiers stand over water on piles, which is deliberate and was
+ * already true at four: the arena floor is the scarce thing on this island and
+ * a stand cantilevered out on piles keeps all of the floor as floor.
+ */
+export const ARENA_STANDS = {
+  tiers: 8,
+  rise: 1.7,
+  tread: 2.6,
+  /** Clear of the ring road's kerb, and stopping short of the beach. */
+  fromRing: 5.5,
+  /** How wide a gap to leave where the bridge road comes ashore. */
+  entranceGap: 26,
+  /** A roof over the back rows, which is what encloses it. */
+  roof: { from: 5, depth: 9, above: 5.5, thickness: 0.6 }
+}
+
+/** Floodlight towers, as fractions round the arena. */
+export const ARENA_LIGHTS = {
+  at: [0.08, 0.3, 0.55, 0.8],
+  // Tall enough to clear the roof of an eight-tier stand and still read as
+  // floodlights rather than street lamps.
+  height: 34,
+  lamps: 8
 }
 
 /**
- * The tabletop: up, flat, down. The jump everybody can do.
+ * THE DOUBLE. The signature jump, and the biggest thing on the floor.
  *
- * Flat-topped rather than a gap, so failing it costs nothing - come up short
- * and you land on the table instead of in the hole. That is what a tabletop is
- * for on a real track and it is why it comes before the big one here.
+ * Runs NORTH, up the widest part of the island: you come off the bridge on the
+ * south-west, cross the floor past the tabletop, and meet this at the far end,
+ * which is the right order to meet it in.
+ *
+ * Both halves have 25-degree faces on all four sides like everything else here
+ * - the take-off is not a ramp with a cliff behind it. It is four units high
+ * against the roller's two, and that is what makes it the big one. See
+ * MAX_FACE for why 25 and not 35.
  */
-export const STUNT_TABLETOP = {
-  z: 36, up: 7, top: 8, down: 7, width: 18, height: 1.9
+/**
+ * What the three vehicles actually do off the double. MEASURED, in the running
+ * game, with `probe/double.mjs`.
+ *
+ * RE-MEASURED after pitch and roll were unlocked. That mattered more than it
+ * sounds: a car that pitches nose-up as it climbs the ramp leaves the crest
+ * with its velocity tilted further from the horizontal, so the truck's flight
+ * went from a flat 16.2 to a median 18.2 and it now reaches the landing's flat
+ * top on a good run instead of always arriving on its face. Nothing was
+ * re-tuned to achieve that; it fell out of the physics, which is the argument
+ * for having done it in the physics.
+ *
+ * The single most useful thing this table says is that the ENTRY SPEED DOES
+ * NOT MATTER. Every vehicle was launched at the near foot at 10, 14, 18, 22,
+ * 26 and 30, and every one of them left the crest at its own top speed to
+ * within a tenth: the mound is eleven units of climb, which is long enough for
+ * the throttle to win. So the jump is gated by which vehicle you picked, which
+ * is the whole point of having picked one.
+ *
+ *   vehicle   leaves the crest at   peak y   flight        comes down on
+ *   monster           14.0           7.5      16.1 - 20.8   the landing, face or top
+ *   saloon            17.9           9.0      32.1 - 35.9   past it, on the floor
+ *   racing car        27.8          13.0      -             clears the arena entirely
+ *
+ * The SPREAD is new and is not noise: the truck's flight varies by four units
+ * run to run because how much it pitches depends on exactly where on the face
+ * it picks up the slope. A locked chassis gave the same answer every time,
+ * which is repeatable and lifeless.
+ *
+ * The racing car really does fly out of the park and into the sea; the barrier
+ * is 2.2 high and the car is thirteen units up as it goes over. That is a
+ * drowning, and Vehicle.js respawns from one, so it is a joke rather than a
+ * bug - but it is a deliberate joke and this is where it is written down.
+ */
+export const MEASURED_DOUBLE = {
+  monster: { lipSpeed: 14.0, peak: 7.5, flight: 18.2, landsAt: 40.3,
+             flightRange: [16.1, 20.8] },
+  sedan: { lipSpeed: 17.9, peak: 9.0, flight: 34.4, landsAt: 56.3,
+           flightRange: [32.1, 35.9] },
+  race: { lipSpeed: 27.8, peak: 13.0, flight: null, landsAt: null }
 }
 
-/**
- * THE SIDEWINDER. The one the brief asked for.
- *
- * Launch straight down the park to the south; land twenty units to the left of
- * where you were pointing. See the note at the top of this file for why the
- * gate is sideways rather than long: the monster truck is the slowest vehicle
- * in the game and would lose any contest about distance. What it has is
- * `airControl: 1`.
- *
- * `landingOffset` is negative - the landing ramp is to the WEST - and it is a
- * touch under half the flight, which is a lot to ask of a vehicle that cannot
- * steer at all in the air and nothing at all to ask of one that can.
- */
-export const STUNT_BIG_JUMP = {
+export const STUNT_DOUBLE = {
+  takeOff: {
+    x: 1, z: 21.7, heading: 0,
+    topWidth: 13, topDepth: 5, height: 4,
+    runIn: 8.58, runOut: 8.58, runSide: 8.58
+  },
   /**
-   * The kicker. Heading south, which is atan2(0, -1) = pi.
+   * The landing, placed where the truck comes down and nowhere else.
    *
-   * At x +6 rather than on the centre line, and that is not cosmetic: a
-   * monorail pier stands at (-4.5, -6.5) on this island. The beam is a loop
-   * through the six islands that DO have stations, and it passes over both
-   * courses on its way between them - `monorail: false` keeps a station off
-   * the island, not the railway. Piers already slide along the beam to avoid
-   * ROADS (see getMonorailPiers), which is why the speedway's circuit is
-   * clear, but a stunt park's run-up is not a road and nothing was looking
-   * out for it. Six units east puts the whole approach clear of the column.
-   *
-   * 3.4 up over 14 along is 13.6 degrees, and the SHALLOWNESS is measured
-   * rather than chosen. The first version was 4.5 over 12 - a shade over 20
-   * degrees - and the monster truck could not climb it at its own top speed of
-   * 14. It could with boost, at 16.1, and the saloon walked up it at 18, which
-   * is a jump that works for everybody except the vehicle it was built for.
-   *
-   * The cause is the chassis. Every vehicle here is an axis-aligned box with
-   * its pitch locked (see Physics.createVehicleChassis), so it does not tip
-   * onto a slope, it has to be lifted bodily up it - and how much lift the
-   * solver can find per frame goes with the approach speed. The slowest
-   * vehicle in the game therefore hits the steepest wall it can climb first.
-   * Nothing else in the world had ever asked the question, because until the
-   * courses nothing in the world was steeper than a 25% hill.
-   *
-   * At 13.6 degrees the truck clears it at 14 with nothing held down.
-   * Everything else overshoots, and the faster it is the further it goes:
-   * roughly 16 units for the truck, 47 for a boosting saloon and 72 for a
-   * boosting racing car, which is out past the ring road and into the sea.
-   * That is not a bug. It is the joke, and it is the clearest possible
-   * statement about which vehicle this was built for.
-   */
-  takeOff: { x: 6, z: -24, heading: Math.PI, length: 14, width: 11, height: 3.4 },
-
-  /**
-   * The landing, and every number in it is a MEASUREMENT.
-   *
-   * Six runs down this ramp in the running game, holding full left from the
-   * frame the wheels left the lip, every one of them identical except for the
-   * vehicle:
-   *
-   *     monster                 10.5 forward,  -7.8 sideways -> ( -2.2, -46.9)
-   *     monster + boost         11.2 forward, -10.4 sideways -> ( -4.8, -47.5)
-   *     monster + boost, no steer  21.0,        -0.2         -> (  5.4, -57.4)
-   *     saloon                  23.6,           -0.3         -> (  5.0, -61.0)
-   *     saloon + boost          50.8,           -0.7         -> (  4.8, -89.0)
-   *     racing car              40.6,          -19.0         -> (-13.3, -78.8)
-   *
-   * Everything launches from x +6, so "sideways" is how far each one moved off
-   * that line. The landing spans x -15.5 to +1.5 and z -43 to -62. The truck
-   * lands inside it on both axes with several units to spare; the saloon
-   * misses by five across; the racing car gets ACROSS far enough - twenty
-   * units, more than the truck manages, because a quarter of the authority
-   * applied for three times as long is still a lot - and misses by fifteen
-   * DOWN the park instead. Hence a landing placed on both axes rather than
-   * one: no single measurement separates all three.
-   *
-   * Read the sideways column. The truck moves eight to twelve units across;
-   * the saloon moves two tenths of one, holding exactly the same key, because
-   * `airControl: 0` means its velocity in the air is the velocity it took off
-   * with and nothing can change it. That is the gate, and it is enforced by
-   * the physics rather than announced by a rule.
-   *
-   * The racing car is the interesting one: it reaches FURTHER across than the
-   * truck - a quarter of the authority, but three times as long in the air to
-   * use it. So the landing is placed on BOTH axes. The truck comes down at
-   * about z -51; the racing car is still thirty units short of the ground
-   * there and lands at -82, out past the ring road.
-   *
-   * A hump rather than a down-ramp, so coming up short is a bang and not a
-   * wall - see humpWedges(). The crest is at z -52, a unit beyond where the
-   * truck actually arrives, so the common error is landing on the up-face,
-   * which costs speed and nothing else.
+   * Measured in the running game off the take-off above - see the table on
+   * `MEASURED_DOUBLE` and section 4 of tests/race.mjs. The crest sits at the
+   * monster truck's distance, so the truck lands on top of it and everything
+   * faster clears the whole mound and comes down on the floor past it.
    */
   landing: {
-    x: -7, z: -43, heading: Math.PI, up: 9, down: 10, width: 17, height: 2.6
-  },
+    x: -1.6, z: 44.7, heading: 0,
+    topWidth: 16, topDepth: 6, height: 3,
+    runIn: 6.43, runOut: 6.43, runSide: 6.43
+  }
+}
 
+export const MOUND_PAINT = ['red', 'blue']
+
+export const STUNT_MOUNDS = [
+  // North to south, in the order you meet them driving down the island, and
+  // getting bigger as you go. Every run is faceRun(height), so every face is
+  // 25 degrees and every one of them is a jump you can take from any side -
+  // see MAX_FACE for the measurements that number came from.
+  //
+  // SIX obstacles, not the dozen the reference arenas have, and that is the
+  // island rather than a lack of ambition. A mound with 25-degree faces is
+  // about twice as wide as it is tall plus its flat top, so the double's
+  // take-off is 30 across by 22 deep - and the floor here is 128 long by 54
+  // across at its widest, narrowing to twelve at the northern tip. Two of
+  // these side by side does not fit anywhere, which tests/race.mjs says out
+  // loud rather than leaving it to be discovered by driving into a mound
+  // half-buried in the barrier.
+  //
+  // The positions are not hand-picked either. They come from a solver run
+  // against three constraints - inside the barrier, clear of the monorail
+  // piers, and 2.5 units clear of each other on a separating-axis test - and
+  // tests/race.mjs re-checks all three, so moving one by hand is a failing
+  // test rather than a quiet overlap.
+  { name: 'roller', x: -3.4, z: -60.9, heading: 0,
+    topWidth: 9, topDepth: 4, height: 2.2,
+    runIn: 4.72, runOut: 4.72, runSide: 4.72 },
+
+  // The crush pile: a mound with wrecks on top, which is the one thing a
+  // monster truck is unambiguously for.
+  { name: 'crush pile', x: -2, z: -41.8, heading: 0.209, crush: 3,
+    topWidth: 8, topDepth: 6, height: 2.4,
+    runIn: 5.15, runOut: 5.15, runSide: 5.15 },
+
+  // Moved 7.5 west and a shade north when the island was widened for the
+  // bigger stadium: the monorail beam crosses in world coordinates, so a wider
+  // island meets it in a different place and the middle pier ended up inside
+  // this mound. See tools/solveCourse.mjs.
+  { name: 'step', x: -12, z: -22, heading: 0,
+    topWidth: 10, topDepth: 4, height: 2.6,
+    runIn: 5.58, runOut: 5.58, runSide: 5.58 },
+
+  // Off to the east, because a monorail pier stands at (-4.5, -6.5) and the
+  // spine cannot go through it. `monorail: false` on this island keeps a
+  // STATION off, not the railway - the beam still crosses the arena on the
+  // diagonal x + z = -11, on three piers, and everything here is placed round
+  // them.
+  { name: 'tabletop', x: 11.9, z: -3, heading: 0.14,
+    topWidth: 12, topDepth: 6, height: 3,
+    runIn: 6.43, runOut: 6.43, runSide: 6.43 }
+]
+
+/**
+ * The crush pile: a RAMP made of wrecks, not three cars parked on a mound.
+ *
+ * Mike, having driven it: "the monster truck stadium has these vehicles that I
+ * think we're supposed to drive over, but because it uses the in-game vehicle
+ * model, I am unable to do anything with the cars. These are just essentially
+ * worthless car assets placed in the game."
+ *
+ * He was right twice over. The wrecks were built by `buildTrafficVehicle()`,
+ * so they were showroom cars sitting upright on a jump, and each one had a
+ * BOX collider round it - a 1.1-high vertical wall at the top of a slope. Drive
+ * at it and you stop. That is the same class of mistake as the original wedge
+ * obstacles: a thing that looks like it should be jumped and behaves like a
+ * kerb.
+ *
+ * So the pile is now a mound in its own right. One trimesh with 25-degree
+ * faces - the measured limit, see MAX_FACE - laid over the top of the mound it
+ * sits on, and the wrecks are decoration half-buried in it with NO collider at
+ * all. You drive up the mound, up the wrecks, and off the far side.
+ */
+export const CRUSH_PILE = {
+  /** How far above the parent mound's crest the wrecks stand. */
+  height: 0.9,
+  /** The flat bit on top, across and along. Wide enough to land on. */
+  topWidth: 4.0,
+  topDepth: 2.0
+}
+
+/**
+ * Does a crush ramp fit on the mound it is built on?
+ *
+ * It has to, and the first version did not: at 1.15 high with a 5.2 by 3.4
+ * top its footprint reached 5.1 across against the parent mound's flat top of
+ * 4, so its buried lower edge hung in the air over the parent's SLOPE and the
+ * two trimeshes crossed. Driving into that seam threw the monster truck
+ * twenty-one units into the sky, which is a spectacular way to find out.
+ *
+ * Exported so tests/race.mjs can insist on it rather than trusting the numbers
+ * above to stay compatible with the mound they sit on.
+ */
+export function crushFitsOn(spec) {
+  const run = faceRun(CRUSH_PILE.height)
+  const acrossNeeded = CRUSH_PILE.topWidth / 2 + run
+  const alongNeeded = CRUSH_PILE.topDepth / 2 + run
+  return {
+    acrossNeeded,
+    alongNeeded,
+    acrossHave: spec.topWidth / 2,
+    alongHave: spec.topDepth / 2,
+    fits: acrossNeeded <= spec.topWidth / 2 && alongNeeded <= spec.topDepth / 2
+  }
+}
+
+/**
+ * The ramp over a crush pile, as a solid. Same builder as every other mound,
+ * which is the point: it inherits the 25-degree faces and the closed shell,
+ * and it cannot drift away from them.
+ */
+export function crushSolid(spec, crestY) {
+  const run = faceRun(CRUSH_PILE.height)
+  return moundSolid({
+    x: spec.x,
+    z: spec.z,
+    heading: spec.heading,
+    topWidth: CRUSH_PILE.topWidth,
+    topDepth: CRUSH_PILE.topDepth,
+    height: CRUSH_PILE.height,
+    runIn: run,
+    runOut: run,
+    runSide: run,
+    // Built ON TOP of the mound it decorates rather than on the arena floor.
+    baseY: crestY
+  })
 }
 
 /** Everything on the stunt island, in the order World.js should build it. */
 export const STUNT_COURSE = {
   padInset: STUNT_PAD_INSET,
-  rollers: STUNT_ROLLERS,
-  tabletop: STUNT_TABLETOP,
-  bigJump: STUNT_BIG_JUMP,
-  scrap: STUNT_SCRAP,
-  /**
-   * Nothing at the north end but room to turn round. The pad follows the ring
-   * road's own outline, so the ends of the island are already open ground -
-   * there is no need to draw a turning circle on top of a turning circle.
-   */
-  turnaround: null
+  mounds: STUNT_MOUNDS,
+  double: STUNT_DOUBLE,
+  barrier: ARENA_BARRIER,
+  stands: ARENA_STANDS,
+  lights: ARENA_LIGHTS,
+  line: {
+    outer: STUNT_LINE_OUTER,
+    inner: STUNT_LINE_INNER,
+    width: STUNT_LINE_WIDTH
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +963,19 @@ export function pointAlongRing(ring, fraction) {
 }
 
 /** How many laps wins it. From the brief. */
+/**
+ * How wide a hole to leave in the circuit's furniture where a bridge lands.
+ *
+ * The approach road is DEFAULT_ROAD_WIDTH (7) and it arrives at a junction
+ * with traffic lights and a zebra crossing already painted across the
+ * circuit - all of which the first version of the armco was built straight
+ * over, walling the track off from the only way onto it.
+ *
+ * 16 rather than 7: the barrier is a chunky thing on both sides of the road,
+ * and a gap exactly as wide as the tarmac is a gap you clip on the way in.
+ */
+export const CIRCUIT_GATE = 16
+
 export const RACE_LAPS = 10
 
 /** How many cars come out of the garage, not counting the player. */
@@ -503,10 +990,91 @@ export const RACE_FIELD = 5
  */
 export const RACE_LINE_AT = 0.25
 
-/** Grid geometry: two columns, staggered, the way a real one is set out. */
+/**
+ * Grid geometry: two columns, staggered, the way a real one is set out.
+ *
+ * The column offset went from 1.7 to 3.1 when the circuit was widened from
+ * seven units to thirteen. It has to: the two columns sit either side of the
+ * centre line, and on a seven-unit road 1.7 was as far apart as they could be
+ * without a car hanging off the tarmac. Left where it was, a wider track would
+ * have had six cars huddled down the middle of it.
+ */
 export const GRID_ROW_GAP = 7.5
-export const GRID_COLUMN_OFFSET = 1.7
+export const GRID_COLUMN_OFFSET = 3.1
 export const GRID_STAGGER = 3.5
+
+/**
+ * Where everything alongside the main straight stands, measured out from the
+ * middle of the track.
+ *
+ * ALL OF IT DERIVED FROM THE TRACK'S OWN WIDTH, and that is the entire point
+ * of this function existing. The pit wall used to be a literal 5.5 in
+ * World.js, which was correct while the circuit was seven units wide - the
+ * tarmac ended at 3.5 and the wall began at 4.4, so there was a metre of
+ * run-off. Widening the circuit to thirteen moved the tarmac's edge out to
+ * 6.5 and left the wall exactly where it was: a solid static collider standing
+ * two units INSIDE the racing line, which is a wall you hit on lap one.
+ *
+ * Nothing here is a literal offset from the centre. Everything is stacked
+ * outward from the edge of the tarmac, each item clearing the one in front of
+ * it, so the next person to change the track's width gets a circuit that moves
+ * with it instead of a circuit with furniture in the middle of it.
+ *
+ *   edge ─┬─ RUN_OFF ─┬─ gantry leg ─┬─ pit wall ─┬─ seating tiers ─┬─ roof
+ *
+ * Depths are the half-widths of the boxes World.js builds, so `near` and `far`
+ * are the faces, not the centres, and two neighbours overlapping is something
+ * a test can see rather than something you find by driving into it.
+ */
+export const RUN_OFF = 1.1
+
+export function pitStraightPlan(trackWidth) {
+  const edge = trackWidth / 2
+
+  // The gantry straddles the track, so its legs stand just past the run-off.
+  const legDepth = 0.6
+  const legAt = edge + RUN_OFF + legDepth
+
+  // The pit wall clears the legs, not the tarmac - it is the taller thing and
+  // it is what a car actually hits.
+  const wallDepth = 1.1
+  const wallAt = legAt + legDepth + 0.5 + wallDepth
+
+  // Seating rises away behind the wall, each tier further out and higher.
+  const tierDepth = 1.2
+  const tierStep = 2.4
+  const tierAt = wallAt + wallDepth + 0.6 + tierDepth
+
+  // And a roof over the middle of the seating rather than over the front row.
+  const tiers = 4
+  const roofAt = tierAt + tierStep * (tiers - 1) / 2 + 0.6
+  const roofDepth = 5.5
+
+  return {
+    edge,
+    // Two legs, span apart, centred on the track.
+    gantrySpan: legAt * 2,
+    legDepth,
+    wallAt,
+    wallDepth,
+    tiers,
+    tierAt,
+    tierStep,
+    tierDepth,
+    roofAt,
+    roofDepth,
+    propAt: roofAt + roofDepth - 1,
+    // Everything in one list, near face to far face, for the test that says
+    // none of it is on the track and none of it is inside anything else.
+    spans: [
+      ['gantry leg', legAt - legDepth, legAt + legDepth],
+      ['pit wall', wallAt - wallDepth, wallAt + wallDepth],
+      ['front tier', tierAt - tierDepth, tierAt + tierDepth],
+      ['back tier', tierAt + tierStep * (tiers - 1) - tierDepth,
+        tierAt + tierStep * (tiers - 1) + tierDepth]
+    ]
+  }
+}
 
 /**
  * The starting lights, in the order they show and how long each holds.

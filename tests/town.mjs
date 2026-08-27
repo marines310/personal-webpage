@@ -48,15 +48,25 @@ for (const isl of towns) {
     const road = roads[p.roadIndex]
     gaps.push(C.distanceToPath(road.points, p.x, p.z) - road.width / 2)
 
-    // Angle between the building's front and the kerb it faces
-    let ci = 0, cd = Infinity
-    road.points.forEach((q, k) => {
-      const d = Math.hypot(q.x - p.x, q.z - p.z)
-      if (d < cd) { cd = d; ci = k }
-    })
-    const a = road.points[Math.max(0, ci - 1)]
-    const b = road.points[Math.min(road.points.length - 1, ci + 1)]
-    const roadAng = Math.atan2(b.x - a.x, b.z - a.z)
+    // Angle between the building's front and the kerb it faces.
+    //
+    // THROUGH THE SAME `tangentAt()` THE PLACEMENT USES, which is a
+    // correction. This used to find the closest VERTEX and take the chord
+    // across its neighbours - the same badly-conditioned approximation the
+    // placement itself used at the time, and two copies of an approximation
+    // are not an independent check, they are one bug wearing two hats.
+    //
+    // On the inside of a curve, dozens of vertices are within centimetres of
+    // equally near, so the winner can jump several vertices for a fraction of
+    // a unit - and the plot's position is rounded to a tenth. Harmless while a
+    // building sat 9.9 units off its kerb; at ARTERIAL_WIDTH it sits 13.4 out
+    // and this reported 4.47 degrees of skew on a building that was square.
+    //
+    // Both sides now project onto the path properly, so what is left to
+    // measure is the thing that matters: is the front square to the road.
+    const tan = L.tangentAt(road.points, p.x, p.z)
+    if (!tan) continue
+    const roadAng = Math.atan2(tan.x, tan.z)
     const face = (p.rotation * Math.PI) / 180
     worstAngle = Math.max(worstAngle,
       Math.abs(((face - roadAng) % Math.PI + Math.PI) % Math.PI - Math.PI / 2) * 180 / Math.PI)

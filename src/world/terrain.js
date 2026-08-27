@@ -826,6 +826,9 @@ export function makeHeightField(spec) {
   const hills = spec.hills || []
   const roads = spec.roads || []
   const pads = spec.pads || []
+  // Ground that is PAVED but not RE-SHAPED. See claimAt() for what that buys
+  // and why a pad could not do it.
+  const claims = spec.claims || []
   const beach = spec.beach || 12
   const inlandAt = spec.inlandAt || (() => 999)
 
@@ -1031,6 +1034,33 @@ export function makeHeightField(spec) {
       if (strongest >= 1) return 1
     }
 
+    // AND GROUND THAT IS PAVED WITHOUT BEING RE-SHAPED.
+    //
+    // Every other entry in this function levels the ground as well as claiming
+    // it: a road imposes its solved profile, a pad imposes its own height.
+    // That is right for both of them, and wrong for the one case this list
+    // exists for - the player's garage apron, which is concrete laid on the
+    // ground exactly as the ground already is.
+    //
+    // Mike: "there's still some sort of elevation that makes the cars drive
+    // strange on the driveway out of the garage... like its falling from some
+    // elevation." Measured, the height field under that apron is smooth the
+    // whole way; it is the LIFT that steps, because the collider stands
+    // SURFACE_GRASS proud of unclaimed ground and SURFACE_PAVED proud of
+    // claimed. The apron claimed nothing, so the car climbed eighteen
+    // centimetres leaving the garage and fell twenty-four fourteen units
+    // later.
+    //
+    // Three ways of claiming it with a PAD were tried and every one traded the
+    // step for a different step somewhere else, because a pad is level and the
+    // drive is not. Claim without levelling is the thing that was missing, and
+    // it is three lines.
+    for (const claim of claims) {
+      strongest = Math.max(strongest, holdStrength(
+        rectangleDistance(x, z, claim), PAD_MARGIN, PAVED_FADE))
+      if (strongest >= 1) return 1
+    }
+
     return strongest
   }
 
@@ -1053,7 +1083,7 @@ export function makeHeightField(spec) {
     heightAt: remember(heightAt),
     slopeAt,
     claimAt: remember(claimAt),
-    roads, pads, hills
+    roads, pads, hills, claims
   }
 }
 
