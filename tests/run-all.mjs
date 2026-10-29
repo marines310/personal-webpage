@@ -27,18 +27,26 @@ const SUITES = [
   'stress.mjs',        // 3000 deliberately awful hand-drawn roads
   'terrain.mjs',       // the height field: drivable roads, level pads, a coast at sea level
   'worldsanity.mjs',   // World.js read statically: it can't be run here
+  'names.mjs',         // what the player reads: vehicle names, island names, banners
+  'pedestrians.mjs',   // the pavement graph, and the people walking it
   'lights.mjs',        // the traffic light cycle: never two greens at once
   'conditions.mjs',    // setting the time and weather by hand
   'camera.mjs',        // free look, the saved view, reversing, occlusion
+  'vehicles.mjs',      // the shapes the fleet is built from, and where the wheels go
   'vehiclelights.mjs', // headlights, brake lights and indicators, on every kind
   'fire.mjs',          // the fire callout: who may fight it, and getting there
   'police.mjs',        // the pursuit: the robber, the bump, the background chases
   'ambulance.mjs',     // the crash: loading the patient, and the run against the clock
   'incident.mjs',      // and the traffic getting past the crash rather than jamming
+  'tow.mjs',           // and the recovery afterwards: the wheel-lift, and the drag
+  'railgame.mjs',      // driving the monorail: the stop, the doors, the signal
   'seasons.mjs',       // the year: colour, snow, leaves and flowers
   'holidays.mjs',      // decorations layered OVER the season, and fireworks
   'zebra.mjs',         // crossing bars run along the road, side by side
   'traffic.mjs',       // lanes, right of way, and thirty vehicles on them
+  'signals.mjs',       // traffic lights that watch the road, not the clock
+  'impacts.mjs',       // two-way collisions: both cars react
+  'elevated.mjs',      // arched bridges, and the ships that go under them
   'monorail.mjs',      // the loop, its piers and stations, and the trains
   'ports.mjs',         // quays, shipping lanes, and the fleet at sea
   'airport.mjs',       // the platform at sea, and the aircraft flying to it
@@ -47,6 +55,7 @@ const SUITES = [
   'stations.mjs',      // fire, police and hospital: bays, doors, coming and going
   'windows.mjs',       // the windows in the building models, read from the models
   'models.mjs',        // rock.glb and streetlight.glb, the two we generate ourselves
+  'race.mjs',          // the ramps' geometry, and ten laps of the speedway
   'audio.mjs',         // the mix: gears, the siren's clock, and never a NaN
 
   // The editor, driven through real events

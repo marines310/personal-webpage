@@ -325,16 +325,46 @@ const world = readFileSync(ROOT + 'src/world/World.js', 'utf8')
 // the player would read as their own.
 chk('crash sites come from the lanes', /findCrashSites\(\)/.test(world) &&
     /this\.lanes\.lanes\[i\]/.test(world))
+// AND NOT FROM A CLOSED COURSE. The racing circuit and the arena floor are
+// real lanes - that is what keeps their bridges joined to the network - and
+// `noTraffic` is what keeps the city's cars off them. It did not keep crashes
+// off them: eight lanes were eligible, and asking for the site furthest from
+// the garage handed back a spot on the speedway's pit straight. Two wrecks on
+// the racing line are an obstacle in the middle of a ten-lap race.
+chk('and never from a closed course',
+    /if \(lane\.noTraffic\) continue/.test(world))
 // Which island, by asking which one it is INSIDE. The nearest CENTRE to a
 // road on the edge of a big island is regularly a small island across water.
 chk('the island is the one the road is on, not the nearest centre',
     /inlandDistance\(here, at\.x - here\.x, at\.z - here\.z\) > 0/.test(world))
-chk('the wreck is built once and moved, like the fire',
-    /createWreck\(\)/.test(world))
-chk('crews are sent by the same callout machinery as the engines',
-    /callOutAmbulances/.test(world))
+// The wrecked cars are built once and moved, like the fire - but as TWO
+// independent objects rather than one group with two children in it. That
+// changed when the tow truck arrived: one car gets dragged away and the other
+// stays, and two children of a shared group cannot do that. See
+// createWreckCars(), and claude/tow-truck-and-the-recovery.md.
+chk('the wrecked cars are built once and moved, like the fire',
+    /createWreckCars\(\)/.test(world))
+chk('and each one stands on its own in the world',
+    /this\.wreckCars\.push\(/.test(world) && /placeWreckCar\(/.test(world))
+
+// THE RUN NO LONGER ENDS BY DELETING THE SCENE. Mike: "the crashed cars no
+// longer disappear after the ambulance rescues them. Instead, it kicks off the
+// tow truck game." So the end of a run is a handover, and the cars do not move
+// on the frame it happens.
+chk('a finished run hands the wrecks to the recovery rather than clearing them',
+    /startTow\(this\.tow, this\.wreckIncident, cars\)/.test(world))
+chk('and the next crash is held off while the last one is still in the road',
+    /hold: !!\(this\.tow && this\.tow\.job\)/.test(world))
+
+// Crews are sent by the same callout machinery as the engines - which is now
+// one function taking the kind, rather than a copy of itself per kind. Two
+// copies of a route cache is two things to keep in step, and one of them will
+// be forgotten.
+chk('crews are sent by the shared callout machinery',
+    /callOutCrews\(kind, target, cache\)/.test(world))
 chk('and to wherever the run currently needs them',
-    /callOutAmbulances\(crewTarget\(this\.ambulance\)\)/.test(world))
+    /callOutCrews\('ambulance', crewTarget\(this\.ambulance\), 'ambulanceRoute'\)/
+      .test(world))
 chk('the ambulance is the third entry in the one mission list',
     /ambulanceHud\(this\.ambulance, kind === 'ambulance'\)/.test(world))
 

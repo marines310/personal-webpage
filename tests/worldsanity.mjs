@@ -135,8 +135,19 @@ const code = src
   .replace(/"(?:[^"\\]|\\.)*"/g, '""')
   .replace(/`(?:[^`\\]|\\.)*`/g, '``')
 
+// The import statements come out too, because their contents are the
+// DECLARATIONS this check measures against and not uses of anything.
+//
+// It only mattered once World.js first imported a SHOUTY name under another:
+// `{ DOOR_SECONDS as RAIL_DOOR_SECONDS }` binds RAIL_DOOR_SECONDS, which is
+// what `fromEverywhere` below correctly records - and then the scan read the
+// left-hand half off the same line and reported DOOR_SECONDS as a constant
+// used and defined nowhere. A false alarm, and exactly the sort that gets a
+// check like this deleted rather than read.
+const codeNoImports = code.replace(/import[\s\S]*?from\s*''/g, ' ')
+
 const usedConsts = new Set(
-  [...code.matchAll(/(?<![.\w$])([A-Z][A-Z0-9_]{2,})\b/g)].map(m => m[1])
+  [...codeNoImports.matchAll(/(?<![.\w$])([A-Z][A-Z0-9_]{2,})\b/g)].map(m => m[1])
 )
 const fromEverywhere = new Set([
   // Everything brought in from anywhere, not just the layout
@@ -173,8 +184,16 @@ const localFunctions = new Set([
   // check deleted rather than read.
   ...defined,
   ...[...code.matchAll(/\bfunction\s+([\w$]+)/g)].map(m => m[1]),
-  ...[...code.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>/g)]
-    .map(m => m[1]),
+  // ANY local declaration, not just an arrow-function one.
+  //
+  // This used to insist the initialiser was literally `=>`, which meant a
+  // function obtained rather than written - `const gate =
+  // this.circuitGate(island, CIRCUIT_GATE)` - was reported as an undefined
+  // function. It is declared; where it came from is not this check's business.
+  // The thing this section exists to catch is a bare call to a name that
+  // appears NOWHERE, which is still caught: a missing import has no
+  // declaration either.
+  ...[...code.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=/g)].map(m => m[1]),
   // Parameters. A function that TAKES a function and calls it - polygonMesh
   // takes `heightAt` - is a bare call to a name that is neither imported nor
   // declared at the top level, and the check has no way to tell that from a
@@ -301,15 +320,30 @@ console.log('\n10. Nothing on the published site is a placeholder')
 // constant is still there, with a comment telling Mike to replace it, and
 // `blogLink()` returns nothing at all while it is unchanged.
 const zones = readFileSync(ROOT + 'src/world/ZoneManager.js', 'utf8')
+const content = readFileSync(ROOT + 'src/content.js', 'utf8')
 const page = readFileSync(ROOT + 'index.html', 'utf8')
 
 chk('the blog link is gated rather than rendered blind',
-    /\$\{blogLink\(BLOG_URL\)\}/.test(zones) &&
-    !/<a href="\$\{BLOG_URL\}/.test(zones),
+    /\$\{blogLink\(LINKS\.blog\)\}/.test(content) &&
+    !/<a href="\$\{LINKS\.blog\}/.test(content),
     'a placeholder URL is being rendered as a live link')
 chk('and blogLink() refuses the placeholder it ships with',
-    /const BLOG_PLACEHOLDER = /.test(zones) &&
-    /url === BLOG_PLACEHOLDER\) return ''/.test(zones))
+    /export const BLOG_PLACEHOLDER = /.test(content) &&
+    /url === BLOG_PLACEHOLDER\) return ''/.test(content))
+
+// The copy lives in ONE file, and it is not the one with the Three.js in it.
+// Mike edits his own bio; he should never have to open a 380-line file full
+// of geometry to do it, and a stray backtick in the prose should not be able
+// to break the zone machinery.
+chk('ZoneManager holds no copy - it reads src/content.js',
+    /from '\.\.\/content\.js'/.test(zones) &&
+    /ZONE_CONTENT\.map/.test(zones),
+    'the zones are not being built from the content file')
+chk('and no prose is left behind in it',
+    !/Hanwha|DREAMPLUS|PMP\)|skhylee/.test(zones),
+    'there is still bio text inside ZoneManager.js')
+chk(`content.js carries all ${(content.match(/island: '/g) || []).length} panels`,
+    (content.match(/island: '/g) || []).length === 5)
 
 // Anything else obviously unfinished that a visitor could reach.
 for (const bad of ['your-blog-url.com', 'example.com', 'yoursite.com', 'TODO']) {

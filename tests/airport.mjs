@@ -18,6 +18,7 @@
  *  - the shipping lane was checked against the ring's RADIUS, but a ship sails
  *    the chord between two waypoints and a chord dips inside the arc.
  */
+import { PLANE_TURN_EASE, PLANE_TURN_RATE } from '../src/world/World.js'
 import {
   ISLANDS,
   BRIDGES,
@@ -35,6 +36,15 @@ import {
   PLANE_LENGTH,
   PLANE_SPAN,
   PLANE_TURNAROUND,
+  PLANE_ACCEL,
+  PLANE_SPEED_TAXI,
+  planeSpeedAt,
+  AIRPORT_TOUCHDOWN,
+  AIRPORT_ROTATE_AT,
+  TAXI_CORNER,
+  roundCorners,
+  measurePath,
+  pointAlong,
   AIRPORT_APPROACH_HEIGHT,
   getAirGraph,
   makePlanes,
@@ -506,6 +516,224 @@ if (loop && way && drive) {
     for (const n of net.lanes[i].next) queue.push(n)
   }
   chk('and you can drive from the airport back to an island', reachedLand)
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n12. Smooth takeoffs, landings and taxiing\n')
+
+// Mike, twice. First: "for the airplanes, can you make the takeoff, landing and
+// taxiing sequence look smoother? They're way too jagged." Then, after the
+// first attempt: "I just noticed an aircraft land and then immediately turn
+// left in an instant turn motion... the landing animation is too short."
+//
+// The first round fixed the speed steps and the heading and pitch WITHIN a
+// phase, and the test said so - because it measured within a phase and
+// explicitly skipped the boundaries. The boundaries were the whole complaint.
+{
+  const graph = getAirGraph(getAirport())
+  const planes = makePlanes(graph)
+  const deg = (r) => r * 180 / Math.PI
+
+  let worstSpeedJump = 0
+  let worstPitchJump = 0
+  const worstTurn = {}
+  const seen = new Set()
+  const last = new Map()
+
+  // THE DRAWN heading, eased exactly as World.js eases it, because that is what
+  // is actually on the screen. The route's own heading is allowed to change
+  // outright at a boundary; what may not is the aircraft.
+  const drawn = new Map()
+  let worstDrawnTurn = 0
+
+  for (let i = 0; i < 30000; i++) {
+    stepPlanes(graph, planes, 1 / 30)
+    for (const p of planes) {
+      const where = planePosition(graph, p)
+      seen.add(p.phase)
+      const was = last.get(p)
+
+      if (was) {
+        if (was.phase === p.phase) {
+          worstSpeedJump = Math.max(worstSpeedJump, Math.abs((p.speed || 0) - was.speed))
+          worstPitchJump = Math.max(worstPitchJump,
+            Math.abs(where.pitch - was.pitch) * 180 / Math.PI)
+        }
+        let d = where.heading - was.heading
+        while (d > Math.PI) d -= 2 * Math.PI
+        while (d < -Math.PI) d += 2 * Math.PI
+        const key = was.phase === p.phase ? p.phase : `${was.phase}->${p.phase}`
+        worstTurn[key] = Math.max(worstTurn[key] || 0, Math.abs(deg(d)))
+      }
+
+      let face = drawn.get(p)
+      if (face === undefined) face = where.heading
+      let turn = where.heading - face
+      while (turn > Math.PI) turn -= 2 * Math.PI
+      while (turn < -Math.PI) turn += 2 * Math.PI
+      const eased = turn * Math.min(1, (1 / 30) / PLANE_TURN_EASE)
+      const cap = PLANE_TURN_RATE / 30
+      const step = Math.max(-cap, Math.min(cap, eased))
+      worstDrawnTurn = Math.max(worstDrawnTurn, Math.abs(deg(step)))
+      drawn.set(p, face + step)
+
+      last.set(p, { phase: p.phase, speed: p.speed || 0,
+                    heading: where.heading, pitch: where.pitch })
+    }
+  }
+
+  chk('every phase of the cycle was flown', seen.size >= 8, [...seen].join(','))
+  chk('no aircraft changes speed faster than it is allowed to',
+      worstSpeedJump <= PLANE_ACCEL / 30 + 1e-6,
+      `${worstSpeedJump.toFixed(3)} against ${(PLANE_ACCEL / 30).toFixed(3)}`)
+  chk('and nothing changes attitude in a step', worstPitchJump < 3,
+      `${worstPitchJump.toFixed(2)} degrees`)
+
+  // WITHIN a phase - except taxiOut, which contains the pushback flip below.
+  const inPhase = Object.entries(worstTurn)
+    .filter(([k]) => !k.includes('->') && k !== 'taxiOut')
+  const worstInPhase = Math.max(...inPhase.map(([, v]) => v))
+  console.log(`   worst turn within a phase: ${worstInPhase.toFixed(1)} degrees a frame`)
+  chk('nothing swings its nose more than a few degrees a frame while taxiing',
+      worstInPhase < 6, inPhase.map(([k, v]) => `${k} ${v.toFixed(1)}`).join(', '))
+
+  // ACROSS a boundary, ON THE GROUND. This is the one Mike saw: a landing that
+  // "immediately turns left in an instant turn motion". The routes now hand
+  // over to each other pointing the same way, so there is nothing to jump.
+  const GROUND = ['finals->rollout', 'rollout->taxiIn', 'taxiIn->stand',
+                  'taxiOut->takeoff']
+  for (const key of GROUND) {
+    const v = worstTurn[key] || 0
+    chk(`${key.padEnd(20)} hands over without a jump`, v < 1,
+        `${v.toFixed(1)} degrees`)
+  }
+
+  // THE DELIBERATE EXCEPTION. An aircraft parks nose-in, so leaving the stand
+  // is a pushback: it goes backwards facing the terminal, and then the tug
+  // turns it. That IS a 180-degree change of facing and pretending otherwise
+  // would mean parking them tail-in.
+  //
+  // It happens PART WAY THROUGH taxiOut rather than at its start - the aircraft
+  // is pushed back facing the terminal for the first twenty units and only then
+  // turned - so it shows up as a within-phase event, which is why taxiOut is
+  // excluded from the check above.
+  chk('leaving a stand is a pushback, so the facing really does reverse',
+      (worstTurn.taxiOut || 0) > 170, `${(worstTurn.taxiOut || 0).toFixed(1)} degrees`)
+  chk('and the hand-over from standing to pushing back is seamless',
+      (worstTurn['stand->taxiOut'] || 0) < 1,
+      `${(worstTurn['stand->taxiOut'] || 0).toFixed(1)} degrees`)
+
+  // ...and the aircraft on screen never does any of it in one frame.
+  console.log(`   worst turn of the DRAWN aircraft: ` +
+              `${worstDrawnTurn.toFixed(2)} degrees a frame`)
+  chk('but the aircraft on screen never turns faster than its cap',
+      worstDrawnTurn <= deg(PLANE_TURN_RATE / 30) + 1e-6,
+      `${worstDrawnTurn.toFixed(2)} against ${deg(PLANE_TURN_RATE / 30).toFixed(2)}`)
+  chk('and that cap is slow enough to read as an airliner being turned',
+      PLANE_TURN_RATE < 1, `${PLANE_TURN_RATE} rad/s`)
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n13. The runway gets used\n')
+
+// "Can we make the planes use the runway for takeoff and landing in a longer
+// run?" It was not being used at all: the wheels touched down ONE AIRCRAFT
+// LENGTH past the threshold and the roll-out then went to whichever taxiway
+// end was NEAREST - the one beside that same threshold, 27 units away and 28
+// of those sideways. A 208-unit runway was being used 27 units at a time.
+{
+  const airport = getAirport()
+  const graph = getAirGraph(airport)
+  const planes = makePlanes(graph)
+  const runway = airport.runway.length
+
+  const lengths = {}
+  for (let i = 0; i < 30000; i++) {
+    stepPlanes(graph, planes, 1 / 30)
+    for (const p of planes) {
+      if (lengths[p.phase] === undefined) lengths[p.phase] = p.path.length
+    }
+  }
+
+  console.log(`   runway ${runway.toFixed(0)}, rollout ${lengths.rollout.toFixed(0)},` +
+              ` takeoff run ${lengths.takeoff.toFixed(0)} including the climb`)
+
+  chk('the landing roll is most of a runway, not a corner of one',
+      lengths.rollout > runway * 0.8,
+      `${lengths.rollout.toFixed(0)} against a ${runway.toFixed(0)} runway`)
+  chk('the wheels touch well past the threshold but not halfway down it',
+      AIRPORT_TOUCHDOWN > PLANE_LENGTH && AIRPORT_TOUCHDOWN < runway * 0.25,
+      `${AIRPORT_TOUCHDOWN}`)
+  chk('the nose lifts most of the way down the runway',
+      AIRPORT_ROTATE_AT > 0.6 && AIRPORT_ROTATE_AT < 0.9, `${AIRPORT_ROTATE_AT}`)
+
+  // The turn off has to happen at the FAR end, or the roll is short again.
+  const end = graph.ends[0]
+  const far = graph.exits.reduce((a, b) =>
+    Math.hypot(b.x - end.touchdown.x, b.z - end.touchdown.z) >
+    Math.hypot(a.x - end.touchdown.x, a.z - end.touchdown.z) ? b : a)
+  const near = graph.exits.reduce((a, b) =>
+    Math.hypot(b.x - end.touchdown.x, b.z - end.touchdown.z) <
+    Math.hypot(a.x - end.touchdown.x, a.z - end.touchdown.z) ? b : a)
+  chk('and the two taxiway ends really are at opposite ends of the runway',
+      Math.hypot(far.x - near.x, far.z - near.z) > runway * 0.7,
+      `${Math.hypot(far.x - near.x, far.z - near.z).toFixed(0)} apart`)
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n14. Taxi turns are curves, not corners\n')
+
+// `pointAlong()` interpolates the heading between vertex tangents, which is
+// enough for a road resampled every few units. It is NOT enough for a taxiway,
+// where two legs meet at a right angle with nothing in between: the whole
+// ninety degrees gets spread over the two segments touching the corner, so a
+// vehicle is turning for the entire length of both legs and never goes
+// straight. roundCorners() puts a real curve in the path instead.
+{
+  const corner = [{ x: 0, z: 0, y: 0 }, { x: 100, z: 0, y: 0 }, { x: 100, z: 60, y: 0 }]
+  const rounded = roundCorners(corner, TAXI_CORNER)
+
+  chk('a corner gains points and the ends are untouched',
+      rounded.length > corner.length &&
+      rounded[0].x === corner[0].x &&
+      rounded[rounded.length - 1].z === corner[2].z,
+      `${rounded.length} points`)
+  chk('a straight line is left completely alone',
+      roundCorners([{ x: 0, z: 0 }, { x: 5, z: 0 }, { x: 10, z: 0 }], TAXI_CORNER)
+        .length === 3)
+  chk('and it refuses to round a two-point path',
+      roundCorners([{ x: 0, z: 0 }, { x: 10, z: 0 }], TAXI_CORNER).length === 2)
+
+  // No zero-length segments, or measurePath divides by zero and every heading
+  // downstream is NaN.
+  let shortest = Infinity
+  for (let i = 1; i < rounded.length; i++) {
+    shortest = Math.min(shortest, Math.hypot(rounded[i].x - rounded[i - 1].x,
+                                             rounded[i].z - rounded[i - 1].z))
+  }
+  chk('no two points land on top of each other', shortest > 1e-6,
+      `${shortest}`)
+
+  // THE POINT OF IT: straight, then turn, then straight.
+  const path = measurePath(rounded)
+  const at = (d) => pointAlong(path, d, false, true).heading * 180 / Math.PI
+  chk('it goes straight before the corner', Math.abs(at(30) - at(60)) < 2,
+      `${at(30).toFixed(1)} then ${at(60).toFixed(1)}`)
+  chk('and straight again after it',
+      Math.abs(at(path.length - 30) - at(path.length - 10)) < 2)
+  chk('and the whole turn happens in between',
+      Math.abs(at(30) - at(path.length - 10)) > 80,
+      `${at(30).toFixed(1)} to ${at(path.length - 10).toFixed(1)}`)
+
+  // A short leg must not be eaten from both ends into an S.
+  const tight = roundCorners(
+    [{ x: 0, z: 0 }, { x: 12, z: 0 }, { x: 12, z: 12 }, { x: 24, z: 12 }], 40)
+  let monotone = true
+  for (let i = 1; i < tight.length; i++) {
+    if (tight[i].x < tight[i - 1].x - 1e-9) monotone = false
+  }
+  chk('a radius bigger than the legs is clamped rather than doubling back',
+      monotone)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

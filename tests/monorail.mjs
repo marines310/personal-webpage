@@ -27,6 +27,8 @@ import {
   monorailCeiling,
   monorailFloors,
   MONORAIL_HEIGHT,
+  isCourseIsland,
+  getIslandRing,
   MONORAIL_BEAM_DEPTH,
   MONORAIL_CORRIDOR,
   MONORAIL_CURVE_RADIUS,
@@ -45,6 +47,8 @@ import {
   getBridgeRoadPaths
 } from '../src/world/islandLayout.js'
 import { turningRadii, distanceToPath } from '../src/world/curves.js'
+import * as COURSE from '../src/world/course.js'
+import { readFileSync } from 'node:fs'
 
 let pass = 0, fail = 0
 const chk = (n, c, d = '') => {
@@ -61,8 +65,25 @@ chk('there is a route at all', !!route)
 const stops = getMonorailStops()
 console.log(`   ${stops.map(i => i.id).join(' -> ')} -> (back to start)`)
 
-chk(`every island gets a stop (${route.stations.length} of ${ISLANDS.length})`,
-    route.stations.length === ISLANDS.length)
+// Every island on the line, and only those. Same story as the port count in
+// tests/ports.mjs: this used to compare against ISLANDS.length, which assumed
+// the railway was compulsory. `monorail: false` has always been honoured by
+// getMonorailStops(); the stunt park and the speedway are the first to use it,
+// because joining the line would move the centroid the whole loop is drawn
+// around and reroute it past every island in the world.
+//
+// Checking both halves is stricter than the count: an island silently dropped
+// off the line and a new one silently added would have cancelled out before.
+const onLine = ISLANDS.filter(i => i.monorail !== false)
+const offLine = ISLANDS.filter(i => i.monorail === false)
+
+chk(`every island on the line gets a stop (${route.stations.length} of ${onLine.length})`,
+    route.stations.length === onLine.length,
+    onLine.filter(i => !route.stations.some(s => s.id === i.id)).map(i => i.id).join(' '))
+
+chk(`and the ${offLine.length} that opted out get none`,
+    offLine.every(i => !route.stations.some(s => s.id === i.id)),
+    offLine.filter(i => route.stations.some(s => s.id === i.id)).map(i => i.id).join(' '))
 chk('no island twice',
     new Set(route.stations.map(s => s.id)).size === route.stations.length)
 chk('the stations are in the order the line meets them',
@@ -478,6 +499,76 @@ chk(`buildings away from the line keep every floor (${keptFull})`,
 const palmTrunk = Math.min(7.5, ceilingUnder - 1.2)
 chk(`a palm under the line clears it too (${(palmTrunk + 1).toFixed(1)})`,
     palmTrunk + 1 < underside, `${palmTrunk + 1}`)
+
+// ---------------------------------------------------------------------------
+console.log('\nThe beam does not go through the stadium\n')
+
+// Mike: "the monorail has to go through/clip through a stadium twice... the
+// monorail shouldn't have to go through a wall."
+//
+// Measured before the fix: 21 beam points inside the stunt arena's seating
+// band, crossing in one side and out the other - which is the "twice".
+{
+  const stands = COURSE.ARENA_STANDS
+  const topTier = COURSE.COURSE_GROUND + stands.tiers * stands.rise
+  const roofTop = topTier + stands.roof.above
+
+  console.log(`   beam at ${MONORAIL_HEIGHT}, top tier ${topTier.toFixed(1)}, ` +
+              `roof ${roofTop.toFixed(1)}`)
+
+  // The premise. If a future change ever lifts the beam clear of the stand on
+  // its own, this goes red and the holes below become dead code worth removing
+  // rather than machinery worth keeping.
+  chk('the beam really is lower than the stand it passes through',
+      MONORAIL_HEIGHT < topTier,
+      `${MONORAIL_HEIGHT} against ${topTier}`)
+
+  // How much of the arena the beam actually crosses, so the holes are known to
+  // be needed and known to be needed in two places.
+  const arena = ISLANDS.filter(isCourseIsland)
+  let crossings = 0
+  for (const island of arena) {
+    const ring = getIslandRing(island)
+    if (!ring) continue
+    const inner = stands.fromRing
+    const outer = stands.fromRing + stands.tiers * stands.tread
+
+    let wasIn = false
+    for (const p of route.points) {
+      if (islandAt(p.x, p.z) !== island) { wasIn = false; continue }
+      const d = distanceToPath(ring, p.x - island.x, p.z - island.z)
+      const inBand = d >= inner && d <= outer
+      if (inBand && !wasIn) crossings++
+      wasIn = inBand
+    }
+  }
+  console.log(`   the beam crosses a stand band ${crossings} times`)
+  chk('and it does cross one, so the holes are not decoration', crossings > 0)
+}
+
+{
+  // World.js needs a browser, so it is read. Same approach worldsanity.mjs
+  // takes, and the same reason: the hole is drawn, not computed.
+  const world = readFileSync(
+    new URL('../src/world/World.js', import.meta.url), 'utf8')
+
+  chk('World asks whether a spot is under the monorail',
+      /underMonorail\(x, z, margin = MONORAIL_CORRIDOR\)/.test(world))
+  chk('measured against the drawn route, not a bearing',
+      /distanceToPath\(this\.monorail\.points, x, z\) < margin/.test(world))
+
+  // BOTH holes. The seating is the obvious one and the roof is the one that
+  // matters more, because the roof is the highest part of the stand and the
+  // beam passes underneath it.
+  const holes = world.match(/this\.underMonorail\(island\.x \+ at\.x, island\.z \+ at\.z/g)
+  console.log(`   ${holes ? holes.length : 0} places leave a hole for the beam`)
+  chk('the seating leaves a hole', !!holes && holes.length >= 2,
+      `${holes ? holes.length : 0}`)
+  chk('and so does the roof over it',
+      /MONORAIL_CORRIDOR \+ r\.depth/.test(world))
+  chk('and the seats use a gap wide enough for a tread either side',
+      /MONORAIL_CORRIDOR \+ s\.tread/.test(world))
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

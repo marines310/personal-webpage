@@ -164,7 +164,29 @@ function atollPoints(radius, seed = 1, segments = 34) {
  * @param {number} radius  target size
  * @param {number} seed    vary for a different island of the same kind
  */
-export function makeShape(preset, radius, seed = 1) {
+/**
+ * Build an outline from a preset name.
+ *
+ * `stretch` scales the finished outline per axis, and it exists because the
+ * presets have their proportions baked in - `long` is always 0.52 across by
+ * 1.32 down - and the stunt island needed to get WIDER without getting any
+ * longer. It is wedged between two neighbours: its coast runs six units from
+ * ABOUT's and thirty-one from PROJECTS', so there is room to grow across and
+ * none at all to grow along.
+ *
+ * Applied after the preset rather than by adding more presets, so any island
+ * can be nudged without inventing 'long-but-wider' and 'wide-but-shorter'.
+ */
+export function makeShape(preset, radius, seed = 1, stretch = null) {
+  const pts = basePoints(preset, radius, seed)
+  if (!stretch) return pts
+  const kx = stretch.x ?? 1
+  const kz = stretch.z ?? 1
+  if (kx === 1 && kz === 1) return pts
+  return pts.map(p => ({ x: p.x * kx, z: p.z * kz }))
+}
+
+function basePoints(preset, radius, seed) {
   switch (preset) {
     case 'blob':     return blobPoints(radius, seed)
     case 'long':     return longPoints(radius, seed)
@@ -412,7 +434,8 @@ export function getOutline(island) {
   if (Array.isArray(island.outline) && island.outline.length >= 3) {
     pts = island.outline.map(p => ({ x: p.x, z: p.z }))
   } else if (island.shape && island.shape !== 'circle') {
-    pts = makeShape(island.shape, island.radius, island.shapeSeed || 1)
+    pts = makeShape(island.shape, island.radius, island.shapeSeed || 1,
+                    island.stretch || null)
   } else {
     pts = circlePoints(island.radius)
   }

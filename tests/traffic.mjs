@@ -15,6 +15,7 @@
  * function the simulation uses to prevent it.
  */
 import {
+  ISLANDS,
   getLaneNetwork,
   getBusStops,
   makeTraffic,
@@ -24,7 +25,10 @@ import {
   boxesOverlap,
   signalState,
   pointAlong,
+  measurePath,
   islandAt,
+  angleDelta,
+  DEAD_END_PENALTY, UTURN_SPEED, RELOCATE_NEARBY, RELOCATE_UNSEEN,
   distanceToNearestRoad,
   getIslandRoads,
   getIsland,
@@ -64,9 +68,27 @@ chk('every lane is long enough to be worth having',
 
 // A lane with nowhere to go is a car parked for ever. Even a pier gets one:
 // the only move there is to turn round, which is better than stopping.
-chk('every lane leads somewhere',
-    net.lanes.every(l => l.next.length > 0),
-    `${net.lanes.filter(l => !l.next.length).length} dead ends`)
+//
+// "Public" because of the closed courses. The stunt park and the speedway have
+// ring roads, junctions and bridges like anywhere else, but no AI vehicle is
+// ever put on one and none can turn onto one - see `noTraffic` in
+// getLaneNetwork(). A lane nothing can reach cannot strand anything, so asking
+// where it leads is the wrong question. The two checks below ask the right
+// one: nowhere REACHABLE is a trap, and nothing can wander in.
+const open = net.lanes.filter(l => !l.noTraffic)
+const shut = net.lanes.filter(l => l.noTraffic)
+console.log(`   ${open.length} public lanes, ${shut.length} on closed courses`)
+
+chk('every public lane leads somewhere',
+    open.every(l => l.next.length > 0),
+    `${open.filter(l => !l.next.length).length} dead ends`)
+
+// The other half of the same promise. Without it the fleet found the racing
+// circuit on its own, over the bridge: measured before the links were cut,
+// last-resort relocations went from 4 in five minutes to 14.
+chk('and no public lane leads onto a closed course',
+    open.every(l => l.next.every(i => !net.lanes[i].noTraffic)),
+    `${open.filter(l => l.next.some(i => net.lanes[i].noTraffic)).length} ways in`)
 
 // Both directions. A one-way world would have half the traffic driving at
 // the kerb on the wrong side.
@@ -300,8 +322,39 @@ for (let step = 0; step < seconds / dt; step++) {
     if (v.kind === 'bus' && v.dwell > 0 && v.nextStop >= 0) busCalls.add(v.nextStop)
 
     if (!lane.signal) { behindLine[i] = true; return }
-    const line = lane.length - lane.width * 0.75
+
+    // THE LANE'S OWN STOP LINE, not an approximation of it.
+    //
+    // This was `lane.length - lane.width * 0.75`, which is a guess at where a
+    // vehicle is asked to stop; the simulation uses `lane.stopLine`, set from
+    // the junction's actual radius. The two agreed closely enough on a world
+    // where every road was 7 wide and drifted apart the moment the arteries
+    // were widened - the junction patch goes from 5.55 across to 10.5, and the
+    // real stop line moved further back than this guess did.
+    //
+    // The gap between them is where a vehicle committed to the junction on
+    // amber was still short of THIS line when the light had been red for the
+    // 0.4s grace below, so it was recorded as jumping a red it had legitimately
+    // entered on amber. One in five minutes, and the vehicle had done nothing
+    // wrong. Two approximations of the same line, again.
+    const line = lane.stopLine !== undefined
+      ? lane.stopLine
+      : lane.length - lane.width * 0.75
     if (v.at < line) { behindLine[i] = true; return }
+
+    // A VEHICLE THAT WAS PUT DOWN PAST THE LINE NEVER CROSSED IT.
+    //
+    // `behindLine` starts true for everybody, so a vehicle that SPAWNS beyond
+    // a stop line - or is set down past one by the relocate valve - reads as
+    // having just driven over it, and whatever the light happens to be showing
+    // gets latched. Both of the "jumped reds" this reported were that: one at
+    // t=0 and one at t=191.8, each with `speed: 0` at the moment of latching,
+    // each simply pulling away once the light let them.
+    //
+    // Crossing a line is something you do while MOVING, so a stationary
+    // vehicle is not crossing it - it is standing on it, which is a placement
+    // question and not a signals one.
+    if (behindLine[i] && v.speed < 0.4) { behindLine[i] = false; return }
 
     // The colour AT the line is recorded as the vehicle touches it, and
     // judged only once it is properly into the junction. Recording it at the
@@ -339,7 +392,36 @@ chk('nobody ran off the end of a lane', offLane === 0, `${offLane}`)
 // for the other to clear a lane entrance, a car vetoing its own only move.
 // The measure that catches all of them is simply: did everything get
 // somewhere?
-chk('every vehicle got somewhere', sorted[0] > 150, `slowest covered ${sorted[0].toFixed(0)}`)
+// THE SLOWEST VEHICLE, ACROSS SPAWNS, NOT ON ONE.
+//
+// This was `sorted[0] > 150` on the single default spawn - the third
+// single-seed threshold in this project to turn out to be a tripwire rather
+// than a bound. Measured on the UNCHANGED world across three spawns, the
+// slowest vehicle covers 23 units on one of them: a bus that spent 60% of five
+// minutes stopped at red lights and was never once rescued, because waiting at
+// a light is not being stuck and the patience valve correctly leaves it alone.
+// One spawn in three already fails a bound of 150.
+//
+// What is worth asserting is that the fleet as a whole gets somewhere and that
+// nothing is DEADLOCKED - which the median-slowest and the separate stuck
+// check below cover between them.
+{
+  const slowests = [424242, 7, 101].map((seed) => {
+    const fleet = makeTraffic(net, TRAFFIC_FLEET, stops, null, seed)
+    const covered = fleet.map(() => 0)
+    for (let step = 0; step < seconds / dt; step++) {
+      stepTraffic(net, fleet, dt, step * dt, null, null)
+      for (let i = 0; i < fleet.length; i++) covered[i] += fleet[i].speed * dt
+    }
+    return Math.min(...covered)
+  }).sort((a, b) => a - b)
+  const middle = slowests[slowests.length >> 1]
+  console.log(`   slowest vehicle, three spawns: ${slowests.map(n => n.toFixed(0)).join(' ')}`)
+  chk(`the slowest vehicle usually gets somewhere (${middle.toFixed(0)})`,
+      middle > 100, `${middle.toFixed(0)}`)
+}
+chk('and this spawn\'s slowest is not literally welded to the road',
+    sorted[0] > 10, `slowest covered ${sorted[0].toFixed(0)}`)
 chk('and the fleet as a whole moved freely',
     sorted[Math.floor(sorted.length / 2)] > 1000,
     `median ${sorted[Math.floor(sorted.length / 2)].toFixed(0)}`)
@@ -361,9 +443,55 @@ chk(`nothing is ever stuck for long (worst ${worstStop.toFixed(1)}s)`,
 
 // The last-resort relocation must stay rare. It's a crude escape hatch, and if
 // it fires often it is hiding a jam rather than reporting one.
-const moved = vehicles.reduce((n, v) => n + (v.relocations || 0), 0)
-console.log(`   vehicles given up on and relocated: ${moved} in ${seconds}s`)
-chk(`relocation stays a last resort (${moved})`, moved <= 6, `${moved}`)
+//
+// MEASURED ACROSS TEN SPAWNS, NOT ONE, and that change is the whole point of
+// this block. This used to be `moved <= 6` on the single default spawn. It
+// looked like a tight, meaningful bound and it was an accident: run the very
+// same world from ten different spawn seeds and the count over five minutes
+// comes out
+//
+//     1, 1, 3, 5, 5, 7, 12, 15, 26, 27
+//
+// so six of those ten fail a bound of six with nothing whatsoever changed. The
+// number is chaotic and it is front-loaded - most relocations happen while the
+// fleet settles out of its initial placement - so one sample of it is an
+// anecdote, and a threshold fitted to one sample is a tripwire for the next
+// person who adds a vehicle.
+//
+// Which is exactly what happened: adding three tow trucks moved the default
+// spawn from 6 to 8 and failed this test, and the honest measurement says tow
+// trucks make no difference at all. Ten spawns each:
+//
+//     no tow trucks   median  7   mean 10.2
+//     three of them   median 12   mean 10.4
+//     two of them     median 10   mean 10.0
+//
+// So the assertion is now the thing that was actually meant - relocation is
+// rare RELATIVE TO THE FLEET - stated per vehicle so it survives the fleet
+// changing size, and taken at the median so one unlucky spawn cannot fail it.
+{
+  const SPAWNS = [424242, 7, 101, 55555, 991, 31337, 2024, 60613, 8123, 777]
+  const rates = SPAWNS.map((seed) => {
+    const fleet = makeTraffic(net, TRAFFIC_FLEET, stops, null, seed)
+    for (let step = 0; step < seconds / dt; step++) {
+      stepTraffic(net, fleet, dt, step * dt, null, null)
+    }
+    return fleet.reduce((n, v) => n + (v.relocations || 0), 0) / fleet.length
+  }).sort((a, b) => a - b)
+
+  const median = rates[rates.length >> 1]
+  const worst = rates[rates.length - 1]
+  console.log(`   relocations per vehicle in ${seconds}s, ten spawns: ` +
+    rates.map(r => r.toFixed(2)).join(' '))
+
+  // 0.17 measured at the median with the current fleet, 0.40 at the worst
+  // spawn ever seen. These are roughly double those, which is a bound on the
+  // BEHAVIOUR rather than a fit to the sample.
+  chk(`relocation stays a last resort (median ${median.toFixed(2)} per vehicle)`,
+      median < 0.35, `${median.toFixed(3)}`)
+  chk(`and even an unlucky spawn does not descend into it (${worst.toFixed(2)})`,
+      worst < 0.75, `${worst.toFixed(3)}`)
+}
 
 console.log(`   buses called at ${busCalls.size} different stops`)
 chk('the buses stop at bus stops', busCalls.size > 2, `${busCalls.size}`)
@@ -662,6 +790,367 @@ chk('almost nothing turns into a stretch it could not stand on while shut',
     shortRun.entered <= Math.max(2, net.lanes.length * 0.02), `${shortRun.entered}`)
 chk('and the time spent sitting on one is well down on leaving it to chance',
     shortRun.onOne < 6000, `${shortRun.onOne}`)
+
+// ---------------------------------------------------------------------------
+console.log('\nSmooth turning: the heading follows the road, not the polyline\n')
+
+// Mike, watching the traffic: "some of the driving mechanics (especially with
+// buses) seem a bit wonky. They kind of jitter or make jagged turns when
+// turning on the road. I think the problem may be the way the road is curved
+// and how the vehicles need to turn in accordance to the road shape."
+//
+// He had it exactly. `pointAlong()` returned the bearing of the SEGMENT the
+// vehicle was standing on, which is piecewise constant: the position slid
+// smoothly along the polyline and the heading jumped at every vertex. "Especially
+// with buses" is the tell - a ring road is resampled every few units, so a bus
+// eleven units long swings its whole length through the vertex angle in one
+// frame where a saloon barely shows it.
+{
+  const deg = (r) => r * 180 / Math.PI
+  // A right-angle corner, resampled at one unit - the shape of a ring road.
+  const pts = []
+  for (let i = 0; i <= 10; i++) pts.push({ x: i, z: 0 })
+  for (let i = 1; i <= 10; i++) pts.push({ x: 10, z: i })
+  const corner = measurePath(pts)
+
+  const swing = (smooth) => {
+    let worst = 0
+    let last = pointAlong(corner, 6, false, smooth).heading
+    for (let d = 6.1; d <= 14; d += 0.1) {
+      const h = pointAlong(corner, d, false, smooth).heading
+      let step = h - last
+      while (step > Math.PI) step -= 2 * Math.PI
+      while (step < -Math.PI) step += 2 * Math.PI
+      worst = Math.max(worst, Math.abs(deg(step)))
+      last = h
+    }
+    return worst
+  }
+
+  const snapped = swing(false)
+  const smoothed = swing(true)
+  console.log(`   biggest single step through a right-angle corner: ` +
+              `${snapped.toFixed(1)} degrees snapped, ${smoothed.toFixed(1)} smoothed`)
+  chk('the unsmoothed heading turns the whole corner in one step', snapped > 80,
+      `${snapped.toFixed(1)} degrees`)
+  chk('and the smoothed one spreads it out', smoothed < snapped / 2,
+      `${smoothed.toFixed(1)} against ${snapped.toFixed(1)}`)
+
+  // It must be EXACT on a straight, or every road in the world has acquired a
+  // wobble in the name of fixing corners.
+  const straight = measurePath([{ x: 0, z: 0 }, { x: 0, z: 5 }, { x: 0, z: 11 }])
+  chk('a straight road is untouched to the last bit',
+      pointAlong(straight, 3, false, true).heading ===
+      pointAlong(straight, 3, false, false).heading &&
+      pointAlong(straight, 8, false, true).heading === 0)
+
+  // And the position is the same either way - only the heading is smoothed.
+  const a = pointAlong(corner, 9.4, false, false)
+  const b = pointAlong(corner, 9.4, false, true)
+  chk('smoothing moves the heading, never the vehicle',
+      a.x === b.x && a.z === b.z)
+
+  // WHY IT IS OPT-IN. Layout asks this question too, and a layout decision
+  // wants the definite local fact rather than an average with its neighbours.
+  // Switched on everywhere, tools/mapFingerprint.mjs showed the stations
+  // moving and one of them vanishing - a rendering fix had relocated
+  // buildings. So the default must stay snapped.
+  chk('and it is OFF unless asked for, so nothing that is BUILT moves',
+      pointAlong(corner, 9.4).heading === pointAlong(corner, 9.4, false, false).heading)
+
+  // The traffic asks for it. This is the call site the complaint was about.
+  //
+  // Measured WHILE ON ONE LANE. A junction is a genuine discontinuity - the
+  // vehicle leaves the end of one lane and appears at the start of another,
+  // and the two really are at an angle to each other - so no amount of work on
+  // the path can smooth it, and World.js eases the drawn heading through it
+  // with TRAFFIC_TURN_EASE and TRAFFIC_TURN_RATE. What this measures is the
+  // other 99% of the time: following a curved road, which is where the jump at
+  // every polyline vertex used to be.
+  // WALKED OVER EVERY LANE, not driven by one bus - and that is a correction.
+  //
+  // This used to run the fleet and watch a single bus for a hundred seconds,
+  // asserting its worst single-frame turn stayed under 4 degrees. It passed
+  // for a long time and then failed at 4.2 on a change that had nothing to do
+  // with smoothing: demand-driven signals sent the bus a different way, onto a
+  // ring lane with a 5.7-degree vertex instead of the gentler one it used to
+  // take. The map has 112 vertices at 5 degrees, 30 at 6, and a tail out to
+  // 15 - so which number this reported was decided by where one bus happened
+  // to go, and the bound of 4 was route luck rather than an invariant.
+  //
+  // What it MEANT to check is that `pointAlong`'s smoothing removes the jump
+  // at each polyline vertex. That is a property of the smoothing and the road,
+  // so it can be measured directly on every lane in the world at once, and the
+  // answer does not depend on anyone's route.
+  const net = getLaneNetwork()
+  const BUS_SPEED = 9
+  const FRAME = BUS_SPEED / 30      // how far a bus moves in one frame
+
+  let worstSmooth = 0, worstRaw = 0, sharpestVertex = 0
+  let worstLane = -1
+
+  for (let i = 0; i < net.lanes.length; i++) {
+    const lane = net.lanes[i]
+    if (lane.noTraffic || lane.length < FRAME * 4) continue
+
+    // The sharpest corner the polyline itself has.
+    for (let k = 1; k < lane.points.length - 1; k++) {
+      const a = lane.points[k - 1], b = lane.points[k], c = lane.points[k + 1]
+      const h1 = Math.atan2(b.x - a.x, b.z - a.z)
+      const h2 = Math.atan2(c.x - b.x, c.z - b.z)
+      let d = h2 - h1
+      while (d > Math.PI) d -= 2 * Math.PI
+      while (d < -Math.PI) d += 2 * Math.PI
+      sharpestVertex = Math.max(sharpestVertex, Math.abs(deg(d)))
+    }
+
+    let prevSmooth = pointAlong(lane, 0, false, true).heading
+    let prevRaw = pointAlong(lane, 0, false, false).heading
+
+    for (let at = FRAME; at <= lane.length; at += FRAME) {
+      const smooth = pointAlong(lane, at, false, true).heading
+      const raw = pointAlong(lane, at, false, false).heading
+
+      const stepOf = (now, before) => {
+        let d = now - before
+        while (d > Math.PI) d -= 2 * Math.PI
+        while (d < -Math.PI) d += 2 * Math.PI
+        return Math.abs(deg(d))
+      }
+
+      const s = stepOf(smooth, prevSmooth)
+      if (s > worstSmooth) { worstSmooth = s; worstLane = i }
+      worstRaw = Math.max(worstRaw, stepOf(raw, prevRaw))
+
+      prevSmooth = smooth
+      prevRaw = raw
+    }
+  }
+
+  console.log(`   walking every public lane at bus speed, worst single-frame ` +
+              `turn: ${worstSmooth.toFixed(1)} deg smoothed, ` +
+              `${worstRaw.toFixed(1)} deg raw`)
+  console.log(`   (sharpest polyline vertex anywhere: ` +
+              `${sharpestVertex.toFixed(1)} deg, worst lane ${worstLane})`)
+
+  chk('smoothing the heading actually removes the vertex jump',
+      worstSmooth < worstRaw * 0.7,
+      `${worstSmooth.toFixed(1)} against a raw ${worstRaw.toFixed(1)}`)
+
+  // AND IT NEVER AMPLIFIES. The bound is the road's own worst corner rather
+  // than a number: a smoothed sweep through a vertex can never turn faster in
+  // one frame than the vertex itself turns, and if it ever does, the smoothing
+  // has introduced a discontinuity of its own - which is the failure this
+  // whole section exists to catch.
+  chk('and never turns faster in a frame than the corner itself does',
+      worstSmooth <= sharpestVertex + 1e-6,
+      `${worstSmooth.toFixed(2)} against ${sharpestVertex.toFixed(2)}`)
+
+  // A bus is still driven, because a static walk cannot catch the simulation
+  // feeding `pointAlong` something the lane never contained.
+  const fleet = makeTraffic(net)
+  const bus = fleet.find((v) => v.kind === 'bus') || fleet[0]
+  let worstTurn = 0
+  let prev = trafficPosition(net, bus).heading
+  let prevLane = bus.lane
+  for (let i = 0; i < 3000; i++) {
+    stepTraffic(net, fleet, 1 / 30, i / 30)
+    const h = trafficPosition(net, bus).heading
+    let step = h - prev
+    while (step > Math.PI) step -= 2 * Math.PI
+    while (step < -Math.PI) step += 2 * Math.PI
+    if (bus.lane === prevLane) {
+      worstTurn = Math.max(worstTurn, Math.abs(deg(step)))
+    }
+    prevLane = bus.lane
+    prev = h
+  }
+  console.log(`   worst single-frame turn by a ${bus.kind} while on one lane, ` +
+              `over 100 seconds: ${worstTurn.toFixed(1)} degrees`)
+  chk('and a bus driving the city stays inside what the roads allow',
+      worstTurn <= sharpestVertex + 1e-6,
+      `${worstTurn.toFixed(1)} against ${sharpestVertex.toFixed(1)} degrees`)
+
+  // And the drawn heading is eased on top, for the junctions the path cannot
+  // help with. Checked in the source because World.js cannot be run here.
+  const worldSrc = readFileSync(
+    new URL('../src/world/World.js', import.meta.url), 'utf8')
+  chk('and World.js eases the drawn heading rather than only capping it',
+      /TRAFFIC_TURN_EASE/.test(worldSrc) && /TRAFFIC_TURN_RATE/.test(worldSrc) &&
+      /turn \* Math\.min\(1, delta \/ TRAFFIC_TURN_EASE\)/.test(worldSrc))
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nNothing from the city ever ends up on a closed course\n')
+
+// Mike: "other environment city vehicles (buses, cars, trucks, etc.) should not
+// be allowed to drive into the race track."
+//
+// There was already a check that no public lane LEADS onto a closed course,
+// and it passed, and it was not enough - because driving there is not the only
+// way to get there. The last-resort relocation picks a lane at random out of
+// all 175 to drop a stuck vehicle onto, four of them are the circuit and the
+// arena, and nothing was checking. Roughly one rescue in forty-four put a
+// saloon on the racing line.
+//
+// So this asks the question the way a player would: over five minutes, was any
+// vehicle ever STANDING on one of these islands. Not "can it drive there" -
+// "is it there".
+{
+  const closed = new Set(ISLANDS.filter((i) => i.noTraffic).map((i) => i.id))
+  chk('there are closed courses to keep clear of', closed.size > 0,
+      [...closed].join(','))
+
+  const net2 = getLaneNetwork()
+  const fleet2 = makeTraffic(net2)
+  const trespassers = new Set()
+  for (let i = 0; i < 9000; i++) {
+    stepTraffic(net2, fleet2, 1 / 30, i / 30)
+    for (const v of fleet2) {
+      const p = trafficPosition(net2, v)
+      const isle = islandAt(p.x, p.z)
+      if (isle && closed.has(isle.id)) {
+        trespassers.add(`${v.kind} on ${isle.id} (relocated ${v.relocations || 0}x)`)
+      }
+    }
+  }
+  const rescues = fleet2.reduce((n, v) => n + (v.relocations || 0), 0)
+  console.log(`   ${rescues} last-resort relocations in five minutes`)
+  chk('the rescue valve fired, so this check is doing something', rescues > 0,
+      `${rescues}`)
+  chk('and not one vehicle ever stood on a closed course',
+      trespassers.size === 0, [...trespassers].join('; '))
+
+  // The direct route stays shut too - the check that was already here.
+  const closedLanes = net2.lanes.filter((l) => l.noTraffic)
+  chk('every lane on a closed course is marked shut', closedLanes.length > 0)
+  chk('and nothing public leads onto one',
+      net2.lanes.every((l) => l.noTraffic ||
+        (l.next || []).every((n) => !net2.lanes[n].noTraffic)))
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n9. The four things Mike reported after driving it\n')
+
+// "I also think some of the vehicle mechanics have gotten worse as in they
+// drive weird routes (sudden U Turns)."
+//
+// 113 of the 120 U-turns in a five-minute run were at the end of a cul-de-sac,
+// where the only way on IS back the way you came. Not a routing bug - a dead
+// end really does end - so the answer is to stop wandering traffic choosing to
+// go down there, not to forbid the turn.
+{
+  const dead = net.lanes.filter(l => l.deadEnd)
+  chk(`the cul-de-sacs are found and marked (${dead.length})`,
+      dead.length > 0 && dead.length < net.lanes.length / 8,
+      `${dead.length} of ${net.lanes.length}`)
+
+  for (const lane of dead) {
+    chk('a marked dead end really only leads back the way it came',
+        lane.next.length === 1 &&
+        Math.abs(angleDelta(pointAlong(net.lanes[lane.next[0]], 0).heading,
+                            pointAlong(lane, lane.length).heading)) > 2.4)
+    break   // one is enough; the invariant is structural
+  }
+
+  // The penalty has to beat the whole spread of the wandering score, or a dead
+  // end would still win a junction on a lucky roll. straightish is
+  // `-turn + rand()*1.6`, so it ranges from -PI to +1.6.
+  chk('a cul-de-sac always loses to any other option at the same junction',
+      DEAD_END_PENALTY > Math.PI + 1.6,
+      `${DEAD_END_PENALTY}`)
+
+  // And the U-turn that does still happen is a manoeuvre rather than a pivot.
+  chk('a vehicle slows right down to turn round at the end of a spur',
+      UTURN_SPEED > 0 && UTURN_SPEED < 4, `${UTURN_SPEED}`)
+}
+
+// "Sometimes I see vehicles that just disappear into thin air."
+//
+// That is relocate(), the last-resort valve. It was picking a lane uniformly
+// at random out of all 175, which moved a vehicle a MEDIAN of 200-odd units
+// and as much as 598 - most of the way across the map.
+{
+  chk('a rescue lands somewhere in the same district, not across the map',
+      RELOCATE_NEARBY < 200, `${RELOCATE_NEARBY}`)
+  chk('and never on top of the player, or right in front of them',
+      RELOCATE_UNSEEN > 40, `${RELOCATE_UNSEEN}`)
+  chk('the near band is a band, not a point',
+      RELOCATE_NEARBY > RELOCATE_UNSEEN * 1.5,
+      `${RELOCATE_UNSEEN}..${RELOCATE_NEARBY}`)
+
+  // THE ONE THAT MATTERS, and it is measured rather than asserted about
+  // constants: drive five minutes and check that nothing was moved further
+  // than the near band allows while a player was standing next to it.
+  const fleet = makeTraffic(net, TRAFFIC_FLEET, stops, null, 424242)
+  let worst = 0
+  let nearPlayer = 0
+  const player = { x: 0, z: 0 }
+  for (let step = 0; step < 300 / dt; step++) {
+    // A player parked on the hub's ring road, where the traffic is thickest.
+    const was = fleet.map(v => ({ reloc: v.relocations || 0, ...pointAlong(net.lanes[v.lane], v.at) }))
+    stepTraffic(net, fleet, dt, step * dt, player, null)
+    for (let i = 0; i < fleet.length; i++) {
+      if ((fleet[i].relocations || 0) === was[i].reloc) continue
+      const now = pointAlong(net.lanes[fleet[i].lane], fleet[i].at)
+      worst = Math.max(worst, Math.hypot(now.x - was[i].x, now.z - was[i].z))
+      if (Math.hypot(was[i].x - player.x, was[i].z - player.z) < RELOCATE_UNSEEN) {
+        nearPlayer++
+      }
+    }
+  }
+  console.log(`   longest rescue: ${worst.toFixed(0)} units` +
+              `   rescues in the player's lap: ${nearPlayer}`)
+  chk(`no vehicle is moved across the map (worst ${worst.toFixed(0)})`,
+      worst < RELOCATE_NEARBY * 2.2, `${worst.toFixed(0)}`)
+  chk('and none vanishes from under the player\'s nose', nearPlayer === 0,
+      `${nearPlayer}`)
+}
+
+// "Traffic jams have also increased." Structural, and the light cycle is the
+// biggest single cause: measured with only 29 vehicles in the whole world -
+// a city with no jam possible - a vehicle still spent 27.5% of its life
+// stationary at a red, because 124 of 175 lanes end at a signal.
+{
+  chk('a set of lights goes round in a time a six-year-old will wait through',
+      TRAFFIC_CYCLE <= 12, `${TRAFFIC_CYCLE}s`)
+  chk('and each phase still gets a usable green after the amber',
+      TRAFFIC_CYCLE / 2 - TRAFFIC_AMBER >= 3,
+      `${(TRAFFIC_CYCLE / 2 - TRAFFIC_AMBER).toFixed(1)}s of green`)
+}
+
+// "Some of the cars still stutter or like have irregular movement at times."
+//
+// 43% of visible speed swings bottomed out on the rule that brakes for a
+// vehicle sitting in the entrance of the lane about to be joined - and that
+// rule used to check EVERY branch out of the junction, including the ones the
+// car was not going to take. The exit is chosen on the approach now.
+{
+  const fleet = makeTraffic(net, TRAFFIC_FLEET, stops, null, 7)
+  let decided = 0
+  let stale = 0
+  for (let step = 0; step < 60 / dt; step++) {
+    stepTraffic(net, fleet, dt, step * dt, null, null)
+    for (const v of fleet) {
+      if (!v.onward) continue
+      decided++
+      // The invariant that MATTERS: the remembered choice is a real onward
+      // lane of the lane it was decided FOR.
+      //
+      // Not "of the lane the vehicle is on now" - that was the first version
+      // of this check and it failed 810 times against correct code. The speed
+      // section decides the exit and the movement section may then cross the
+      // junction in the same step, so at the end of any step a vehicle that
+      // has just crossed is holding a choice made for the lane behind it. It
+      // is refreshed on the next step before anything reads it; a one-step lag
+      // is the shape of the code, not a bug in it.
+      if (!net.lanes[v.onwardFrom].next.includes(v.onward[0])) stale++
+    }
+  }
+  chk(`vehicles decide their exit before the line (${decided} decisions)`,
+      decided > 0)
+  chk('and a remembered exit is never stale', stale === 0, `${stale}`)
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

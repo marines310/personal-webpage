@@ -10,10 +10,25 @@ import {
   lampBrightness, blinkOn, gloomLevel, sirenBeat,
   steerIndicator, resolveIndicator, stalkCancels, turnAmount
 } from './vehicleLights.js'
+import {
+  tuningFor, airborneVelocity, isGrounded, groundedWithCoyote, airYaw,
+  tiltRates, isFlipped, TILT
+} from './driving.js'
 // World imports Vehicle nowhere, so this is not a cycle - and taking the
 // height from the same table the traffic uses is the point: the sedan you
 // drive is the sedan on the road.
 import { TRAFFIC_HEIGHTS } from './World.js'
+import { VEHICLE_MASS } from '../systems/Physics.js'
+
+/**
+ * The most sideways speed a collision may leave the player with, units/second.
+ *
+ * Chosen against the car's own top speed of 18: a third of that is a shove you
+ * have to correct and can correct, where twice it was a spin you could only
+ * watch. Nothing else in the world produces lateral velocity anywhere near
+ * this, so the clamp only ever binds on an impact.
+ */
+export const IMPACT_SLIDE_LIMIT = 6
 
 /**
  * How big the car is, and everything that follows from it.
@@ -79,6 +94,36 @@ const STUCK_SECONDS = 3
 /** How far above the road a recovered car is dropped, so it lands rather
  *  than being placed inside the surface. */
 const RECOVER_DROP = 1.6
+
+/**
+ * How high the body's centre sits above the surface when the car is at rest.
+ *
+ * The chassis collider is a cuboid CAR_HEIGHT tall for every kind - see
+ * `createVehicleChassis` - so it settles with its centre half that above
+ * whatever it is standing on. Measured in the running game on flat tarmac: the
+ * body rests at y = 0.4997 where the collider surface is 0.06, which is 0.4397
+ * against a CAR_HEIGHT / 2 of 0.44.
+ *
+ * The 0.02 is clearance, not slop: placed exactly on the surface the two
+ * cuboids start the frame touching, and Rapier's first correction gives the
+ * car a small upward nudge. Two centimetres is below anything you can feel and
+ * above anything the solver argues with.
+ *
+ * THIS EXISTS BECAUSE OF A DROP MIKE COULD FEEL AND I COULD NOT MEASURE.
+ * The garage roll-out placed the car at `groundAt(x, z) + 2.2` - a DROP height
+ * borrowed from the respawn, where being flung down a couple of units is
+ * invisible because you were teleporting anyway. On a roll-out it is not
+ * invisible: the car glides out of the bay on an invisible ramp 1.7 units up
+ * and then falls off the end of it. Traced in the browser, leaving the garage:
+ *
+ *     dist 21.5   y 1.82 -> 1.42 -> 1.00 -> 0.55 -> 0.50   vy -9.09
+ *
+ * A 1.3-unit fall with the wheels off the ground the whole way, which is why
+ * the throttle did nothing for the first second. I had spent two rounds
+ * measuring the TERRAIN under the driveway, which was smooth to within 4cm the
+ * whole way, and never once measured the car.
+ */
+export const REST_ABOVE_SURFACE = CAR_HEIGHT / 2 + 0.02
 
 /**
  * Under the water, and not coming back.
@@ -207,6 +252,12 @@ export class Vehicle {
     this._lateral = new THREE.Vector3()
     this._quat = new THREE.Quaternion()
     this._euler = new THREE.Euler(0, 0, 0, 'YXZ')
+    // Pitch and roll are no longer locked, so the body's own axes have to be
+    // read every frame rather than assumed - see tiltRates() in driving.js.
+    this._up = new THREE.Vector3()
+    this._nose = new THREE.Vector3()
+    this._groundNormal = { x: 0, y: 1, z: 0 }
+    this._flippedFor = 0
 
     // The body, and the collider that matches it.
     //
@@ -216,6 +267,12 @@ export class Vehicle {
     // numbers, and for anything but the default sedan those numbers are the
     // ones the traffic already uses for that kind.
     this.size = vehicleSize(kind)
+
+    // The baseline is kept untouched so switching back to a saloon restores a
+    // saloon exactly, rather than compounding whatever the last kind did to
+    // it. See driving.js - the per-kind numbers are multipliers of this.
+    this._baseParams = { ...this.params }
+    this.params = tuningFor(kind, this._baseParams)
     this.params.wheelbase = WHEELBASE_RATIO * this.size.length
 
     this.mesh = this.createMesh()
@@ -223,7 +280,10 @@ export class Vehicle {
 
     this.body = this.game.physics.createVehicleChassis(
       { x: SPAWN.x, y: SPAWN.y, z: SPAWN.z },
-      { width: this.size.width, height: CAR_HEIGHT, length: this.size.length }
+      // The MASS goes with the kind. Everything used to weigh the same,
+      // which is why a bus reacted to a kerb exactly like a saloon.
+      { width: this.size.width, height: CAR_HEIGHT, length: this.size.length,
+        mass: VEHICLE_MASS[this.kind] || VEHICLE_MASS.sedan }
     )
 
     // Wheel visuals (simple cylinders)
@@ -254,6 +314,7 @@ export class Vehicle {
 
     this.kind = kind
     this.size = vehicleSize(kind)
+    this.params = tuningFor(kind, this._baseParams)
 
     // The arc grows with the body. Everything else about the handling is
     // deliberately identical between kinds - only the thing that is a
@@ -265,7 +326,10 @@ export class Vehicle {
 
     this.body = this.game.physics.createVehicleChassis(
       { x: at.x, y: at.y, z: at.z },
-      { width: this.size.width, height: CAR_HEIGHT, length: this.size.length }
+      // The MASS goes with the kind. Everything used to weigh the same,
+      // which is why a bus reacted to a kerb exactly like a saloon.
+      { width: this.size.width, height: CAR_HEIGHT, length: this.size.length,
+        mass: VEHICLE_MASS[this.kind] || VEHICLE_MASS.sedan }
     )
 
     // Put it back facing the way it was. `this.heading` was stored and
@@ -371,6 +435,20 @@ export class Vehicle {
     // rest: World hides it while the aerial is run out, and it should not
     // have to know how deeply the mesh happens to be nested.
     outer.userData.stowedLadder = inner.userData.stowedLadder
+    // Only the tow truck has one. World.updateTowRig() drives the wheel-lift
+    // through it, and it has to be reachable from the mesh the player is
+    // actually driving rather than from the group two levels down inside it.
+    outer.userData.tow = inner.userData.tow
+    // Only the monorail has one, and it is ONE key rather than the six it
+    // started as. The cab's lamps, lever, reverser, displays, gauges and door
+    // buttons were each set on the inner group and NONE of them was carried
+    // up, so updateMonorailCab() read `undefined` every frame and quietly did
+    // nothing: the signal repeater stayed black, the speed display sat at full
+    // scale whatever the train was doing, and the master controller never
+    // moved however hard it was being driven. Bundling them means adding an
+    // instrument to that desk cannot silently fail to reach the update, which
+    // is exactly how the first six went missing.
+    outer.userData.cab = inner.userData.cab
     return outer
   }
 
@@ -766,6 +844,71 @@ export class Vehicle {
     this.recoverToRoad({ x: SPAWN.x, z: SPAWN.z })
   }
 
+  /**
+   * Take a hit.
+   *
+   * Mike: "whenever a car hits me, I sometimes go flying... Can we make this
+   * go both ways?" The other half of that - the traffic being moved - lives in
+   * `bumpPlayer()` in islandLayout.js. This is the half that stops the player
+   * being launched by a hatchback.
+   *
+   * `dvx/dvz` is a change in velocity, already shared out by mass in
+   * `impactResponse()`. It is fed into the DRIVING MODEL rather than applied to
+   * the body as an impulse, and that is the whole reason this method exists.
+   * `applyVelocity()` overwrites the body's linear velocity every single frame
+   * from `currentSpeed` and the heading - so an impulse's forward component is
+   * simply thrown away on the next tick, and the sideways component is the only
+   * part that survives. Which is precisely the bug: every hit came out as a
+   * sideways launch and nothing ever slowed the car down.
+   *
+   * So the impact is split the same way the velocity is:
+   *
+   *   - along the car, it changes `currentSpeed`, so a rear-end shunt shoves
+   *     you forward and a head-on stops you dead
+   *   - across the car, it goes in as real lateral velocity, which then decays
+   *     through `lateralGrip` like any other slide
+   *
+   * And it is CAPPED, which is the "flying" fix. A capped lateral is not
+   * physically honest, but the honest answer to "an infinitely heavy bus has
+   * overlapped your door by 40cm" is also not honest, and this one is playable.
+   */
+  applyImpact(dvx, dvz) {
+    if (!this.body) return
+
+    const fx = this._forwardDir && this._forwardDir.lengthSq() > 1e-6
+      ? this._forwardDir.x : Math.sin(this.heading)
+    const fz = this._forwardDir && this._forwardDir.lengthSq() > 1e-6
+      ? this._forwardDir.z : Math.cos(this.heading)
+
+    const along = dvx * fx + dvz * fz
+    const acrossX = dvx - fx * along
+    const acrossZ = dvz - fz * along
+
+    // Along: straight into the bicycle model's own speed.
+    this.currentSpeed = Math.max(
+      -this.params.maxReverseSpeed,
+      Math.min(this.params.maxForwardSpeed, this.currentSpeed + along))
+
+    // Across: added to what the body is already doing sideways, then clamped.
+    const vel = this.body.linvel()
+    let sx = vel.x + acrossX
+    let sz = vel.z + acrossZ
+    const sideways = Math.hypot(
+      sx - fx * (sx * fx + sz * fz),
+      sz - fz * (sx * fx + sz * fz))
+
+    if (sideways > IMPACT_SLIDE_LIMIT) {
+      const keep = IMPACT_SLIDE_LIMIT / sideways
+      const alongNow = sx * fx + sz * fz
+      sx = fx * alongNow + (sx - fx * alongNow) * keep
+      sz = fz * alongNow + (sz - fz * alongNow) * keep
+    }
+
+    // Never upwards. Nothing about being hit by a car on a flat road should
+    // add height, and letting it was half of what "going flying" meant.
+    this.body.setLinvel({ x: sx, y: Math.min(vel.y, 0.5), z: sz }, true)
+  }
+
   /** Put the car down somewhere, stationary and pointing a given way. */
   placeAt(x, y, z, heading) {
     this.body.setTranslation({ x, y, z }, true)
@@ -859,12 +1002,27 @@ export class Vehicle {
     const selector = this.game.vehicleSelector
     if (selector && selector.isBusy()) return
 
+    // A TRAIN IS ON RAILS, so none of this applies to it.
+    //
+    // The monorail is driven by World.updateMonorail(), which puts the body
+    // exactly where the timetable says the train is. Letting the car physics
+    // also push it would be two things writing the same position, and the one
+    // that ran second would win - which is a train that leans into corners and
+    // gets pushed off its beam by a bridge.
+    if (this.kind === 'monorail') return
+
     const p = this.params
     const { forward, steering, boost, brake } = this.game.inputs.getInput()
 
     // Only the throttle needs solid ground; steering geometry still applies
     // while airborne so the car doesn't freeze mid-jump.
-    this.isGrounded = this.game.physics.isGrounded(this.body)
+    //
+    // ONE notion of grounded, asked once a frame and used everywhere below.
+    // It used to be a downward ray with a 1.2-unit reach, which is a different
+    // question from the one `groundedNow()` answers and gave a different
+    // answer at the top of a ramp - so the throttle cut out at a point that
+    // had nothing to do with where the car actually left the ground.
+    this.isGrounded = this.updateGrounded(delta)
 
     const maxForward = boost ? p.maxForwardSpeed * p.boostMultiplier : p.maxForwardSpeed
     const accelForward = boost ? p.forwardAccel * p.boostMultiplier : p.forwardAccel
@@ -899,10 +1057,20 @@ export class Vehicle {
           speed + p.reverseAccel * throttle * delta
         )
       }
-    } else {
+    } else if (this.isGrounded) {
       // Coasting - roll to a stop gradually, never instantly
       this.currentSpeed = this.approach(speed, 0, p.rollingResistance * delta)
     }
+    // Airborne and off the throttle, the speed is simply KEPT. Rolling
+    // resistance is friction between a tyre and a road, and there is no road.
+    //
+    // This matters more than it sounds. `throttle` is forced to zero the
+    // moment the wheels leave the ground, so before this the coast branch ran
+    // through every jump: the monster truck left the lip at 14 and landed
+    // doing noticeably less, and because it has full air control its velocity
+    // IS its speed times its heading, so the whole flight shortened with it.
+    // Measured, the big jump came out at 9.8 units against the 16.8 the
+    // ballistics say - and the ballistics were right.
 
     // ---------------------------------------------------------------
     // 2. Steering angle - eased toward target, reduced at speed
@@ -924,10 +1092,48 @@ export class Vehicle {
     const yawRate =
       (this.currentSpeed * Math.tan(this.currentSteering)) / p.wheelbase
 
-    this.body.setAngvel({ x: 0, y: yawRate, z: 0 }, true)
+    // In the air there are no tyres to turn against, so the bicycle model
+    // does not apply and using it raw is absurd: the monster truck's lock and
+    // short wheelbase come out at five radians a second, which would let it
+    // spin four times over a two-second jump. `airYaw()` scales it back to
+    // what the kind is allowed - see driving.js.
+    // YAW from the steering, PITCH AND ROLL from the tilt controller.
+    //
+    // This line used to be `{ x: 0, y: yawRate, z: 0 }`, and that zero on x
+    // and z was half of why jumps felt flat: even with the rotation lock
+    // removed, writing zero to the pitch and roll rates every frame threw away
+    // whatever the physics had built up. The car left a mound level, flew
+    // level and landed level.
+    //
+    // Yaw is still written outright rather than sprung, because steering has
+    // to be exact - a car that has to be persuaded round a corner is not fun.
+    const rot = this.body.rotation()
+    this._quat.set(rot.x, rot.y, rot.z, rot.w)
+    this._up.set(0, 1, 0).applyQuaternion(this._quat)
+    this._nose.set(0, 0, 1).applyQuaternion(this._quat)
 
-    // Hard cornering scrubs off a little speed, like real tyres
-    if (p.corneringDrag > 0) {
+    const spin = this.body.angvel()
+    const tilt = tiltRates({
+      up: this._up,
+      forward: this._nose,
+      angVel: spin,
+      velocity: this.body.linvel(),
+      grounded: this.isGrounded,
+      groundNormal: this._groundNormal,
+      delta
+    })
+
+    this.body.setAngvel(
+      {
+        x: tilt.x,
+        y: this.isGrounded ? yawRate : airYaw(yawRate, this.params),
+        z: tilt.z
+      },
+      true)
+
+    // Hard cornering scrubs off a little speed, like real tyres - which is
+    // exactly why it does not apply in mid-air either.
+    if (p.corneringDrag > 0 && this.isGrounded) {
       this.currentSpeed = this.approach(
         this.currentSpeed,
         0,
@@ -943,20 +1149,54 @@ export class Vehicle {
     // ---------------------------------------------------------------
     // 4. Drive along the car's own heading
     // ---------------------------------------------------------------
-    const r = this.body.rotation()
-    this._quat.set(r.x, r.y, r.z, r.w)
-    this._euler.setFromQuaternion(this._quat)
-    const heading = this._euler.y
-
-    // Local +Z is the front of the car
-    this._forwardDir.set(Math.sin(heading), 0, Math.cos(heading))
+    // Which way the car is FACING, flattened onto the ground plane.
+    //
+    // This used to read `euler.y` off the body's quaternion, which was exact
+    // while pitch and roll were locked and is wrong the moment they are not:
+    // a YXZ euler's y is only the heading for a body with no other rotation,
+    // and a car nose-down over a jump reports a heading that swings as it
+    // pitches. Projecting the nose onto the horizontal is the same number
+    // when level and the right one when not - it is what getHeading() has
+    // always done.
+    this._quat.set(rot.x, rot.y, rot.z, rot.w)
+    this._forwardDir.set(this._nose.x, 0, this._nose.z)
+    if (this._forwardDir.lengthSq() < 1e-6) {
+      // Standing exactly on its nose or tail. Rare, and the last known
+      // heading is a better answer than a division by zero.
+      this._forwardDir.set(Math.sin(this.heading || 0), 0, Math.cos(this.heading || 0))
+    }
+    this._forwardDir.normalize()
 
     const vel = this.body.linvel()
 
     if (!this.isGrounded) {
-      // Airborne: let gravity and momentum do their thing, but keep our
-      // bookkeeping in sync so landing doesn't produce a jolt.
+      // Airborne. Gravity owns the vertical; what happens horizontally is the
+      // whole difference between the three vehicles - see `airControl` in
+      // driving.js and `airborneVelocity()`.
+      //
+      // This used to be an unconditional early return, and that was the bug
+      // that made the stunt park's big jump behave identically for all three
+      // kinds: `airborneVelocity()` was written, tested and imported, and the
+      // code that called it was three lines further down than the `return`.
+      // Measured before the fix, holding full lock from the moment the wheels
+      // left the ramp moved the monster truck 0.4 units sideways over a
+      // 20-unit flight. Which is to say: none.
       this._planarVel.set(vel.x, 0, vel.z)
+
+      const air = this.params.airControl || 0
+      if (air > 0) {
+        const wanted = {
+          x: this._forwardDir.x * this.currentSpeed,
+          z: this._forwardDir.z * this.currentSpeed
+        }
+        const flown = airborneVelocity(wanted, vel, false, air)
+        this.body.setLinvel({ x: flown.x, y: vel.y, z: flown.z }, true)
+        this._planarVel.set(flown.x, 0, flown.z)
+      }
+
+      // Either way, keep the bookkeeping honest: `currentSpeed` is what the
+      // HUD, the camera and the engine note all read, and landing with a
+      // stale one produces a jolt.
       this.currentSpeed = this._planarVel.dot(this._forwardDir)
       return
     }
@@ -990,14 +1230,126 @@ export class Vehicle {
     const falling = this.currentSpeed *
       (slope.dx * this._forwardDir.x + slope.dz * this._forwardDir.z)
 
+    // Grounded or airborne, and it changes what the horizontal velocity is
+    // allowed to be. See driving.js: on the ground the velocity IS the
+    // heading times the speed, set outright, which is what makes the car feel
+    // planted. In the air that same rule turns a jump into a flat steerable
+    // glide, because the speed never decays and a flick of the wheel
+    // redirects all of it sideways.
+    //
+    // Nothing in the world could launch a car until the jump course, so this
+    // was never wrong before and is unavoidably wrong now.
+    // `this.isGrounded` rather than asking again: it is one fact about this
+    // frame, it costs a walk over the body's contacts to work out, and two
+    // answers to the same question in one frame is how they come to disagree.
+    const grounded = this.isGrounded
+    const desired = {
+      x: this._forwardDir.x * this.currentSpeed + this._lateral.x * lateralKept,
+      z: this._forwardDir.z * this.currentSpeed + this._lateral.z * lateralKept
+    }
+    const flat = airborneVelocity(
+      desired, vel, grounded, this.params.airControl ?? 0)
+
     this.body.setLinvel(
       {
-        x: this._forwardDir.x * this.currentSpeed + this._lateral.x * lateralKept,
-        y: falling < 0 ? Math.min(vel.y, falling) : vel.y,
-        z: this._forwardDir.z * this.currentSpeed + this._lateral.z * lateralKept
+        x: flat.x,
+        // Only pinned DOWN to the slope while grounded. Doing it in mid-air
+        // would drag the car back onto the hill it just left.
+        y: (grounded && falling < 0) ? Math.min(vel.y, falling) : vel.y,
+        z: flat.z
       },
       true
     )
+  }
+
+  /**
+   * Is the vehicle standing on something?
+   *
+   * Asked of the physics engine, which knows exactly, rather than measured
+   * with a downward ray, which needs a threshold nobody could justify. This
+   * returned a hardcoded `true` for a whole stage while that threshold was
+   * being argued about; `Physics.contactNormals()` records what the argument
+   * was and how it ended.
+   *
+   * The array is kept on the vehicle and refilled in place. This runs every
+   * frame, and a fresh array sixty times a second for a whole session is
+   * garbage nobody needs to collect.
+   */
+  groundedNow() {
+    if (!this.body || !this.game.physics) return true
+    if (!this._contactNormals) this._contactNormals = []
+    return isGrounded(
+      this.game.physics.contactNormals(this.body, this._contactNormals))
+  }
+
+  /**
+   * Grounded for THIS frame, contacts plus coyote time.
+   *
+   * Called exactly once a frame, at the top of the driving update, and every
+   * other question about the ground reads `this.isGrounded`. Two things follow
+   * from that: the contact walk happens once rather than three times, and
+   * nothing in a frame can disagree with anything else about whether the car
+   * is on the ground - which matters more, because the answer decides the
+   * throttle, the yaw and the velocity, and those three disagreeing is a car
+   * that accelerates while sliding sideways through the air.
+   *
+   * See COYOTE_TIME in driving.js for why the raw contact answer is not used
+   * directly. The short version is a measurement: without it a saloon driven
+   * hard spent 28.7% of its frames genuinely airborne, over kerbs and road
+   * seams, and it felt like it.
+   */
+  updateGrounded(delta) {
+    const touching = this.groundedNow()
+    this._offGroundFor = touching ? 0 : (this._offGroundFor || 0) + delta
+
+    // The surface under the car, taken from the same contacts, because
+    // tiltRates() lies the car ALONG the slope it is standing on rather than
+    // holding it level on a hill. Only worth asking when there is something
+    // to be standing on; in the air the last one is stale and unused.
+    if (touching && this.game.physics.groundNormal) {
+      this.game.physics.groundNormal(this.body, this._groundNormal)
+    } else {
+      this._groundNormal.x = 0
+      this._groundNormal.y = 1
+      this._groundNormal.z = 0
+    }
+
+    // The ray is only asked when the contacts have already said no, which is
+    // most frames skipped: a walk over the body's contacts is 70 microseconds
+    // and a raycast is not free either.
+    const below = touching ? 0 : this.game.physics.groundDistance(this.body)
+    return groundedWithCoyote(touching, below, this._offGroundFor)
+  }
+
+  /**
+   * Put it back on its wheels if it has been on its roof long enough.
+   *
+   * The price of taking the rotation lock off. Nothing in this world can right
+   * an upside-down car - there is no driver to climb out and no crane - so
+   * without this a bad landing in the arena ends the session. Two seconds is
+   * long enough that a roll reads as a roll and short enough that a child does
+   * not think the game has broken.
+   *
+   * It rights rather than respawns, so you keep your place on the course.
+   */
+  updateFlip(delta) {
+    if (!this.body) return
+    if (!isFlipped(this._up)) { this._flippedFor = 0; return }
+
+    this._flippedFor = (this._flippedFor || 0) + delta
+    if (this._flippedFor < TILT.flipSeconds) return
+    this._flippedFor = 0
+
+    // Through placeAt(), like every other way of putting this car down.
+    //
+    // Written out by hand first, and vehiclelights.mjs caught it within the
+    // hour: "there is one way of putting a vehicle down, not two". It counts
+    // the line that brings the car to rest, and there were suddenly two of
+    // them. The test is right - a second stop-and-place is a second place to
+    // get the bookkeeping wrong, and this one had already forgotten to reset
+    // the steering and the stuck timer.
+    const at = this.body.translation()
+    this.placeAt(at.x, at.y + 1.2, at.z, this.heading || 0)
   }
 
   postPhysicsUpdate(delta) {
@@ -1028,6 +1380,14 @@ export class Vehicle {
     // Kept live from the body, so `setKind` has something true to restore and
     // the indicator stalk has something true to cancel against.
     this.heading = this.getHeading()
+
+    // Read HERE, not left over from the driving update. That one returns
+    // early while the vehicle picker is open, so a car that was flipped as
+    // the picker opened would be judged on a stale axis for as long as it
+    // stayed open.
+    this._quat.set(rotation.x, rotation.y, rotation.z, rotation.w)
+    this._up.set(0, 1, 0).applyQuaternion(this._quat)
+    this.updateFlip(delta)
 
     this.updateIndicators(delta)
     this.updateLights(delta)

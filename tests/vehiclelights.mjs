@@ -341,12 +341,24 @@ console.log('\n7. One lamp builder, and one thing writing each material')
 
 const world = readFileSync(ROOT + 'src/world/World.js', 'utf8')
 
-const builders = ['buildCar', 'buildPickup', 'buildSUV', 'buildPoliceCar',
-                  'buildAmbulance', 'buildFireEngine', 'buildBus']
+// The builder list is DERIVED from buildTrafficVehicle's switch, not written
+// out here. It used to be a hardcoded array of seven names, and the day a
+// monster truck and a racing car were added it failed with "9 vs 7" - the
+// code was right and the list was stale. That is the same trap as
+// approachedit.mjs copying three named files out of a folder: a list that has
+// to be kept in step with something else is a copy of it, and it goes stale.
+const dispatch = world.slice(world.indexOf('buildTrafficVehicle(v) {'))
+  .slice(0, world.slice(world.indexOf('buildTrafficVehicle(v) {')).indexOf('\n  }'))
+const builders = [...new Set(
+  [...dispatch.matchAll(/return this\.(build[A-Za-z]+)\(/g)].map(m => m[1])
+)]
 const lamped = (world.match(/this\.addVehicleLamps\(/g) || []).length
 console.log(`   ${builders.length} vehicle builders, ${lamped} calls to the lamp builder`)
+console.log(`   ${builders.join(', ')}`)
+chk('every builder is reachable from buildTrafficVehicle', builders.length >= 7,
+    builders.join(', '))
 chk('every kind of vehicle gets lamps from the one builder',
-    lamped === builders.length, `${lamped} vs ${builders.length}`)
+    lamped === builders.length, `${lamped} lamp calls vs ${builders.length} builders`)
 chk('and there is no second lamp builder left behind',
     !/addLampsAndTail/.test(world))
 
@@ -407,8 +419,15 @@ chk('and they survive a change of vehicle',
 // were at 2.55 over the rear body, whose roof is at 2.0. Every other
 // emergency vehicle happened to have a flat back at about the right height,
 // so nobody noticed the number was a guess.
+// The expression changed when the cab was re-lofted - it used to be a box at
+// 1.35 half 2.1 tall, and is now a loft with a named roof height - but the
+// property being guarded has not: the number must be DERIVED from the cab
+// rather than written down. When the shape changed, the literal 2.52 that
+// replaced it passed every other check in this file and this one failed,
+// which is the whole reason it is phrased as "measured off".
 chk('the fire engine\'s beacons are measured off its cab roof',
-    /1\.35 \+ 2\.1 \/ 2 \+ 0\.11/.test(worldSrc))
+    /const CAB_ROOF = /.test(worldSrc) &&
+    /addBeacons\(group, CAB_ROOF \+ /.test(worldSrc))
 chk('and sit on the cab rather than over the back',
     /0\.7, length \* 0\.33\)/.test(worldSrc))
 
@@ -502,8 +521,35 @@ chk('the garage parks the car through the one placement path',
 chk('and nothing assigns to a `speed` field that does not exist',
     !selector.split('\n').some(line =>
       /vehicle\.speed\s*=/.test(line) && !/^\s*(\/\/|\*)/.test(line)))
-chk('the bay height asks the ground rather than assuming 2.2',
-    /world\.groundAt\(bay\.x, bay\.z\)/.test(selector))
+// SUPERSEDED, and worth keeping the history. This check used to read
+//
+//     chk('the bay height asks the ground rather than assuming 2.2',
+//         /world\.groundAt\(bay\.x, bay\.z\)/.test(selector))
+//
+// which was right about the fixed 2.2 being wrong and wrong about what to
+// replace it with. `groundAt()` is the height FIELD; the car rests on the
+// COLLIDER, which stands `surfaceLift(claim)` above that field on grass and is
+// a garage floor indoors. And the 2.2 that remained was a DROP height borrowed
+// from the respawn, so the roll-out held the car 1.7 units in the air the
+// whole length of the driveway and let go. Traced in a headless browser:
+//
+//     before   y 2.29 -> 0.50   worst vy -9.09   throttle dead for a second
+//     after    y 0.75 -> 0.48   worst vy -1.54   driving from the first frame
+//
+// Mike, both times: "there's still some sort of elevation that makes the cars
+// drive strange", then "i still have kind of a 'drop' right out of the
+// driveway like there's a cliff im driving off of." He was right twice.
+chk('the bay height is measured from the surface you can actually drive on',
+    /world\.drivableAt\(x, z/.test(selector))
+chk('and offset by the car\'s RESTING height, not a drop height',
+    /surface \+ REST_ABOVE_SURFACE/.test(selector))
+chk('and the roll-out uses the same placement as the bay',
+    /const y = this\.restingHeight\(x, z\)/.test(selector))
+chk('and hands over the speed it was doing rather than zero',
+    /vehicle\.currentSpeed = run \* \(6 \* t \* \(1 - t\)\)/.test(selector))
+chk('with the old drop kept only as a fallback when the ray finds nothing',
+    /return \(world && world\.groundAt \? world\.groundAt\(x, z\) : 0\) \+ 2\.2/
+      .test(selector))
 // This guard has never once fired: `vehicle.speed` is undefined, so driving
 // PAST the door at speed would snatch control away, which is exactly what it
 // was written to prevent.

@@ -282,6 +282,19 @@ export function stepAmbulance(state, delta, ctx) {
   }
 
   if (state.phase === 'idle' || state.phase === 'over') {
+    // SOMETHING ELSE IS STILL USING THE LAST CRASH.
+    //
+    // Added when the tow truck arrived. There is one pair of wrecked cars in
+    // the world - two full vehicle meshes, built once and moved - and the
+    // recovery now outlives the ambulance run by however long the drive to
+    // the garage takes. Starting the next crash on schedule would teleport
+    // both cars out from under the tow truck mid-job.
+    //
+    // The clock is HELD rather than reset, so the next crash comes promptly
+    // once the road is clear instead of the world going quiet for another
+    // three minutes as a punishment for finishing a recovery.
+    if (ctx.hold) return state
+
     state.timer -= delta
     if (state.timer > 0) return state
 
