@@ -342,6 +342,20 @@ for (let step = 0; step < seconds / dt; step++) {
       : lane.length - lane.width * 0.75
     if (v.at < line) { behindLine[i] = true; return }
 
+    // A VEHICLE THAT WAS PUT DOWN PAST THE LINE NEVER CROSSED IT.
+    //
+    // `behindLine` starts true for everybody, so a vehicle that SPAWNS beyond
+    // a stop line - or is set down past one by the relocate valve - reads as
+    // having just driven over it, and whatever the light happens to be showing
+    // gets latched. Both of the "jumped reds" this reported were that: one at
+    // t=0 and one at t=191.8, each with `speed: 0` at the moment of latching,
+    // each simply pulling away once the light let them.
+    //
+    // Crossing a line is something you do while MOVING, so a stationary
+    // vehicle is not crossing it - it is standing on it, which is a placement
+    // question and not a signals one.
+    if (behindLine[i] && v.speed < 0.4) { behindLine[i] = false; return }
+
     // The colour AT the line is recorded as the vehicle touches it, and
     // judged only once it is properly into the junction. Recording it at the
     // line alone flagged rolling stops; judging it in the junction alone
