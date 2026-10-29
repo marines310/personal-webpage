@@ -278,6 +278,18 @@ chk('and the collider is lifted onto the surface you can actually see',
     /surfaceLift\(terrain\.claimAt\(/.test(code),
     'the car will drive below the grass again')
 
+// And the paving laid over a slope follows it. The hub plaza was a flat disc
+// at its centre's height and the garage apron a level slab, while the ground
+// under both falls about 0.4 to the road - so every vehicle leaving the garage
+// sank up to 0.47 into them, the fire engine and the bus most visibly.
+chk('the plaza and the garage apron are draped on the surface, not laid flat',
+    /this\.drapeOnSurface\(plazaGeometry\)/.test(code) &&
+    /this\.drapeOnSurface\(apronGeometry\)/.test(code) &&
+    !/new THREE\.CircleGeometry\(size, 36\)/.test(code),
+    'a flat paving mesh over a slope swallows the wheels again')
+chk('and the drape asks the same lift the collider does',
+    /surfaceSample\(x, z\) \{[\s\S]{0,800}surfaceLift\(claim\)/.test(code))
+
 // ---------------------------------------------------------------------------
 console.log('\n10. Nothing on the published site is a placeholder')
 
