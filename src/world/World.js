@@ -118,6 +118,20 @@ import {
 export const GROUND_SINK = 0.7
 
 /**
+ * How far paving laid with drapeOnSurface() stands over the collider.
+ *
+ * Two parts. Where the ground is claimed the grass has ducked GROUND_SINK out
+ * of the way, so the paving only needs to clear the collider, and a tyre
+ * should not visibly sink into it. Where the paving runs out over open grass
+ * - the plaza's outer rim - it has to clear the grass cap as well, and the
+ * two are triangulated differently: the grass stood up to 0.08 over the
+ * collider there, measured on a half-unit grid over the hub plaza, and came
+ * through in green shards at a flat 0.04.
+ */
+export const PAVING_CLEARANCE = 0.02
+export const PAVING_OVER_GRASS = 0.09
+
+/**
  * How far the grass cap sits above the sand it covers.
  *
  * Three centimetres, while the ground was flat. On a hill it cannot be: the
@@ -1090,6 +1104,59 @@ export class World {
     // there is one and left on the sand where there is not.
     this.buildLandCollider(island, outline, cx, cz,
       grassRing.length >= 3 ? grassRing : null)
+
+    // Kept, so surfaceAt() can answer the same question the collider did.
+    if (!this.grassRings) this.grassRings = new Map()
+    this.grassRings.set(island.id, grassRing.length >= 3 ? grassRing : null)
+  }
+
+  /**
+   * How high the surface the vehicles actually rest on is: the land
+   * collider's height, not the bare height field's.
+   *
+   * groundAt() is the height field, and nothing is drawn on it - see
+   * buildLandCollider(). Anything laid flat on the ground for a vehicle to
+   * drive over (the plaza, the garage apron) has to follow THIS, or the
+   * vehicle sinks into it wherever the ground underneath stops being level.
+   */
+  surfaceAt(x, z) {
+    return this.surfaceSample(x, z).height
+  }
+
+  /** surfaceAt(), and how much of the grass cap is still standing there. */
+  surfaceSample(x, z) {
+    const island = islandAt(x, z)
+    const terrain = island && getIslandTerrain(island)
+    if (!terrain) return { height: this.groundAt(x, z), grass: 0 }
+
+    const lx = x - island.x
+    const lz = z - island.z
+    const ring = this.grassRings && this.grassRings.get(island.id)
+    const onGrass = !ring || pointInPolygon(ring, lx, lz)
+    const claim = terrain.claimAt(lx, lz)
+    return {
+      height: terrain.heightAt(lx, lz) + (onGrass ? surfaceLift(claim) : 0),
+      // 1 on open grass, 0 where the grass has ducked under paving.
+      grass: onGrass ? 1 - Math.min(1, Math.max(0, claim)) : 0
+    }
+  }
+
+  /**
+   * Lay a flat, horizontal geometry in world coordinates onto the drivable
+   * surface - PAVING_CLEARANCE above it, and more where it runs out over
+   * grass. Every vertex is lifted on its own, so the mesh needs to be
+   * subdivided finely enough to follow the slope.
+   */
+  drapeOnSurface(geometry) {
+    const position = geometry.attributes.position
+    for (let i = 0; i < position.count; i++) {
+      const at = this.surfaceSample(position.getX(i), position.getZ(i))
+      position.setY(i,
+        at.height + PAVING_CLEARANCE + PAVING_OVER_GRASS * at.grass)
+    }
+    position.needsUpdate = true
+    geometry.computeVertexNormals()
+    return geometry
   }
 
   /**
@@ -3899,20 +3966,27 @@ export class World {
     }
 
     // An apron in front, so the way out reads as a driveway rather than grass.
+    //
+    // Draped on the surface, not a flat slab. The ground here falls about
+    // 0.4 from the garage to the road - the driveway fix ramped it rather
+    // than levelling it - and a level slab set at the garage's height stood
+    // up to 0.47 over the collider at its far end. Every vehicle sank into
+    // it, and the long ones (fire engine, bus) most visibly.
+    const apronLength = Math.hypot(garage.apron.x - garage.x, garage.apron.z - garage.z)
+    const apronGeometry = new THREE.PlaneGeometry(
+      garage.doorWidth + 4, apronLength, 6, Math.ceil(apronLength))
+    apronGeometry.rotateX(-Math.PI / 2)
+    apronGeometry.rotateY(garage.heading)
+    apronGeometry.translate((garage.x + garage.apron.x) / 2, 0,
+                            (garage.z + garage.apron.z) / 2)
     const apron = new THREE.Mesh(
-      new THREE.BoxGeometry(garage.doorWidth + 4, 0.2,
-        Math.hypot(garage.apron.x - garage.x, garage.apron.z - garage.z)),
+      this.drapeOnSurface(apronGeometry),
       new THREE.MeshStandardMaterial({
-        color: PALETTE.concrete, roughness: 0.95, flatShading: true
+        color: PALETTE.concrete, roughness: 0.95, flatShading: true,
+        // Over the plaza where the two overlap, at the same clearance.
+        polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
       }))
-    // Top face on the road surface, not 0.14 over it. The slab is 0.2 thick
-    // and drawn from its middle, so the centre goes half a thickness below
-    // where the top is wanted. This is the driveway Mike could see the car
-    // sinking into.
-    apron.position.set((garage.x + garage.apron.x) / 2,
-                       ground + SURFACE_PAVED + 0.02 - 0.1,
-                       (garage.z + garage.apron.z) / 2)
-    apron.rotation.y = garage.heading
+    apron.receiveShadow = true
     this.game.add(apron)
   }
 
@@ -6192,17 +6266,22 @@ export class World {
     const density = district.density !== undefined ? district.density : 1
 
     if (district.type === 'plaza') {
+      // Draped on the surface rather than laid flat at the centre's height.
+      // The disc's radius is `size`, but the pad that levels the ground under
+      // it is only `size` across - so its outer half lies over ground that
+      // falls away, and a flat disc stood 0.4 over the collider there. The
+      // garage sits in exactly that band, and every vehicle leaving it sank
+      // into the paving. A ring with radial segments, so there are vertices
+      // to lift; CircleGeometry is a fan with none inside the rim.
+      const plazaGeometry = new THREE.RingGeometry(0, size, 48, Math.ceil(size / 1.5))
+      plazaGeometry.rotateX(-Math.PI / 2)
+      plazaGeometry.translate(cx, 0, cz)
       const plaza = new THREE.Mesh(
-        new THREE.CircleGeometry(size, 36),
+        this.drapeOnSurface(plazaGeometry),
         new THREE.MeshStandardMaterial({
           color: PALETTE.concrete, roughness: 0.9, metalness: 0.05
         })
       )
-      plaza.rotation.x = -Math.PI / 2
-      // Above the grass, not just above the ground: the grass cap is drawn
-      // GRASS_ABOVE_SAND up, and ducks GROUND_SINK under anything that claims
-      // the ground - which a district now does - so this clears both.
-      plaza.position.set(cx, this.groundAt(cx, cz) + 0.05, cz)
       plaza.receiveShadow = true
       this.game.add(plaza)
 
