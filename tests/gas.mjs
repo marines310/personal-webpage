@@ -16,13 +16,15 @@
 import {
   TANK_SECONDS, IDLE_SHARE, LOW_FUEL, FILL_SECONDS, TOP_UP, AT_PUMP,
   STOPPED_SPEED,
-  hasTank, burnRate, newGasState, nearestBay, stepGas, gasHud, fuelGauge
+  hasTank, burnRate, newGasState, nearestBay, stepGas, gasHud, fuelGauge,
+  ATTENDANT_SPEED, HOOKUP_SECONDS, makeAttendants, fillerPoint, pumpStand
 } from '../src/world/gasGame.js'
 import {
   getLaneNetwork, getFuelStations, getFuelBays, getStations, getBusStops,
   getIslandRoads, distanceToNearestRoad, blocksStationEntrance,
   fuelApron, fuelApronClearance, PAVEMENT_WIDTH, APRON_PAVEMENT_GAP,
-  TRAFFIC_LENGTHS, pointAlong, BUS_STOP_REACH
+  TRAFFIC_LENGTHS, pointAlong, BUS_STOP_REACH,
+  FUEL_BAY_LONG, FUEL_BAY_WIDE, FUEL_ISLAND_LONG, FUEL_ISLAND_WIDE
 } from '../src/world/islandLayout.js'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
@@ -466,6 +468,170 @@ for (const station of stations) {
   }
 }
 chk('no pump bay is in the road', baysOnRoad === 0, `${baysOnRoad} of ${bays.length}`)
+
+// ---------------------------------------------------------------------------
+console.log('\n9. The pump stands beside the bay, not in it\n')
+
+// Stage one stood it at the end of the painted box: a sedan cleared it, a bus
+// parked through it, and there was no side of the car for a hose to reach.
+// Each check is in the bay's own frame - along it and across it.
+const inBay = [], offApron = [], farFromBay = [], homeInBay = []
+for (const station of stations) {
+  const apron = fuelApron(station)
+  const sfx = Math.sin(station.heading), sfz = Math.cos(station.heading)
+  for (const b of station.bays) {
+    const bx = Math.sin(b.heading), bz = Math.cos(b.heading)
+    const frame = (p) => ({
+      along: (p.x - b.x) * bx + (p.z - b.z) * bz,
+      across: (p.x - b.x) * -bz + (p.z - b.z) * bx
+    })
+    const pump = frame(b.pump)
+    // The island's near edge, against the outline's
+    const gap = Math.abs(pump.across) - FUEL_ISLAND_WIDE / 2 - FUEL_BAY_WIDE / 2
+    if (gap < 0) inBay.push(`${station.id}:${gap.toFixed(2)}`)
+    if (Math.abs(pump.across) > FUEL_BAY_WIDE / 2 + FUEL_ISLAND_WIDE + 1) {
+      farFromBay.push(`${station.id}:${pump.across.toFixed(2)}`)
+    }
+
+    // On the concrete: out from the kiosk, within the apron
+    const out = (b.pump.x - station.x) * sfx + (b.pump.z - station.z) * sfz
+    const edge = station.depth / 2 + apron.depth
+    if (out - FUEL_ISLAND_WIDE / 2 < station.depth / 2 ||
+        out + FUEL_ISLAND_WIDE / 2 > edge) {
+      offApron.push(`${station.id}:${out.toFixed(2)} of ${edge.toFixed(2)}`)
+    }
+
+    const home = frame(b.attendantHome)
+    if (Math.abs(home.across) < FUEL_BAY_WIDE / 2 &&
+        Math.abs(home.along) < FUEL_BAY_LONG / 2) homeInBay.push(station.id)
+  }
+}
+chk('no pump island is inside a painted bay', inBay.length === 0, inBay.join(' '))
+chk('but each is right beside its bay, where a hose reaches',
+    farFromBay.length === 0, farFromBay.join(' '))
+chk('and on the forecourt, not off the edge of it',
+    offApron.length === 0, offApron.join(' '))
+chk('the attendant does not wait where you park',
+    homeInBay.length === 0, homeInBay.join(' '))
+chk('every flattened bay carries its pump',
+    bays.every(b => b.pump && b.attendantHome))
+
+// ---------------------------------------------------------------------------
+console.log('\n10. Somebody has to hold the nozzle\n')
+
+const realBays = getFuelBays(getLaneNetwork())
+chk('one attendant per station',
+    makeAttendants(realBays).length === stations.length,
+    `${makeAttendants(realBays).length} for ${stations.length}`)
+
+// A visit on a REAL station, with a car parked on the bay the way you would.
+const visitBay = realBays[0]
+const parked = (over = {}) => driver({
+  x: visitBay.x, z: visitBay.z, heading: visitBay.heading,
+  width: 1.9, length: TRAFFIC_LENGTHS.sedan, ...over
+})
+const visit = (fuel = 0.1, over = {}) => {
+  const state = tank(fuel)
+  const attendants = makeAttendants(realBays)
+  const ctx = { player: parked(over), maxSpeed: MAX_SPEED, bays: realBays, attendants }
+  return { state, attendants, ctx, a: attendants.find(x => x.station === visitBay.station) }
+}
+
+{
+  const { state, ctx, a } = visit()
+  const home = { x: a.x, z: a.z }
+  stepGas(state, 1 / 60, ctx)
+  chk('pulling in starts a fill', state.phase === 'filling')
+  chk('but nothing goes in before the nozzle does', !state.flowing && state.fuel <= 0.1)
+  chk('and the banner says who is coming',
+      gasHud(state, true).title === 'ATTENDANT COMING', gasHud(state, true).title)
+
+  // Step to the moment fuel starts, and read there.
+  let t = 1 / 60, fastest = 0, lastX = a.x, lastZ = a.z, sawHoseBeforeCar = false
+  while (!state.flowing && t < 30) {
+    stepGas(state, 1 / 60, ctx)
+    t += 1 / 60
+    fastest = Math.max(fastest, Math.hypot(a.x - lastX, a.z - lastZ) * 60)
+    lastX = a.x; lastZ = a.z
+    if (a.task === 'toCar') sawHoseBeforeCar = true
+  }
+  console.log(`   first fuel after ${t.toFixed(2)}s`)
+  chk('the attendant gets there, and fuel starts', state.flowing)
+  chk('in a few seconds, not a long wait', t < 6, `${t.toFixed(2)}s`)
+  chk('and it is a walk, not a teleport', fastest <= ATTENDANT_SPEED + 1e-6,
+      `${fastest.toFixed(2)}`)
+  chk('via the pump: the nozzle is lifted before going to the car', sawHoseBeforeCar)
+  chk('plugged in at the car\'s side, by the filler',
+      a.nozzleIn && Math.hypot(a.x - a.filler.x, a.z - a.filler.z) < 0.1)
+  chk('which is the side facing the pump',
+      Math.hypot(a.filler.x - visitBay.pump.x, a.filler.z - visitBay.pump.z) <
+      Math.hypot(visitBay.x - visitBay.pump.x, visitBay.z - visitBay.pump.z))
+  chk('the banner now says FILLING UP', gasHud(state, true).title === 'FILLING UP')
+  chk('and the walk took longer than plugging in', t > HOOKUP_SECONDS)
+
+  run(state, ctx, FILL_SECONDS + 1)
+  chk('it still fills to the brim', state.fuel >= TOP_UP, `${state.fuel}`)
+  chk('the nozzle comes out when the tank is full', !a.nozzleIn)
+
+  run(state, ctx, 15)
+  chk('the attendant hangs up and walks back', a.task === 'idle' && !a.hose,
+      `${a.task} hose ${a.hose}`)
+  chk('to where they started', Math.hypot(a.x - home.x, a.z - home.z) < 0.1)
+}
+
+{
+  // You can still leave at any time - the rule Mike asked for in so many words.
+  const { state, ctx, a } = visit(0.1)
+  while (!state.flowing) stepGas(state, 1 / 60, ctx)
+  run(state, ctx, 2)
+  const kept = state.fuel
+  stepGas(state, 1 / 60, { ...ctx, player: parked({ speed: MAX_SPEED }) })
+  chk('driving off mid-fill ends it', state.phase !== 'filling')
+  chk('you keep what went in', state.fuel > kept - 0.01)
+  chk('and the nozzle is out of the car that same frame', !a.nozzleIn)
+  run(state, { ...ctx, player: driver({ x: 5000, speed: MAX_SPEED }) }, 15)
+  chk('the attendant goes back with the hose',
+      a.task === 'idle' && !a.hose, `${a.task}`)
+}
+
+{
+  // Leaving before they arrive: they turn round, and nothing went in.
+  const { state, ctx, a } = visit(0.3)
+  run(state, ctx, 0.5)
+  const before = state.fuel
+  stepGas(state, 1 / 60, { ...ctx, player: parked({ speed: MAX_SPEED }) })
+  run(state, { ...ctx, player: driver({ x: 5000, speed: MAX_SPEED }) }, 15)
+  chk('leaving before the attendant arrives puts nothing in',
+      state.fuel <= before + 1e-9)
+  chk('and they go home', a.task === 'idle')
+}
+
+{
+  // The attendants of OTHER stations stay where they are.
+  const { state, ctx, attendants } = visit()
+  const others = attendants.filter(x => x.station !== visitBay.station)
+  const where = others.map(x => [x.x, x.z])
+  run(state, ctx, 5)
+  chk('nobody else leaves their station',
+      others.every((x, i) => x.x === where[i][0] && x.z === where[i][1] && x.task === 'idle'))
+}
+
+{
+  // A full tank parked on the bay: no attendant comes out for nothing.
+  const { state, ctx, a } = visit(1)
+  run(state, ctx, 5)
+  chk('a full tank on the bay leaves the attendant alone', a.task === 'idle')
+}
+
+// The filler on a bus is further out than on a sedan, because a bus is wider.
+const sedanFill = fillerPoint(parked(), visitBay.pump)
+const busFill = fillerPoint(parked({ width: 2.6, length: TRAFFIC_LENGTHS.bus }), visitBay.pump)
+const offSide = (p) => Math.hypot(p.x - visitBay.x, p.z - visitBay.z)
+chk('the attendant stands clear of a wider vehicle', offSide(busFill) > offSide(sedanFill))
+const stand = pumpStand(visitBay)
+chk('and lifts the nozzle from the bay side of the pump',
+    Math.hypot(stand.x - visitBay.x, stand.z - visitBay.z) <
+    Math.hypot(visitBay.pump.x - visitBay.x, visitBay.pump.z - visitBay.z))
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
