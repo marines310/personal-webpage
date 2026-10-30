@@ -43,6 +43,9 @@ import {
   getIslandTerrain,
   groundHeight,
   getStations,
+  getFuelStations,
+  getFuelBays,
+  fuelApron,
   blocksStationEntrance,
   STATION_SETBACK,
   stationApron,
@@ -203,6 +206,9 @@ import {
 } from './monorailGame.js'
 import { chooseMission } from './missions.js'
 import {
+  newGasState, stepGas, gasHud, fuelGauge, hasTank
+} from './gasGame.js'
+import {
   newRaceState, stepRace, raceHud, gridOffset, gridSide,
   RACE_LAPS, RACE_FIELD, RACE_PACE
 } from './raceGame.js'
@@ -296,8 +302,29 @@ export const STATION_LOOKS = {
     height: 14, wall: 0xf1ece1, trim: 0xd8d0c0,
     door: 0xbfd8e4, sign: 0xff7d7d,
     label: 'HOSPITAL', badge: 'cross'
+  },
+  // Not a station you are dispatched from, but it uses the same signboard -
+  // one canvas, badge and lettering together, lit at night. The height is the
+  // KIOSK's; the canopy over the pumps is built separately and stands lower,
+  // which is why the sign goes on the canopy fascia rather than over a door.
+  fuel: {
+    height: 4.6, wall: 0xf2f0ea, trim: 0x2f6f5e,
+    door: 0xbfd8e4, sign: 0x5fe3a1,
+    label: 'FUEL', badge: 'drop'
   }
 }
+
+/**
+ * The gas station's canopy, pumps and bay markings.
+ *
+ * The canopy has to clear the tallest thing that can drive under it. A fire
+ * engine is 2.7 and the monster truck is taller again, so 5.4 to the
+ * underside leaves room for every one of them and still reads as a canopy
+ * rather than a bridge.
+ */
+export const CANOPY_CLEAR = 5.4
+export const CANOPY_DEPTH = 0.55
+export const PUMP_HEIGHT = 1.9
 
 /**
  * The signboard over each station's doors.
@@ -810,6 +837,23 @@ export class World {
     // before any house is placed - see monorailFootprints().
     this.stations = getStations(this.lanes)
 
+    // Gas stations, for the same reason and in the same breath. Sited AFTER
+    // the emergency stations (they are fussier) but before a single house, or
+    // the town generator builds straight through the forecourt - which is
+    // exactly what the first run did: a canopy with an apartment block
+    // standing in the middle of it.
+    this.fuelStations = getFuelStations(this.lanes)
+
+    // EVERY building whose way in has to stay clear, in one list.
+    //
+    // blocksStationEntrance() already existed and the streetlights already
+    // asked it - Mike's note about lamp posts across a fire station's doors.
+    // But the street dressing never did, so benches, bins, planters and trees
+    // went on regardless, and the gas stations were not in the list at all.
+    // One list, asked by every placer, rather than each placer growing its
+    // own idea of where a door is.
+    this.accessStations = [...this.stations, ...this.fuelStations]
+
     this.createSea()
     this.createIslands()
     this.createBridges()
@@ -825,6 +869,7 @@ export class World {
     this.createPlayerGarage()
     this.createBusStops()
     this.createStations()
+    this.createFuelStations()
     this.createTraffic()
     this.createHubSign()
 
@@ -832,6 +877,10 @@ export class World {
     // the traffic to exist before it can send anybody.
     this.fire = newFireState()
     this.createFireEffects()
+    // Fuel. After the stations exist, because the bays are where you fill up
+    // and newGasState() is handed them the moment the first frame runs.
+    this.gas = newGasState()
+    this.fuelBays = getFuelBays(this.lanes)
     this.police = newPoliceState()
     this.ambulance = newAmbulanceState()
     this.race = newRaceState()
@@ -875,6 +924,24 @@ export class World {
       out.push({
         x: station.x - island.x, z: station.z - island.z,
         radius: Math.max(station.width, station.depth) * 0.62
+      })
+    }
+
+    // A gas station claims more than its kiosk: the canopy stands out over
+    // the pumps and the concrete runs out to the road, and all of it has to
+    // be clear of houses or you drive into one on the way to the pump.
+    for (const station of this.fuelStations || []) {
+      if (station.island !== island) continue
+      // Measured off the concrete rather than the kiosk: the forecourt is
+      // nearly twice the building, and a tree on it is a tree between you and
+      // the pump.
+      const yard = fuelApron(station)
+      const reach = yard
+        ? Math.hypot(yard.width / 2, yard.offset + yard.depth / 2)
+        : Math.max(station.width, station.depth)
+      out.push({
+        x: station.x - island.x, z: station.z - island.z,
+        radius: reach
       })
     }
 
@@ -5857,12 +5924,276 @@ export class World {
       return
     }
 
+    if (badge === 'drop') {
+      // A fuel drop: a circle with a point on top. Two arcs would do it, but
+      // the point is what stops it reading as a full stop at sign size.
+      ctx.fillStyle = accent
+      ctx.beginPath()
+      ctx.moveTo(0, -r)
+      ctx.quadraticCurveTo(r * 0.78, -r * 0.1, r * 0.6, r * 0.32)
+      ctx.arc(0, r * 0.32, r * 0.6, 0, Math.PI)
+      ctx.quadraticCurveTo(-r * 0.78, -r * 0.1, 0, -r)
+      ctx.closePath()
+      ctx.fill()
+      ctx.restore()
+      return
+    }
+
     // A plain cross, which is also the fallback: an unknown kind gets a mark
     // rather than a blank square where its badge should be.
     ctx.fillStyle = accent
     ctx.fillRect(-r * 0.9, -r * 0.28, r * 1.8, r * 0.56)
     ctx.fillRect(-r * 0.28, -r * 0.9, r * 0.56, r * 1.8)
     ctx.restore()
+  }
+
+  // -------------------------------------------------------------
+  // Gas stations
+  // -------------------------------------------------------------
+
+  /**
+   * Every gas station: forecourt, canopy, pumps, kiosk and the painted bay
+   * outline you aim at.
+   *
+   * Where they are and how wide the bays sit comes from getFuelStations() in
+   * the layout, like every other station. Nothing here decides anything; it
+   * draws what was decided.
+   */
+  createFuelStations() {
+    // Already sited in the constructor, so the towns could keep clear of them.
+    // Asking again here would be harmless (it is cached) but would read as if
+    // this were where the decision is made, and it is not.
+    for (const station of this.fuelStations || []) this.buildFuelStation(station)
+  }
+
+  buildFuelStation(station) {
+    const look = STATION_LOOKS.fuel
+    const fx = Math.sin(station.heading)
+    const fz = Math.cos(station.heading)
+
+    // The bays sit in front of the kiosk; the canopy goes over them and the
+    // forecourt under them. Derived from the bays rather than guessed, so if
+    // the layout moves them the concrete follows.
+    const bays = station.bays || []
+    const out = bays.length
+      ? bays.reduce((n, b) =>
+          n + ((b.x - station.x) * fx + (b.z - station.z) * fz), 0) / bays.length
+      : station.depth / 2 + 3
+
+    // How big the concrete is and how far out it goes is the layout's
+    // answer, not one picked here - fuelApron(), the same split and the same
+    // reason as stationApron(). Sized in the renderer it ran out into the
+    // carriageway, which is the white block Mike photographed.
+    const yard = fuelApron(station)
+    if (!yard) return
+
+    const span = yard.width
+
+    // --- The forecourt, following the ground ---
+    //
+    // pavedPatch, not a slab: the driveway taught this one the expensive way.
+    // A level plate over ground that falls stands proud at its far end and
+    // every long vehicle sinks into it.
+    const padX = station.x + fx * yard.offset
+    const padZ = station.z + fz * yard.offset
+    this.pavedPatch(
+      padX, padZ, yard.width, yard.depth, station.heading,
+      SURFACE_PAVED + 0.02,
+      new THREE.MeshStandardMaterial({
+        color: PALETTE.concrete, roughness: 0.95
+      }))
+
+    const group = new THREE.Group()
+    group.position.set(station.x, this.groundAt(station.x, station.z), station.z)
+    group.rotation.y = station.heading
+
+    const wall = new THREE.MeshStandardMaterial({
+      color: look.wall, roughness: 0.85, flatShading: true
+    })
+    const trim = new THREE.MeshStandardMaterial({
+      color: look.trim, roughness: 0.6, flatShading: true
+    })
+
+    // --- The kiosk ---
+    const kiosk = new THREE.Mesh(
+      new THREE.BoxGeometry(station.width, look.height, station.depth), wall)
+    kiosk.position.set(0, look.height / 2, 0)
+    group.add(kiosk)
+
+    const roof = new THREE.Mesh(
+      new THREE.BoxGeometry(station.width + 0.7, 0.45, station.depth + 0.7),
+      new THREE.MeshStandardMaterial({
+        color: look.trim, roughness: 0.6, flatShading: true
+      }))
+    roof.position.set(0, look.height, 0)
+    group.add(roof)
+
+    // A lit shopfront, so it reads as open after dark like the other shops
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.glass, roughness: 0.25, metalness: 0.35,
+      emissive: new THREE.Color(PALETTE.windowLit), emissiveIntensity: 0
+    })
+    this.registerNightLight(glassMat, 1.6)
+    const glass = new THREE.Mesh(
+      new THREE.BoxGeometry(station.width * 0.72, 2.4, 0.2), glassMat)
+    glass.position.set(0, 1.5, station.depth / 2 + 0.05)
+    group.add(glass)
+
+    // --- The canopy over the pumps ---
+    //
+    // PALE, and smaller than the kiosk. Built in the station's own trim green
+    // and a full four units deeper than this, it merged with the kiosk roof
+    // into one 18x22 green rectangle that read as a warehouse from above -
+    // the canopy was invisible as a separate thing, which is the one job it
+    // has. A cream deck on a coloured fascia is what a real forecourt does
+    // and it separates the two at any angle.
+    const canopyDeep = station.depth - 1
+
+    const canopy = new THREE.Mesh(
+      new THREE.BoxGeometry(span, CANOPY_DEPTH, canopyDeep), wall)
+    canopy.position.set(0, CANOPY_CLEAR + CANOPY_DEPTH * 1.5, out)
+    group.add(canopy)
+
+    const fascia = new THREE.Mesh(
+      new THREE.BoxGeometry(span + 0.2, CANOPY_DEPTH, canopyDeep + 0.2), trim)
+    fascia.position.set(0, CANOPY_CLEAR + CANOPY_DEPTH / 2, out)
+    group.add(fascia)
+
+    // The sign goes on the fascia, road side, where you can read it driving in
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(Math.min(8, span * 0.55), 1.7),
+      this.stationSignMaterial('fuel'))
+    sign.position.set(0, CANOPY_CLEAR + CANOPY_DEPTH / 2,
+                      out + canopyDeep / 2 + 0.17)
+    group.add(sign)
+
+    // Columns at the back corners only. A column in front of a bay is a
+    // column you drive into on the way in, and the canopy is a box - it does
+    // not need four legs to look held up.
+    for (const side of [1, -1]) {
+      const column = new THREE.Mesh(
+        new THREE.BoxGeometry(0.5, CANOPY_CLEAR, 0.5), trim)
+      column.position.set(side * (span / 2), CANOPY_CLEAR / 2,
+                          out - canopyDeep / 2 + 0.6)
+      group.add(column)
+
+      this.game.physics.createStaticBoxAt(
+        station.x + fx * (out - canopyDeep / 2 + 0.6)
+                  - fz * side * (span / 2),
+        this.groundAt(station.x, station.z) + CANOPY_CLEAR / 2,
+        station.z + fz * (out - canopyDeep / 2 + 0.6)
+                  + fx * side * (span / 2),
+        0.5, CANOPY_CLEAR, 0.5, station.heading)
+    }
+
+    // --- A pump beside each bay ---
+    const pumpMat = new THREE.MeshStandardMaterial({
+      color: 0xe8e4dc, roughness: 0.6, flatShading: true
+    })
+    const faceMat = new THREE.MeshStandardMaterial({
+      color: look.sign, emissive: new THREE.Color(look.sign),
+      emissiveIntensity: 0.3, roughness: 0.5
+    })
+    this.registerNightLight(faceMat, 1.1)
+
+    this.fuelPumps = this.fuelPumps || []
+
+    bays.forEach((bay, i) => {
+      // Beside the bay, towards the middle of the forecourt, so the hose
+      // reaches the vehicle without the pump standing where a wheel goes.
+      const side = i < bays.length / 2 ? 1 : -1
+      const across = (bay.x - station.x) * -fz + (bay.z - station.z) * fx
+      const px = across + side * (station.bayWidth / 2 - 0.9)
+
+      const island = new THREE.Mesh(
+        new THREE.BoxGeometry(1.6, 0.25, 3.4), trim)
+      island.position.set(px, 0.12, out)
+      group.add(island)
+
+      const pump = new THREE.Mesh(
+        new THREE.BoxGeometry(0.75, PUMP_HEIGHT, 1.1), pumpMat)
+      pump.position.set(px, 0.25 + PUMP_HEIGHT / 2, out)
+      group.add(pump)
+
+      const face = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.55, 0.7), faceMat)
+      face.position.set(px - side * 0.39, 0.25 + PUMP_HEIGHT * 0.72, out)
+      face.rotation.y = -side * Math.PI / 2
+      group.add(face)
+
+      // Where the attendant stands and where the hose starts. Kept in WORLD
+      // coordinates, because stage two walks a figure to it and a figure is
+      // not in this group.
+      this.fuelPumps.push({
+        station: station.id,
+        bay: bay.index,
+        x: station.x - fz * px + fx * out,
+        z: station.z + fx * px + fz * out
+      })
+
+      this.paintBayOutline(bay, station)
+    })
+
+    group.traverse((part) => {
+      if (part.isMesh) { part.castShadow = true; part.receiveShadow = true }
+    })
+    this.game.add(group)
+
+    // The kiosk is solid; the forecourt is not, or you could not drive on it.
+    this.game.physics.createStaticBoxAt(
+      station.x, this.groundAt(station.x, station.z) + look.height / 2,
+      station.z, station.width, look.height, station.depth, station.heading)
+
+    this.addLightPool(padX, padZ, span, 0.85)
+    station.mesh = group
+  }
+
+  /**
+   * The outline you drive into, painted on the forecourt.
+   *
+   * Four thin strips and a chevron rather than a filled shape, so it reads as
+   * paint and not as a slab - the same trick the emergency stations' bay
+   * boxes use. Sized to the LONGEST vehicle, because the bus has to fit the
+   * same bay a sedan does and a box that fits a sedan is a box the bus parks
+   * halfway out of.
+   *
+   * Every strip asks the ground its own height. A single quad across eleven
+   * units of falling ground is the flat-slab mistake again, in miniature.
+   */
+  paintBayOutline(bay, station) {
+    const paint = this.fuelPaint = this.fuelPaint ||
+      new THREE.MeshStandardMaterial({ color: 0xf4efd6, roughness: 0.9 })
+
+    const long = TRAFFIC_LENGTHS.bus + 1.5
+    const wide = Math.min(station.bayWidth - 1.6, 3.4)
+    const bx = Math.sin(bay.heading)
+    const bz = Math.cos(bay.heading)
+    const sx = -bz
+    const sz = bx
+
+    const strip = (cx, cz, w, d, turn) => {
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), paint)
+      mesh.rotation.x = -Math.PI / 2
+      mesh.rotation.z = -turn
+      mesh.position.set(cx, this.groundAt(cx, cz) + SURFACE_PAVED + 0.05, cz)
+      this.game.add(mesh)
+    }
+
+    // The two long sides
+    for (const side of [1, -1]) {
+      strip(bay.x + sx * side * wide / 2, bay.z + sz * side * wide / 2,
+            0.18, long, bay.heading)
+    }
+    // And the back of the box
+    strip(bay.x - bx * long / 2, bay.z - bz * long / 2, wide, 0.18, bay.heading)
+
+    // A chevron at the head, pointing the way in - which is the one thing a
+    // plain rectangle cannot tell you.
+    for (const side of [1, -1]) {
+      const cx = bay.x + bx * (long / 2 - 0.8) + sx * side * wide * 0.25
+      const cz = bay.z + bz * (long / 2 - 0.8) + sz * side * wide * 0.25
+      strip(cx, cz, 0.18, 1.8, bay.heading + side * 0.6)
+    }
   }
 
   /**
@@ -9359,7 +9690,16 @@ export class World {
       const kz = wz + fz * kerb
       const roll = this.rand()
 
-      if (roll < 0.22) {
+      // AND NOT ACROSS A WAY IN. Same rule the streetlights follow, asked
+      // from the same place. A bench on the pavement is right everywhere
+      // except the stretch of kerb an ambulance has to cross, or the one you
+      // turn across to reach a pump - which is what Mike could see hiding the
+      // hospital and the gas station behind trees and bus shelters.
+      const clearHere = !blocksStationEntrance(kx, kz, this.accessStations)
+
+      if (!clearHere) {
+        // nothing on the pavement here
+      } else if (roll < 0.22) {
         this.addBench(kx, kz, facing)
       } else if (roll < 0.34) {
         this.addBin(kx + ax * plot.width * 0.3, kz + az * plot.width * 0.3)
@@ -9367,11 +9707,15 @@ export class World {
         this.addPlanter(kx + ax * plot.width * 0.3, kz + az * plot.width * 0.3)
       }
 
-      // A street tree in the gap between this plot and the next
+      // A street tree in the gap between this plot and the next - a tree is
+      // the worst of these, because it is tall enough to hide a whole
+      // building rather than just stand in front of one.
       if (this.rand() < 0.5) {
         const gapX = wx + ax * (plot.width / 2 + PLOT_GAP / 2) + fx * (kerb - 0.4)
         const gapZ = wz + az * (plot.width / 2 + PLOT_GAP / 2) + fz * (kerb - 0.4)
-        this.addStreetTree(gapX, gapZ)
+        if (!blocksStationEntrance(gapX, gapZ, this.accessStations)) {
+          this.addStreetTree(gapX, gapZ)
+        }
       }
 
       // There used to be a parked car here.
@@ -9415,6 +9759,29 @@ export class World {
   }
 
   /**
+   * Is this world point on a carriageway?
+   *
+   * Mike: "check that no trees, traffic lights, lamps or other objects are in
+   * the middle of the road."
+   *
+   * distanceToNearestRoad() measures from the KERB, not the centre line, so a
+   * negative answer means inside the road and `margin` is how much pavement
+   * to insist on as well. The streetlights already asked a version of this;
+   * the street dressing did not, and a placer that computes a position from a
+   * plot has no idea whether that plot happens to back onto a bend.
+   *
+   * Asked INSIDE each placer rather than at every call site, so it cannot be
+   * forgotten by the next thing that puts an object on a pavement.
+   */
+  onCarriageway(x, z, margin = 0.5) {
+    const island = islandAt(x, z)
+    if (!island) return false
+
+    return distanceToNearestRoad(
+      getIslandRoads(island), x - island.x, z - island.z) < margin
+  }
+
+  /**
    * Slatted bench, back to the building, facing the road.
    *
    * `facing` is an ANGLE in radians. Stated because it was not: one of the two
@@ -9425,6 +9792,9 @@ export class World {
    * failure it catches is invisible.
    */
   addBench(x, z, facing) {
+    // Never in the road. See onCarriageway().
+    if (this.onCarriageway(x, z)) return
+
     if (typeof facing !== 'number' || !Number.isFinite(facing)) facing = 0
     const group = new THREE.Group()
     const wood = new THREE.MeshStandardMaterial({
@@ -9452,6 +9822,9 @@ export class World {
   }
 
   addBin(x, z) {
+    // Never in the road. See onCarriageway().
+    if (this.onCarriageway(x, z)) return
+
     const bin = new THREE.Mesh(
       new THREE.CylinderGeometry(0.32, 0.26, 0.85, 8),
       new THREE.MeshStandardMaterial({
@@ -9465,6 +9838,9 @@ export class World {
 
   /** Planter box with something growing out of it. */
   addPlanter(x, z) {
+    // Never in the road. See onCarriageway().
+    if (this.onCarriageway(x, z)) return
+
     const group = new THREE.Group()
 
     const box = new THREE.Mesh(
@@ -9500,6 +9876,9 @@ export class World {
    * manifest, loaded on every visit, and appeared only on the beaches.
    */
   addStreetTree(x, z) {
+    // Never in the road. See onCarriageway().
+    if (this.onCarriageway(x, z)) return
+
     // THE MODEL IS NOT USED FOR STREET TREES, and it took photographing it to
     // find out why it should not be.
     //
@@ -9634,7 +10013,8 @@ export class World {
         // else does - so the rule lives in blocksStationEntrance() and every
         // placer asks it rather than each one growing its own idea of where a
         // door is.
-        if (blocksStationEntrance(island.x + lx, island.z + lz, this.stations)) {
+        if (blocksStationEntrance(island.x + lx, island.z + lz,
+                                  this.accessStations)) {
           continue
         }
 
@@ -12153,6 +12533,42 @@ export class World {
     })
   }
 
+  /**
+   * Fuel, one frame.
+   *
+   * Speed comes from the vehicle's own `currentSpeed` and its own
+   * `maxForwardSpeed`, so gasGame.js never has to know what units this game
+   * drives in - it only ever uses their ratio.
+   */
+  updateGas(delta) {
+    if (!this.gas) return
+
+    const vehicle = this.game.vehicle
+    const mesh = vehicle && vehicle.mesh
+    const player = mesh
+      ? {
+          x: mesh.position.x, z: mesh.position.z,
+          kind: vehicle.kind,
+          speed: vehicle.currentSpeed || 0
+        }
+      : null
+
+    stepGas(this.gas, delta, {
+      player,
+      maxSpeed: (vehicle && vehicle.params && vehicle.params.maxForwardSpeed) || 18,
+      bays: this.fuelBays,
+      // Stage three hooks the tow truck on here. Until then running dry is a
+      // banner and an empty gauge, which is honest about what it does rather
+      // than half-starting a recovery that cannot finish.
+      tow: null
+    })
+  }
+
+  /** What the gauge shows. UI.js works nothing out for itself. */
+  fuelGauge() {
+    return fuelGauge(this.gas || { fuel: null })
+  }
+
   updateFire(delta) {
     if (!this.fire) return
 
@@ -13576,7 +13992,12 @@ export class World {
       towHud(this.tow, kind === 'tow',
         mesh ? { x: mesh.position.x, z: mesh.position.z } : null,
         garage ? { x: garage.x, z: garage.z } : null),
-      raceHud(this.race)
+      raceHud(this.race),
+      // LAST on purpose. A callout you are actually running keeps the arrow;
+      // low fuel takes it only when nothing else wants it. The gauge is drawn
+      // separately and is always on screen, so being outranked here never
+      // leaves you without the information.
+      gasHud(this.gas, hasTank(kind))
     ])
   }
 
@@ -13682,6 +14103,7 @@ export class World {
     this.updatePedestrians(delta)
     this.updateGarageDoors(delta)
     this.updateFire(delta)
+    this.updateGas(delta)
     this.updatePolice(delta)
     this.updateAmbulance(delta)
     this.updateTow(delta)

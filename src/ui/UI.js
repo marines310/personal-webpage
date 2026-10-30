@@ -57,6 +57,8 @@ export class UI {
     this.hourSlider = document.getElementById('cond-hour')
     this.hourValue = document.getElementById('cond-hour-value')
 
+    this.fuelEl = document.getElementById('fuel')
+    this.fuelFill = document.getElementById('fuel-fill')
     this.missionEl = document.getElementById('mission')
     this.missionTitle = document.getElementById('mission-title')
     this.missionBar = document.getElementById('mission-bar')
@@ -316,6 +318,7 @@ export class UI {
     this.updateConditions()
     this.updateCamera()
     this.updateMission()
+    this.updateFuel()
     this.updateRail()
   }
 
@@ -449,6 +452,31 @@ export class UI {
       (hud.phase === 'alighting' ? 'PASSENGERS ALIGHTING'
         : hud.phase === 'held' ? 'DOORS CLOSING'
           : hud.phase === 'ready' ? 'SIGNAL CLEAR' : '')
+  }
+
+  /**
+   * The fuel gauge.
+   *
+   * Reads world.fuelGauge() and does nothing else with it - no thresholds
+   * here, no deciding what counts as low. That rule is already written on the
+   * fire HUD and it is why the banner and the bar cannot disagree about what
+   * is happening: there is one place that knows, and it is gasGame.js.
+   */
+  updateFuel() {
+    const world = this.game.world
+    if (!this.fuelEl || !world || !world.fuelGauge) return
+
+    const gauge = world.fuelGauge()
+
+    this.fuelEl.classList.toggle('hidden', !gauge.show)
+    if (!gauge.show) return
+
+    if (this.fuelFill) {
+      this.fuelFill.style.width = `${Math.max(0, Math.min(1, gauge.fuel)) * 100}%`
+    }
+    this.fuelEl.classList.toggle('low', !!gauge.low && !gauge.empty)
+    this.fuelEl.classList.toggle('empty', !!gauge.empty)
+    this.fuelEl.classList.toggle('filling', !!gauge.filling)
   }
 
   updateMission() {
