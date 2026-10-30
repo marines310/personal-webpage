@@ -1465,7 +1465,11 @@ export function getIslandTerrain(island) {
   // Fire stations, police stations and hospitals stand on ground too. Without
   // a terrace of their own a hospital sat on the height at its centre while
   // the ground fell away around it, and you could drive underneath it.
-  for (const station of getStations().filter(s => s.island === island)) {
+  // Gas stations stand on ground too, and a canopy on a slope is worse than
+  // a hospital on one - you drive under it. Same list, so they get the same
+  // terrace by construction rather than by a second block that can drift.
+  for (const station of [...getStations(), ...getFuelStations()]
+         .filter(s => s.island === island)) {
     pads.push({
       x: station.x - island.x,
       z: station.z - island.z,
@@ -3924,6 +3928,299 @@ export function getStations(network) {
   return stations
 }
 
+/**
+ * The gas stations.
+ *
+ * Sited with exactly the machinery the emergency stations use - findStationSite
+ * walks the lanes, so a forecourt fronts a road by construction rather than by
+ * being dropped somewhere and hoped about. They are kept apart from the
+ * emergency stations as well as from each other by passing both lists as
+ * `taken`, because a fire station and a gas station on the same frontage is
+ * two forecourts fighting for the same apron.
+ *
+ * One per town, then the quieter islands, so there is somewhere to fill up on
+ * every landmass you can drive on. Running dry on an island with no pump and
+ * no bridge in reach would be a tow truck's problem forever.
+ */
+export const FUEL_STATION = {
+  // Wider than it is deep: a gas station is a canopy and a kiosk, not a
+  // building with a yard. The depth is the kiosk; the canopy stands out over
+  // the bays in front of it, which is where STATION_SETBACK already leaves
+  // room.
+  width: 16, depth: 9,
+  // Two pumps, ONE BEHIND THE OTHER rather than side by side.
+  //
+  // You pull in parallel to the pumps, the way you do at a real one, rather
+  // than nose-first at the kiosk the way a fire engine faces its garage -
+  // that is Mike's note about the bus sitting across the forecourt. But a bay
+  // then takes a vehicle's LENGTH along the frontage, and two of those side
+  // by side is 26 units on a 16-unit plot: the canopy came out 28 wide and
+  // hung over the carriageway on both sides, which is the white block in the
+  // road he photographed.
+  //
+  // So they stack in DEPTH instead, which is the one dimension a forecourt
+  // has to spare. bayWidth is now the length of a bay along the frontage:
+  // TRAFFIC_LENGTHS.bus is 11, so 13 leaves a margin at each end.
+  bayCount: 2, bayWidth: 13, doorWidth: 3,
+  garage: false, vehicle: null
+}
+
+/**
+ * How close a pump may sit to another station when the island has no room to
+ * do better. Enough to clear the widest station (24) and this one (16) with
+ * a couple of units of daylight, and no more.
+ */
+export const FUEL_CROWDED_SPACING = 28
+
+/**
+ * The concrete in front of a gas station: how big, and how far out.
+ *
+ * The same shape of answer as stationApron(), and here for the same reason -
+ * a slab sized in the renderer is a slab over the road. Mike photographed
+ * exactly that: a white block running out of the forecourt into the
+ * carriageway.
+ *
+ * `offset` is from the station's CENTRE along its heading. The near edge sits
+ * on the kiosk's front wall; the far edge stops a pavement and a verge short
+ * of the kerb.
+ */
+export function fuelApron(station) {
+  if (!station) return null
+
+  // MEASURED, not assumed.
+  //
+  // The first version took STATION_SETBACK - PAVEMENT_WIDTH - a verge, on the
+  // reading that the setback is the gap between the front wall and the kerb.
+  // It is not: findStationSite() measures it from the LANE's centre line, and
+  // the real clearance from a sited station to the nearest carriageway came
+  // out at about 12 rather than 17.6. The apron built on the wrong number ran
+  // 6.4 units into the road - the white block Mike photographed - and then,
+  // once a check was added, rejected every site in the world.
+  //
+  // So ask the map. A station that has been sited knows where it is, and the
+  // concrete reaches as far as it can without touching tarmac.
+  let room = STATION_SETBACK - PAVEMENT_WIDTH
+  if (station.island && Number.isFinite(station.x)) {
+    const roads = getIslandRoads(station.island)
+    if (roads && roads.length) {
+      room = distanceToNearestRoad(roads, station.x - station.island.x,
+                                   station.z - station.island.z)
+    }
+  }
+
+  const depth = room - station.depth / 2 - APRON_PAVEMENT_GAP
+  if (depth <= 1) return null
+
+  return {
+    // ONE bay's length plus a margin - they stack in depth, so the frontage
+    // only ever has to hold one of them. Multiplying by bayCount here is what
+    // put a 28-unit canopy on a 16-unit plot.
+    width: station.bayWidth + 3,
+    depth,
+    offset: station.depth / 2 + depth / 2
+  }
+}
+
+/**
+ * How much bare ground is left between the concrete and the nearest road.
+ *
+ * Measured the same way the apron is sized, so the two cannot disagree: the
+ * promise is "there is always a gap", and this is the gap.
+ */
+export function fuelApronClearance(station) {
+  const apron = fuelApron(station)
+  if (!apron || !station.island || !Number.isFinite(station.x)) return null
+
+  const roads = getIslandRoads(station.island)
+  if (!roads || !roads.length) return null
+
+  const room = distanceToNearestRoad(roads, station.x - station.island.x,
+                                     station.z - station.island.z)
+  return room - (station.depth / 2 + apron.depth)
+}
+
+let fuelCache = null
+
+/**
+ * One gas station from a site, with its bays turned a quarter turn.
+ *
+ * bayPositions() points a bay at the BUILDING, which is right for a fire
+ * engine reversing out of its own door and wrong for a pump: you pull in
+ * alongside it. Turned here, once, at the source, so the painted outline, the
+ * pump placement and the parked vehicle all agree without any of them knowing
+ * about the others.
+ */
+function makeFuelStation(site, island) {
+  const station = {
+    ...FUEL_STATION, ...site,
+    kind: 'fuel',
+    island,
+    id: `${island.id}-fuel`
+  }
+
+  // bayPositions() spreads bays ACROSS the frontage and points each at the
+  // building, which is right for garage doors and wrong for pumps twice over.
+  // These are laid out here instead: both centred on the frontage, at two
+  // depths, each lying along the road.
+  const fx = Math.sin(site.heading)
+  const fz = Math.cos(site.heading)
+  const apron = fuelApron(station)
+  const near = station.depth / 2 + 3.5
+  const far = apron ? station.depth / 2 + apron.depth - 3.5 : near + 7
+  // Two rows only if there is room for two. The apron sizes itself to the
+  // site, and on a tight one `near` and `far` came out half a unit apart -
+  // two bays in the same place, which is one bay and a bug.
+  const rows = (station.bayCount > 1 && far - near >= station.bayWidth * 0.55)
+    ? [near, far]
+    : [near]
+
+  station.bays = rows.map((out, index) => ({
+    x: site.x + fx * out,
+    z: site.z + fz * out,
+    // A quarter turn off the way the station faces: alongside the pumps.
+    heading: site.heading + Math.PI / 2,
+    // Where you turn in from, which is the row itself seen from the road end.
+    approach: {
+      x: site.x + fx * out - fz * (station.bayWidth / 2 + 3),
+      z: site.z + fz * out + fx * (station.bayWidth / 2 + 3)
+    },
+    index
+  }))
+
+  return station
+}
+
+/**
+ * Would a gas station here put its forecourt in a road?
+ *
+ * The four corners of the concrete, against every road on the island - not
+ * just the one it fronts. A station beside a junction passed every test that
+ * looked at the building and still laid 6.4 units of apron across the side
+ * street, which is the white block in the road.
+ */
+function fuelApronIsClear(island, x, z, heading) {
+  const roads = getIslandRoads(island)
+  if (!roads || !roads.length) return true
+
+  // The apron sizes itself to whatever room there is, so the question here is
+  // only whether there is enough room to be worth siting on: the kiosk, a bay
+  // to pull onto, and a verge. Anything less and the pumps are on the kerb.
+  const needed = FUEL_STATION.depth / 2 + 7 + APRON_PAVEMENT_GAP
+
+  const fx = Math.sin(heading)
+  const fz = Math.cos(heading)
+  const half = (FUEL_STATION.bayWidth + 3) / 2
+
+  if (distanceToNearestRoad(roads, x - island.x, z - island.z) < needed) {
+    return false
+  }
+
+  // And the frontage has to be clear ACROSS as well as in front - a station
+  // beside a junction has room towards its own road and none towards the
+  // other one.
+  for (const side of [-1, 1]) {
+    const cx = x - fz * side * half + fx * (FUEL_STATION.depth / 2 + 3)
+    const cz = z + fx * side * half + fz * (FUEL_STATION.depth / 2 + 3)
+    if (distanceToNearestRoad(roads, cx - island.x, cz - island.z) < 1) {
+      return false
+    }
+  }
+
+  return true
+}
+
+export function getFuelStations(network) {
+  // Cached like getStations(), and for the same reason written up there: the
+  // siting is a deterministic function of the map, and re-running it is
+  // twenty-four seconds.
+  if (fuelCache) return fuelCache
+
+  const lanes = network || getLaneNetwork()
+  const route = getMonorailRoute()
+
+  // Emergency stations count as taken ground. They are sited first because
+  // they are fussier - a hospital needs a 24-unit frontage and a gas station
+  // does not - so letting them pick first costs the pumps nothing.
+  const taken = getStations(lanes).map(s => ({ x: s.x, z: s.z }))
+  const stations = []
+
+  const towns = ISLANDS.filter(isTown)
+    .sort((a, b) => islandReach(b) - islandReach(a))
+  const others = ISLANDS.filter(i => !isTown(i) && i.theme !== 'plain')
+
+  // TWO PASSES, and the second one is the point.
+  //
+  // The first asks for a site clear of every station already placed. On a town
+  // that already has two emergency stations, STATION_SPACING (55) rules out
+  // every frontage on the island and the pass returns nothing - which is how
+  // the first run came out with pumps on three islands out of six, and none on
+  // about, hub or contact.
+  //
+  // So islands that find nothing are asked again with only the OTHER PUMPS as
+  // taken ground. A gas station near a police station is a bit of a huddle; an
+  // island with no gas station at all is a tow truck's problem forever, and
+  // Mike asked for several of these through the world.
+  const missed = []
+
+  for (const island of [...towns, ...others]) {
+    const site = findStationSite(lanes, island, FUEL_STATION, taken, route,
+                                 STATION_SPACING,
+                                 (x, z, h) => fuelApronIsClear(island, x, z, h))
+    if (!site) { missed.push(island); continue }
+
+    // spec first, site second - the site's `bays` array must win. The same
+    // trap getStations() has a paragraph about: spreading the spec last
+    // replaces the list of bays with the number 2.
+    stations.push(makeFuelStation(site, island))
+    taken.push({ x: site.x, z: site.z })
+  }
+
+  for (const island of missed) {
+    // Still every station, but at a spacing that only has to keep the
+    // BUILDINGS apart rather than give each one its own stretch of street.
+    // Dropping `taken` entirely was tried and put a pump on the same site as
+    // an emergency station - distance 0.0, two buildings in one place -
+    // because findStationSite scores sites the same way for both and simply
+    // picked the winner twice.
+    const site = findStationSite(lanes, island, FUEL_STATION, taken, route,
+                                 FUEL_CROWDED_SPACING,
+                                 (x, z, h) => fuelApronIsClear(island, x, z, h))
+    if (!site) continue
+
+    stations.push(makeFuelStation(site, island))
+    taken.push({ x: site.x, z: site.z })
+  }
+
+  fuelCache = stations
+  return stations
+}
+
+/**
+ * Every pump bay in the world, flattened, for the thing that asks "where is
+ * the nearest one".
+ *
+ * Flattened here rather than in gasGame.js, which has no idea what a station
+ * is and should not learn.
+ */
+export function getFuelBays(network) {
+  const out = []
+
+  for (const station of getFuelStations(network)) {
+    for (const bay of station.bays || []) {
+      out.push({
+        x: bay.x, z: bay.z,
+        heading: bay.heading,
+        approach: bay.approach,
+        index: bay.index,
+        station: station.id,
+        island: station.island.name || station.island.id
+      })
+    }
+  }
+
+  return out
+}
+
 /** What each kind of station looks like and how many vehicles it holds. */
 // `bayCount`, not `bays`. The site produced by findStationSite carries a
 // `bays` ARRAY, and spreading the spec over it replaced the list of bays with
@@ -4150,7 +4447,8 @@ export const STATION_SETBACK = Math.max(8,
  * so starting from the roads is both faster and guarantees the one property
  * that matters.
  */
-function findStationSite(network, island, spec, taken, route) {
+function findStationSite(network, island, spec, taken, route,
+                         spacing = STATION_SPACING, accept = null) {
   const roads = getIslandRoads(island)
   const reach = Math.hypot(spec.width / 2, spec.depth / 2)
 
@@ -4204,7 +4502,7 @@ function findStationSite(network, island, spec, taken, route) {
         continue
       }
 
-      if (taken.some(t => Math.hypot(t.x - x, t.z - z) < STATION_SPACING)) continue
+      if (taken.some(t => Math.hypot(t.x - x, t.z - z) < spacing)) continue
 
       // Room in front for the bays, which sit between the building and the road
       const apron = {
@@ -4212,6 +4510,13 @@ function findStationSite(network, island, spec, taken, route) {
         z: on.z - sz * (lane.width / 4 + PAVEMENT_WIDTH + 4)
       }
       if (inlandDistance(island, apron.x - island.x, apron.z - island.z) < 3) continue
+
+      // A caller may have a shape of its own to fit - a gas station's
+      // forecourt is wider than its kiosk and reaches further, and a site
+      // that suits the building can still put the concrete across the side
+      // street at a junction. Asked here rather than by filtering the winner
+      // afterwards, because the winner is the ONLY site that comes back.
+      if (accept && !accept(x, z, heading)) continue
 
       // Prefer a spot well clear of everything, so the yard has room
       const score = distanceToNearestRoad(roads, x - island.x, z - island.z)
@@ -4379,6 +4684,14 @@ export function getBusStops(network = getLaneNetwork()) {
   // the world on every call - and asking it per candidate stop turned this
   // function from milliseconds into minutes.
   const stations = getStations(network)
+  // Gas stations too: a bus shelter across a forecourt is the same mistake
+  // as one across a fire station's doors. But a stop in a pump's way is SLID
+  // along the kerb rather than dropped. Dropping the four stops the pumps
+  // landed on changed where the buses pause, and that alone was enough to
+  // fail traffic.mjs (a rescue across the map) and incident.mjs (the rescue
+  // valve firing on a clear road). Sliding keeps every route's stops, so the
+  // traffic is the traffic it was before there were pumps.
+  const pumps = getFuelStations(network)
 
   network.lanes.forEach((lane, index) => {
     if (lane.kind !== 'ring' && lane.kind !== 'road') return
@@ -4386,10 +4699,10 @@ export function getBusStops(network = getLaneNetwork()) {
 
     const count = Math.max(1, Math.floor(lane.length / BUS_STOP_SPACING))
     for (let i = 1; i <= count; i++) {
-      const at = (lane.length * i) / (count + 1)
+      let at = (lane.length * i) / (count + 1)
       if (at < BUS_STOP_CLEARANCE || lane.length - at < BUS_STOP_CLEARANCE) continue
 
-      const point = pointAlong(lane, at)
+      let point = pointAlong(lane, at)
 
       // NOT ACROSS A STATION'S DOORS. See blocksStationEntrance(): a shelter,
       // its bench and its pole take up eight units of kerb, and the kerb a
@@ -4401,6 +4714,28 @@ export function getBusStops(network = getLaneNetwork()) {
       // Measured against the shelter's own reach rather than a bare point, or
       // a stop just outside the box still puts its pole inside it.
       if (blocksStationEntrance(point.x, point.z, stations, BUS_STOP_REACH)) continue
+
+      // The nearest clear bit of kerb either side, a shelter's length at a
+      // time, never into the clearance at either end of the lane. Dropped
+      // only if there is none.
+      if (blocksStationEntrance(point.x, point.z, pumps, BUS_STOP_REACH)) {
+        let moved = null
+        for (let step = 1; step <= 8 && !moved; step++) {
+          for (const sign of [1, -1]) {
+            const to = at + sign * step * BUS_STOP_REACH
+            if (to < BUS_STOP_CLEARANCE || lane.length - to < BUS_STOP_CLEARANCE) continue
+            const p = pointAlong(lane, to)
+            if (!blocksStationEntrance(p.x, p.z, stations, BUS_STOP_REACH) &&
+                !blocksStationEntrance(p.x, p.z, pumps, BUS_STOP_REACH)) {
+              moved = { at: to, point: p }
+              break
+            }
+          }
+        }
+        if (!moved) continue
+        at = moved.at
+        point = moved.point
+      }
 
       stops.push({
         lane: index, at,
