@@ -4087,8 +4087,75 @@ function makeFuelStation(site, island) {
     index
   }))
 
+  // Each bay's pump, and where the attendant waits between customers.
+  // Decided here with the bays rather than in the renderer, because the
+  // attendant walks between them and gasGame.js has to know where they are.
+  const edge = apron ? station.depth / 2 + apron.depth : far + FUEL_BAY_WIDE
+  station.bays.forEach((bay, i) => {
+    const out = rows[i]
+    const pumpOut = fuelPumpOut(rows, i, station.depth / 2, edge)
+    bay.pump = {
+      x: site.x + fx * pumpOut,
+      z: site.z + fz * pumpOut,
+      // Which way the pump faces: at the bay, across the island.
+      heading: pumpOut > out ? site.heading + Math.PI : site.heading
+    }
+    // Off the END of the island, along the bay - the one place on a forecourt
+    // that is neither a bay nor in front of a pump.
+    const bx = Math.sin(bay.heading)
+    const bz = Math.cos(bay.heading)
+    const along = FUEL_ISLAND_LONG / 2 + 0.9
+    bay.attendantHome = {
+      x: bay.pump.x + bx * along,
+      z: bay.pump.z + bz * along
+    }
+  })
+
   return station
 }
+
+/**
+ * The painted bay, and the pump island beside it.
+ *
+ * FUEL_BAY_LONG is the longest vehicle plus a margin, because the bus has to
+ * fit the same bay a sedan does. FUEL_BAY_WIDE is across it.
+ */
+export const FUEL_BAY_LONG = TRAFFIC_LENGTHS.bus + 1.5
+export const FUEL_BAY_WIDE = 3.4
+export const FUEL_ISLAND_LONG = 3.4
+export const FUEL_ISLAND_WIDE = 1.4
+
+/**
+ * How far out from the kiosk's centre a bay's pump island goes.
+ *
+ * BESIDE the bay, never in it. Stage one stood the pump at the END of the
+ * painted box, 5.6 along a 12.5-unit bay - which a sedan cleared and a bus
+ * parked straight through, and which left no side of the car for a hose to
+ * reach. Now it is in the strip of concrete between the bay's outline and
+ * whatever is next to it: the road side if there is room (the apron is
+ * sized so that there is), otherwise the kiosk side.
+ */
+function fuelPumpOut(rows, i, kioskFront, apronEdge) {
+  const out = rows[i]
+  const half = FUEL_BAY_WIDE / 2
+  // Just off the painted line - not in the middle of whatever concrete is
+  // left, which on a deep apron put the pump 4.6 from the bay and the hose
+  // across half the forecourt.
+  const off = half + FUEL_PUMP_GAP + FUEL_ISLAND_WIDE / 2
+  const fits = FUEL_ISLAND_WIDE / 2 + 0.1
+
+  const roadEnd = i + 1 < rows.length ? rows[i + 1] - half : apronEdge
+  const kioskEnd = i > 0 ? rows[i - 1] + half : kioskFront
+
+  if (out + off + fits <= roadEnd) return out + off
+  if (out - off - fits >= kioskEnd) return out - off
+  // Nowhere clear: hard against the road side of the outline, which is at
+  // least where a car door is rather than a wheel.
+  return out + off
+}
+
+/** The strip of bare concrete between the painted line and the island. */
+export const FUEL_PUMP_GAP = 0.25
 
 /**
  * Would a gas station here put its forecourt in a road?
@@ -4211,6 +4278,8 @@ export function getFuelBays(network) {
         x: bay.x, z: bay.z,
         heading: bay.heading,
         approach: bay.approach,
+        pump: bay.pump,
+        attendantHome: bay.attendantHome,
         index: bay.index,
         station: station.id,
         island: station.island.name || station.island.id

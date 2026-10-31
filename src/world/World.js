@@ -46,6 +46,10 @@ import {
   getFuelStations,
   getFuelBays,
   fuelApron,
+  FUEL_BAY_LONG,
+  FUEL_BAY_WIDE,
+  FUEL_ISLAND_LONG,
+  FUEL_ISLAND_WIDE,
   blocksStationEntrance,
   STATION_SETBACK,
   stationApron,
@@ -206,7 +210,7 @@ import {
 } from './monorailGame.js'
 import { chooseMission } from './missions.js'
 import {
-  newGasState, stepGas, gasHud, fuelGauge, hasTank
+  newGasState, stepGas, gasHud, fuelGauge, hasTank, makeAttendants
 } from './gasGame.js'
 import {
   newRaceState, stepRace, raceHud, gridOffset, gridSide,
@@ -881,6 +885,8 @@ export class World {
     // and newGasState() is handed them the moment the first frame runs.
     this.gas = newGasState()
     this.fuelBays = getFuelBays(this.lanes)
+    this.fuelAttendants = makeAttendants(this.fuelBays)
+    this.createFuelAttendants()
     this.police = newPoliceState()
     this.ambulance = newAmbulanceState()
     this.race = newRaceState()
@@ -6098,37 +6104,58 @@ export class World {
 
     this.fuelPumps = this.fuelPumps || []
 
-    bays.forEach((bay, i) => {
-      // Beside the bay, towards the middle of the forecourt, so the hose
-      // reaches the vehicle without the pump standing where a wheel goes.
-      const side = i < bays.length / 2 ? 1 : -1
-      const across = (bay.x - station.x) * -fz + (bay.z - station.z) * fx
-      const px = across + side * (station.bayWidth / 2 - 0.9)
+    bays.forEach((bay) => {
+      // BESIDE the bay, where the layout put it - see fuelPumpOut() in
+      // islandLayout.js. Stage one stood it at the end of the painted box,
+      // where a bus parked through it and no hose could reach a side.
+      // Converted into the group's frame: `px` across the frontage, `po` out
+      // from the kiosk.
+      const dx = bay.pump.x - station.x
+      const dz = bay.pump.z - station.z
+      const px = -dx * fz + dz * fx
+      const po = dx * fx + dz * fz
+      const bayOut = (bay.x - station.x) * fx + (bay.z - station.z) * fz
+      const facing = bayOut > po ? 1 : -1
 
+      // The island runs ALONG the bay, which runs along the frontage
       const island = new THREE.Mesh(
-        new THREE.BoxGeometry(1.6, 0.25, 3.4), trim)
-      island.position.set(px, 0.12, out)
+        new THREE.BoxGeometry(FUEL_ISLAND_LONG, 0.25, FUEL_ISLAND_WIDE), trim)
+      island.position.set(px, 0.12, po)
       group.add(island)
 
       const pump = new THREE.Mesh(
-        new THREE.BoxGeometry(0.75, PUMP_HEIGHT, 1.1), pumpMat)
-      pump.position.set(px, 0.25 + PUMP_HEIGHT / 2, out)
+        new THREE.BoxGeometry(1.1, PUMP_HEIGHT, 0.75), pumpMat)
+      pump.position.set(px, 0.25 + PUMP_HEIGHT / 2, po)
       group.add(pump)
 
+      // The lit face, towards the car
       const face = new THREE.Mesh(
         new THREE.PlaneGeometry(0.55, 0.7), faceMat)
-      face.position.set(px - side * 0.39, 0.25 + PUMP_HEIGHT * 0.72, out)
-      face.rotation.y = -side * Math.PI / 2
+      face.position.set(px + 0.2, 0.25 + PUMP_HEIGHT * 0.72, po + facing * 0.39)
+      face.rotation.y = facing > 0 ? 0 : Math.PI
       group.add(face)
 
-      // Where the attendant stands and where the hose starts. Kept in WORLD
-      // coordinates, because stage two walks a figure to it and a figure is
-      // not in this group.
+      // The nozzle's hook, on the same face. The hose is drawn from here.
+      const holster = new THREE.Mesh(
+        new THREE.BoxGeometry(0.16, 0.3, 0.14),
+        new THREE.MeshStandardMaterial({ color: 0x23262b, roughness: 0.6 }))
+      holster.position.set(px - 0.3, 0.25 + PUMP_HEIGHT * 0.5, po + facing * 0.42)
+      group.add(holster)
+
+      // Where the hose starts, in WORLD coordinates, because the attendant
+      // and the hose are not in this group.
+      const hx = px - 0.3
+      const ho = po + facing * 0.45
       this.fuelPumps.push({
         station: station.id,
         bay: bay.index,
-        x: station.x - fz * px + fx * out,
-        z: station.z + fx * px + fz * out
+        x: bay.pump.x,
+        z: bay.pump.z,
+        hose: {
+          x: station.x - fz * hx + fx * ho,
+          y: this.groundAt(station.x, station.z) + 0.25 + PUMP_HEIGHT * 0.5,
+          z: station.z + fx * hx + fz * ho
+        }
       })
 
       this.paintBayOutline(bay, station)
@@ -6164,8 +6191,8 @@ export class World {
     const paint = this.fuelPaint = this.fuelPaint ||
       new THREE.MeshStandardMaterial({ color: 0xf4efd6, roughness: 0.9 })
 
-    const long = TRAFFIC_LENGTHS.bus + 1.5
-    const wide = Math.min(station.bayWidth - 1.6, 3.4)
+    const long = FUEL_BAY_LONG
+    const wide = Math.min(station.bayWidth - 1.6, FUEL_BAY_WIDE)
     const bx = Math.sin(bay.heading)
     const bz = Math.cos(bay.heading)
     const sx = -bz
@@ -12549,7 +12576,11 @@ export class World {
       ? {
           x: mesh.position.x, z: mesh.position.z,
           kind: vehicle.kind,
-          speed: vehicle.currentSpeed || 0
+          speed: vehicle.currentSpeed || 0,
+          // So the attendant goes to the right side of the right-sized car
+          heading: vehicle.heading,
+          width: vehicle.size && vehicle.size.width,
+          length: vehicle.size && vehicle.size.length
         }
       : null
 
@@ -12557,11 +12588,164 @@ export class World {
       player,
       maxSpeed: (vehicle && vehicle.params && vehicle.params.maxForwardSpeed) || 18,
       bays: this.fuelBays,
+      attendants: this.fuelAttendants,
       // Stage three hooks the tow truck on here. Until then running dry is a
       // banner and an empty gauge, which is honest about what it does rather
       // than half-starting a recovery that cannot finish.
       tow: null
     })
+  }
+
+  /**
+   * One figure per gas station, and the hose from each pump.
+   *
+   * Four people, so a plain Group of boxes each rather than the pedestrians'
+   * instanced crowd - the same proportions (borrowed from the rig, so an
+   * attendant is exactly as tall as a passer-by) without a second instancing
+   * scheme for four of anything. Dressed in the station's trim green with a
+   * cap, so they read as staff and not as somebody who wandered onto the
+   * forecourt.
+   */
+  createFuelAttendants() {
+    this.attendantFigures = []
+    if (!this.fuelAttendants || !this.fuelAttendants.length) return
+
+    const rig = {
+      hip: 0.88, shoulder: 1.46, leg: 0.82, arm: 0.6,
+      head: 1.64, torso: 1.18, armX: 0.25, legX: 0.105
+    }
+    const uniform = new THREE.MeshStandardMaterial({
+      color: STATION_LOOKS.fuel.trim, roughness: 0.85, flatShading: true
+    })
+    const sleeve = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(STATION_LOOKS.fuel.trim).multiplyScalar(0.78),
+      roughness: 0.85, flatShading: true
+    })
+    const trousers = new THREE.MeshStandardMaterial({
+      color: 0x2f3a46, roughness: 0.9, flatShading: true
+    })
+    const skin = new THREE.MeshStandardMaterial({
+      color: 0xd8a271, roughness: 0.82, flatShading: true
+    })
+    const cap = new THREE.MeshStandardMaterial({
+      color: STATION_LOOKS.fuel.sign, roughness: 0.7, flatShading: true
+    })
+    const hoseMat = new THREE.MeshStandardMaterial({
+      color: 0x1d1f22, roughness: 0.7
+    })
+
+    const limb = (geometry, material, x, y) => {
+      const pivot = new THREE.Group()
+      pivot.position.set(x, y, 0)
+      pivot.add(new THREE.Mesh(geometry, material))
+      return pivot
+    }
+
+    for (const a of this.fuelAttendants) {
+      const body = new THREE.Group()
+
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.6, 0.24), uniform)
+      torso.position.y = rig.torso
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.27, 0.24), skin)
+      head.position.y = rig.head
+      const hat = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.09, 0.27), cap)
+      hat.position.y = rig.head + 0.17
+      const peak = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.03, 0.14), cap)
+      peak.position.set(0, rig.head + 0.13, 0.19)
+
+      const armL = limb(armGeometry(0.12, rig.arm, 0.13), sleeve, rig.armX, rig.shoulder)
+      const armR = limb(armGeometry(0.12, rig.arm, 0.13), sleeve, -rig.armX, rig.shoulder)
+      const legL = limb(legGeometry(0.16, rig.leg, 0.19), trousers, rig.legX, rig.hip)
+      const legR = limb(legGeometry(0.16, rig.leg, 0.19), trousers, -rig.legX, rig.hip)
+
+      body.add(torso, head, hat, peak, armL, armR, legL, legR)
+      body.traverse((part) => { if (part.isMesh) part.castShadow = true })
+      this.game.add(body)
+
+      const hose = new THREE.Mesh(new THREE.BufferGeometry(), hoseMat)
+      hose.visible = false
+      hose.frustumCulled = false
+      this.game.add(hose)
+
+      this.attendantFigures.push({
+        attendant: a, body, armL, armR, legL, legR, hose,
+        hoseKey: '', rig
+      })
+    }
+  }
+
+  /**
+   * Draw each attendant where gasGame.js says they are, and the hose from
+   * the pump to the nozzle while it is off its hook.
+   *
+   * The hose is a tube rebuilt only when its ends move. Standing at a car
+   * for nine seconds is one rebuild, not five hundred and forty.
+   */
+  updateFuelAttendants() {
+    if (!this.attendantFigures) return
+
+    for (const fig of this.attendantFigures) {
+      const a = fig.attendant
+      const y = this.groundAt(a.x, a.z) + SURFACE_PAVED + 0.02
+
+      const cycle = walkCycle(a, a.walking)
+      fig.body.position.set(a.x, y + cycle.bob, a.z)
+      fig.body.rotation.y = a.heading
+      fig.legL.rotation.x = cycle.legLeft
+      fig.legR.rotation.x = cycle.legRight
+      fig.armL.rotation.x = cycle.armLeft
+
+      // The right arm holds the nozzle: out in front while it is in the car
+      // or being carried, swinging with the walk otherwise.
+      const holding = a.hose
+      fig.armR.rotation.x = holding ? -1.1 : cycle.armRight
+
+      if (!holding) {
+        fig.hose.visible = false
+        continue
+      }
+
+      const pump = (this.fuelPumps || []).find(p =>
+        p.station === a.station && Math.abs(p.x - a.pump.x) < 1e-6 &&
+        Math.abs(p.z - a.pump.z) < 1e-6)
+      if (!pump) { fig.hose.visible = false; continue }
+
+      // The far end: in the car's filler while plugged in, otherwise in the
+      // attendant's right hand.
+      let end
+      if (a.nozzleIn && a.filler) {
+        end = new THREE.Vector3(a.filler.x, y + 1.0, a.filler.z)
+      } else {
+        const fx = Math.sin(a.heading)
+        const fz = Math.cos(a.heading)
+        const sx = -fz
+        const sz = fx
+        end = new THREE.Vector3(
+          a.x - sx * fig.rig.armX + fx * 0.5,
+          y + 1.05,
+          a.z - sz * fig.rig.armX + fz * 0.5)
+      }
+
+      const start = new THREE.Vector3(pump.hose.x, pump.hose.y, pump.hose.z)
+      const key = `${end.x.toFixed(2)},${end.y.toFixed(2)},${end.z.toFixed(2)}`
+      if (key !== fig.hoseKey) {
+        fig.hoseKey = key
+        // A hose hangs: down from the pump, along the ground a little, and up
+        // to the nozzle - three control points through a low middle.
+        const mid = start.clone().lerp(end, 0.5)
+        mid.y = Math.max(y + 0.12, Math.min(start.y, end.y) - 0.7)
+        const curve = new THREE.CatmullRomCurve3([
+          start,
+          start.clone().lerp(mid, 0.5).setY((start.y + mid.y) / 2 - 0.15),
+          mid,
+          end.clone().lerp(mid, 0.5).setY((end.y + mid.y) / 2 - 0.15),
+          end
+        ])
+        fig.hose.geometry.dispose()
+        fig.hose.geometry = new THREE.TubeGeometry(curve, 16, 0.035, 5, false)
+      }
+      fig.hose.visible = true
+    }
   }
 
   /** What the gauge shows. UI.js works nothing out for itself. */
@@ -14104,6 +14288,7 @@ export class World {
     this.updateGarageDoors(delta)
     this.updateFire(delta)
     this.updateGas(delta)
+    this.updateFuelAttendants()
     this.updatePolice(delta)
     this.updateAmbulance(delta)
     this.updateTow(delta)
