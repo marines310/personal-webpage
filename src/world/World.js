@@ -8387,12 +8387,22 @@ export class World {
     const plots = getTownPlots(island)
     const roadside = getRoadsidePlots(island)
 
+    // Which plots actually got a building. The street dressing walks every
+    // plot, and a plot dropped here (because a station, a pier or a placed
+    // building already had the ground) still had its shopfront put up: a
+    // free-standing pane of glass with an awning, flush to a wall that was
+    // never built - square across the gas station and fire station doors,
+    // which is what Mike photographed. Recorded here rather than asked again
+    // later, because every building built pushes its own footprint, so
+    // clearOfPlaced() says no to every plot once the row is up.
+    const built = new Set()
     for (const plot of [...plots, ...roadside]) {
       if (!this.clearOfPlaced(plot.x, plot.z)) continue
       this.buildPlacedBuilding(island, {
         ...plot,
         floors: 2 + Math.floor(this.rand() * 4)
       })
+      built.add(plot)
     }
 
     for (const district of island.districts || []) {
@@ -8403,7 +8413,7 @@ export class World {
     // the pavements are. Everywhere else gets the scatter - which now fills
     // in AROUND the rows of buildings rather than laying them out: trees,
     // bushes, rocks, huts. It no longer places a single building.
-    if (plots.length) this.dressStreets(island, roads, plots)
+    if (plots.length) this.dressStreets(island, roads, plots, built)
     else this.scatterTheme(island, roads)
 
     const palmCount = island.palms !== undefined ? island.palms : 8
@@ -9733,7 +9743,7 @@ export class World {
    * at the kerb pointing along it, a tree belongs in the gap between two
    * buildings - none of which a random scatter can know.
    */
-  dressStreets(island, roads, plots) {
+  dressStreets(island, roads, plots, built = null) {
     const streets = roads.filter(r => r.street || r.ring)
 
     for (let i = 0; i < plots.length; i++) {
@@ -9754,8 +9764,17 @@ export class World {
 
       // Ground floor gets a shopfront on the busier streets. Not every
       // building - a street of nothing but shops reads as a film set.
+      //
+      // Only on a building that exists. The roll is still drawn for a plot
+      // with no building on it: rand() is one shared sequence, and skipping
+      // a draw here would repaint every car and container after this island.
+      const hasBuilding = !built || built.has(plot)
       if (this.rand() < 0.45) {
-        this.addShopfront(wx + fx * (plot.depth / 2), wz + fz * (plot.depth / 2), facing, plot.width)
+        if (hasBuilding) {
+          this.addShopfront(wx + fx * (plot.depth / 2), wz + fz * (plot.depth / 2), facing, plot.width)
+        } else {
+          this.rand() // the awning colour addShopfront() would have picked
+        }
       }
 
       // Kerbside dressing sits on the pavement between wall and road
@@ -10259,6 +10278,13 @@ export class World {
 
     // Keep clear of anything the map placed by hand
     if (!this.clearOfPlaced(localX, localZ)) return false
+
+    // And off the ground in front of a station's doors or a gas station's
+    // pumps. The station's own footprint is on the placed list, but its way
+    // in is not, and the scatter put a hut square across the blog fire
+    // station's doors.
+    if (this.accessStations &&
+        blocksStationEntrance(worldX, worldZ, this.accessStations)) return false
 
     // Clear of every road on this island?
     return distanceToNearestRoad(roads, localX, localZ) > clearance

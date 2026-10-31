@@ -57,14 +57,22 @@
 
   <!-- UI Overlay -->
   <div id="ui">
+    <!-- Bottom-left corner: speed and fuel, with the controls hint under
+         them. One stacked column, so the hint can never be drawn over the
+         gauge - it was, whenever its text ran to four lines. -->
+    <div id="hud-corner">
     <!-- Speedometer -->
     <div id="speedometer">
       <div class="speed-value">0</div>
       <div class="speed-label">MPH</div>
       <!-- Fuel. Under the speed because that is where you already look. -->
       <div id="fuel" class="hidden">
+        <div id="fuel-head">
+          <span id="fuel-label">&#9981; FUEL</span>
+          <span id="fuel-percent">100%</span>
+        </div>
         <div id="fuel-bar"><div id="fuel-fill"></div></div>
-        <div id="fuel-label">FUEL</div>
+        <div id="fuel-scale"><span>E</span><span>F</span></div>
       </div>
     </div>
 
@@ -179,6 +187,7 @@
       <p>SHIFT to boost &middot; SPACE to brake</p>
       <p>Drag to look &middot; scroll to zoom &middot; C to re-centre</p>
       <p>&#44; and &#46; to indicate &middot; <b>M</b> for sound</p>
+    </div>
     </div>
 
     <!-- What is going on right now: the fire, and later the other callouts.
