@@ -59,6 +59,7 @@ export class UI {
 
     this.fuelEl = document.getElementById('fuel')
     this.fuelFill = document.getElementById('fuel-fill')
+    this.fuelPercent = document.getElementById('fuel-percent')
     this.missionEl = document.getElementById('mission')
     this.missionTitle = document.getElementById('mission-title')
     this.missionBar = document.getElementById('mission-bar')
@@ -471,8 +472,15 @@ export class UI {
     this.fuelEl.classList.toggle('hidden', !gauge.show)
     if (!gauge.show) return
 
+    const level = Math.max(0, Math.min(1, gauge.fuel))
     if (this.fuelFill) {
-      this.fuelFill.style.width = `${Math.max(0, Math.min(1, gauge.fuel)) * 100}%`
+      this.fuelFill.style.width = `${level * 100}%`
+    }
+    if (this.fuelPercent) {
+      // Rounded up, so the number never reads 0% while there is still fuel
+      // in the tank and the engine is still running.
+      const text = `${Math.ceil(level * 100)}%`
+      if (this.fuelPercent.textContent !== text) this.fuelPercent.textContent = text
     }
     this.fuelEl.classList.toggle('low', !!gauge.low && !gauge.empty)
     this.fuelEl.classList.toggle('empty', !!gauge.empty)
