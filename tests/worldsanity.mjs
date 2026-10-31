@@ -309,6 +309,23 @@ chk('the plaza and the garage apron are draped on the surface, not laid flat',
 chk('and the drape asks the same lift the collider does',
     /surfaceSample\(x, z\) \{[\s\S]{0,800}surfaceLift\(claim\)/.test(code))
 
+// The gas forecourt the same way. It was laid SURFACE_PAVED + 0.02 over the
+// bare height field, and the forecourt claims nothing, so over most of it the
+// grass cap stood 0.30 above the field and simply covered it: from above, a
+// strip of concrete by the road and grass under the canopy and the bays.
+// Everything standing on it - the paint, the pump islands, the attendant -
+// has to agree with it, so they all ask forecourtAt().
+chk('the gas forecourt is laid on the surface you drive on, not under the grass',
+    /forecourtAt\(x, z\) \{\s*return this\.surfaceAt\(x, z\) \+ FORECOURT_CLEARANCE/.test(code) &&
+    /\(x, z\) => this\.forecourtAt\(x, z\)\)\s*forecourt\.userData\.forecourt/.test(code),
+    'the grass will show through the forecourt again')
+chk('and the bay paint, the pump islands and the attendant stand on it',
+    /mesh\.position\.set\(cx, this\.forecourtAt\(cx, cz\) \+ 0\.03, cz\)/.test(code) &&
+    /const deck = this\.forecourtAt\(bay\.pump\.x, bay\.pump\.z\)/.test(code) &&
+    /island\.position\.set\(px, deck \+ 0\.12, po\)/.test(code) &&
+    /const y = this\.forecourtAt\(a\.x, a\.z\)/.test(code),
+    'buried in the raised forecourt')
+
 // ---------------------------------------------------------------------------
 console.log('\n10. Nothing on the published site is a placeholder')
 

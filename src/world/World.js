@@ -157,6 +157,18 @@ export const PAVING_CLEARANCE = 0.02
 export const PAVING_OVER_GRASS = 0.09
 
 /**
+ * And how far a gas forecourt stands over it.
+ *
+ * Not drapeOnSurface()'s 0.09 over grass. Every forecourt stands on its own
+ * levelled pad, and on level ground the grass cap and the collider are the
+ * same height, so the error that number covers is not there: measured on a
+ * half-unit grid over all four forecourts, the grass stood at most 0.02 over
+ * the collider. 0.09 would have put every car at a pump 0.11 deep in the
+ * concrete; this leaves it 0.04, which is the paint's own thickness.
+ */
+export const FORECOURT_CLEARANCE = 0.04
+
+/**
  * How far the grass cap sits above the sand it covers.
  *
  * Three centimetres, while the ground was flat. On a hill it cannot be: the
@@ -1389,6 +1401,17 @@ export class World {
   }
 
   /**
+   * How high a gas station's forecourt is, at a point on it.
+   *
+   * A height rather than a draped geometry, because a forecourt is not one
+   * mesh: the slab, the painted bays, the pump islands and the attendant
+   * standing on it all have to agree about where its top is.
+   */
+  forecourtAt(x, z) {
+    return this.surfaceAt(x, z) + FORECOURT_CLEARANCE
+  }
+
+  /**
    * The island's outline, triangulated and subdivided - computed ONCE.
    *
    * The sand mesh and the physics collider are the same polygon, subdivided to
@@ -2069,17 +2092,20 @@ export class World {
    * caller says which surface it is rather than working out an absolute
    * height that stops being true the moment the terrain moves.
    */
-  pavedPatch(cx, cz, width, depth, heading, y, material, steps = 8) {
+  pavedPatch(cx, cz, width, depth, heading, y, material, steps = 8, heightAt = null) {
     const fx = Math.sin(heading)
     const fz = Math.cos(heading)
     const sx = -fz
     const sz = fx
 
+    // `heightAt` replaces the height field when the patch has to sit on
+    // something else - a gas forecourt sits on the surface the cars drive on.
+    const base = heightAt || ((x, z) => this.groundAt(x, z))
     const positions = []
     const at = (a, b) => {
       const x = cx + sx * width * a + fx * depth * b
       const z = cz + sz * width * a + fz * depth * b
-      return [x, this.groundAt(x, z) + y, z]
+      return [x, base(x, z) + y, z]
     }
 
     for (let i = 0; i < steps; i++) {
@@ -6000,14 +6026,24 @@ export class World {
     // pavedPatch, not a slab: the driveway taught this one the expensive way.
     // A level plate over ground that falls stands proud at its far end and
     // every long vehicle sinks into it.
+    //
+    // ON THE SURFACE, NOT THE HEIGHT FIELD. This was laid SURFACE_PAVED + 0.02
+    // over groundAt() - 0.08 - which is right only where a road's claim has
+    // ducked the grass out of the way. The forecourt claims nothing (see the
+    // apron pad in getIslandTerrain()), so over most of it the grass cap
+    // stands SURFACE_GRASS, 0.30, over the height field and simply covered the
+    // concrete: from above, a strip of forecourt along the road and grass
+    // under the canopy and the bays. forecourtAt() is drapeOnSurface()'s rule,
+    // the one that fixed the hub plaza's rim the same way.
     const padX = station.x + fx * yard.offset
     const padZ = station.z + fz * yard.offset
-    this.pavedPatch(
+    const forecourt = this.pavedPatch(
       padX, padZ, yard.width, yard.depth, station.heading,
-      SURFACE_PAVED + 0.02,
+      0,
       new THREE.MeshStandardMaterial({
         color: PALETTE.concrete, roughness: 0.95
-      }))
+      }), 32, (x, z) => this.forecourtAt(x, z))
+    forecourt.userData.forecourt = station.id
 
     const group = new THREE.Group()
     group.position.set(station.x, this.groundAt(station.x, station.z), station.z)
@@ -6117,21 +6153,27 @@ export class World {
       const bayOut = (bay.x - station.x) * fx + (bay.z - station.z) * fz
       const facing = bayOut > po ? 1 : -1
 
+      // Standing ON the forecourt, which is not at the group's origin height:
+      // the group sits on the height field and the forecourt on the surface
+      // above it. Left at the group's zero the island was buried in the slab.
+      const deck = this.forecourtAt(bay.pump.x, bay.pump.z) -
+        this.groundAt(station.x, station.z)
+
       // The island runs ALONG the bay, which runs along the frontage
       const island = new THREE.Mesh(
         new THREE.BoxGeometry(FUEL_ISLAND_LONG, 0.25, FUEL_ISLAND_WIDE), trim)
-      island.position.set(px, 0.12, po)
+      island.position.set(px, deck + 0.12, po)
       group.add(island)
 
       const pump = new THREE.Mesh(
         new THREE.BoxGeometry(1.1, PUMP_HEIGHT, 0.75), pumpMat)
-      pump.position.set(px, 0.25 + PUMP_HEIGHT / 2, po)
+      pump.position.set(px, deck + 0.25 + PUMP_HEIGHT / 2, po)
       group.add(pump)
 
       // The lit face, towards the car
       const face = new THREE.Mesh(
         new THREE.PlaneGeometry(0.55, 0.7), faceMat)
-      face.position.set(px + 0.2, 0.25 + PUMP_HEIGHT * 0.72, po + facing * 0.39)
+      face.position.set(px + 0.2, deck + 0.25 + PUMP_HEIGHT * 0.72, po + facing * 0.39)
       face.rotation.y = facing > 0 ? 0 : Math.PI
       group.add(face)
 
@@ -6139,7 +6181,7 @@ export class World {
       const holster = new THREE.Mesh(
         new THREE.BoxGeometry(0.16, 0.3, 0.14),
         new THREE.MeshStandardMaterial({ color: 0x23262b, roughness: 0.6 }))
-      holster.position.set(px - 0.3, 0.25 + PUMP_HEIGHT * 0.5, po + facing * 0.42)
+      holster.position.set(px - 0.3, deck + 0.25 + PUMP_HEIGHT * 0.5, po + facing * 0.42)
       group.add(holster)
 
       // Where the hose starts, in WORLD coordinates, because the attendant
@@ -6153,7 +6195,7 @@ export class World {
         z: bay.pump.z,
         hose: {
           x: station.x - fz * hx + fx * ho,
-          y: this.groundAt(station.x, station.z) + 0.25 + PUMP_HEIGHT * 0.5,
+          y: this.groundAt(station.x, station.z) + deck + 0.25 + PUMP_HEIGHT * 0.5,
           z: station.z + fx * hx + fz * ho
         }
       })
@@ -6202,7 +6244,8 @@ export class World {
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), paint)
       mesh.rotation.x = -Math.PI / 2
       mesh.rotation.z = -turn
-      mesh.position.set(cx, this.groundAt(cx, cz) + SURFACE_PAVED + 0.05, cz)
+      // On the forecourt, a hair above it.
+      mesh.position.set(cx, this.forecourtAt(cx, cz) + 0.03, cz)
       this.game.add(mesh)
     }
 
@@ -12686,7 +12729,7 @@ export class World {
 
     for (const fig of this.attendantFigures) {
       const a = fig.attendant
-      const y = this.groundAt(a.x, a.z) + SURFACE_PAVED + 0.02
+      const y = this.forecourtAt(a.x, a.z)
 
       const cycle = walkCycle(a, a.walking)
       fig.body.position.set(a.x, y + cycle.bob, a.z)
