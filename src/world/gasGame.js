@@ -12,6 +12,13 @@
  * canopy, a pump and a walking attendant; UI.js turns it into a gauge.
  * Neither decides anything.
  *
+ * STAGE THREE: RUNNING DRY
+ * ------------------------
+ * The engine dies, the car coasts to a stop, and a recovery truck drives in,
+ * hooks you up and tows you to the nearest pump, where the attendant takes
+ * over. That is roadsideTow.js; all this file does is ask for it once
+ * (`ctx.tow`) and stay out of the way while it happens (`ctx.towing`).
+ *
  * STAGE TWO: SOMEBODY HAS TO HOLD THE NOZZLE
  * ------------------------------------------
  * Each station has an attendant. Pull onto a bay and they walk to its pump,
@@ -403,6 +410,7 @@ export function nearestBay(bays, to) {
  *    maxSpeed: the player's top speed, in the same units as `speed`,
  *    bays:     [{ x, z, heading, station }],
  *    tow:      () => void     called ONCE when the tank runs dry
+ *    towing:   true while the recovery truck has hold of the car
  * }
  *
  * Mutates and returns `state`. Nothing here draws, routes, or knows what a
@@ -438,6 +446,17 @@ export function stepGas(state, delta, ctx) {
     state.bay = null
     state.target = null
     state.towRequested = false
+  }
+
+  // ON THE HOOK. Being dragged past a pump at walking pace is not stopping at
+  // it, and an attendant walking out to a car still hanging off a wheel-lift
+  // is a joke nobody asked for. Nothing burns and nothing fills until the
+  // truck has set you down - on a bay, where the ordinary rules take over.
+  if (ctx.towing) {
+    state.phase = 'dry'
+    state.bay = null
+    state.flowing = false
+    return serveAttendants(state, delta, ctx)
   }
 
   const bay = nearestBay(ctx.bays, player)
@@ -566,9 +585,24 @@ function serveAttendants(state, delta, ctx) {
  * screen, so being outranked here never leaves you without the information -
  * it only decides who gets the one arrow.
  */
-export function gasHud(state, playerHasTank) {
+export function gasHud(state, playerHasTank, rescue = null) {
   if (!playerHasTank || state.fuel === null) {
     return { active: false, mine: false }
+  }
+
+  // Stage three: the tow truck has the banner from the moment it is sent
+  // until it has set you down. `rescue` is rescueHud()'s answer.
+  if (rescue) {
+    return {
+      active: true,
+      mine: true,
+      title: rescue.title,
+      target: rescue.target || null,
+      showBar: !!rescue.showBar,
+      barLabel: rescue.barLabel || '',
+      progress: rescue.progress || 0,
+      good: false
+    }
   }
 
   if (state.phase === 'filling') {

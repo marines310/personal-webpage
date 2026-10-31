@@ -210,8 +210,9 @@ import {
 } from './monorailGame.js'
 import { chooseMission } from './missions.js'
 import {
-  newGasState, stepGas, gasHud, fuelGauge, hasTank, makeAttendants
+  newGasState, stepGas, gasHud, fuelGauge, hasTank, makeAttendants, LOW_FUEL
 } from './gasGame.js'
+import { newRescue, stepRescue, rescueHolds, rescueHud } from './roadsideTow.js'
 import {
   newRaceState, stepRace, raceHud, gridOffset, gridSide,
   RACE_LAPS, RACE_FIELD, RACE_PACE
@@ -887,6 +888,9 @@ export class World {
     this.fuelBays = getFuelBays(this.lanes)
     this.fuelAttendants = makeAttendants(this.fuelBays)
     this.createFuelAttendants()
+    // And the truck that comes for you when the tank runs dry.
+    this.rescue = null
+    this.createRescueTruck()
     this.police = newPoliceState()
     this.ambulance = newAmbulanceState()
     this.race = newRaceState()
@@ -12589,11 +12593,205 @@ export class World {
       maxSpeed: (vehicle && vehicle.params && vehicle.params.maxForwardSpeed) || 18,
       bays: this.fuelBays,
       attendants: this.fuelAttendants,
-      // Stage three hooks the tow truck on here. Until then running dry is a
-      // banner and an empty gauge, which is honest about what it does rather
-      // than half-starting a recovery that cannot finish.
-      tow: null
+      // Stage three: running dry sends for the recovery truck, and while it
+      // has hold of the car the tank neither burns nor fills.
+      tow: () => this.callRescue(),
+      towing: this.rescueHolds()
     })
+  }
+
+  // -------------------------------------------------------------
+  // Running dry: the recovery truck (gas stage three)
+  // -------------------------------------------------------------
+
+  /**
+   * One tow truck, kept for the player.
+   *
+   * Its own mesh rather than one borrowed from the traffic: the two traffic
+   * tow trucks are lane-bound and on their own errands, and taking one off
+   * the road would leave a hole in the city's numbers the traffic tests were
+   * tuned to (see claude/tow-truck-and-the-recovery.md - two is measured).
+   * The same model, built by the same function, so it is unmistakably the
+   * same kind of truck.
+   */
+  createRescueTruck() {
+    this.rescueTruck = this.buildTowTruck(null)
+    this.rescueTruck.visible = false
+    this.game.add(this.rescueTruck)
+  }
+
+  /** gasGame.js asks for this exactly once each time the tank runs dry. */
+  callRescue() {
+    if (!this.rescue) this.rescue = newRescue()
+  }
+
+  /** Is the recovery truck holding the player's car? Vehicle.js asks. */
+  rescueHolds() {
+    return rescueHolds(this.rescue)
+  }
+
+  /**
+   * An empty tank and nothing pulling. Asked by Vehicle.js, which cuts the
+   * throttle - and nothing else, so you can still steer onto the verge.
+   */
+  engineDead() {
+    const gas = this.gas
+    const v = this.game.vehicle
+    return !!(gas && v && hasTank(v.kind) && gas.kind === v.kind &&
+      gas.fuel !== null && gas.fuel <= 0)
+  }
+
+  /**
+   * The rescue, one frame: step it, draw the truck, and while it has hold of
+   * the car, put the car where the wheel-lift has it.
+   */
+  updateRescue(delta) {
+    const rescue = this.rescue
+    const truck = this.rescueTruck
+    if (!rescue) {
+      if (truck) truck.visible = false
+      return
+    }
+
+    const v = this.game.vehicle
+    const mesh = v && v.mesh
+
+    // Called off before anyone was sent: filled up some other way, or it is
+    // a different vehicle now.
+    if (rescue.phase === 'stalled' && !this.engineDead()) {
+      this.rescue = null
+      return
+    }
+
+    const wasHolding = rescueHolds(rescue)
+    stepRescue(rescue, delta, {
+      player: mesh ? {
+        x: mesh.position.x, z: mesh.position.z,
+        heading: v.heading,
+        speed: v.getSpeed ? v.getSpeed() : 0,
+        length: v.size && v.size.length,
+        width: v.size && v.size.width
+      } : null,
+      network: this.lanes,
+      bays: this.fuelBays
+    })
+
+    // NO WAY TO GET YOU TO A PUMP - no road near enough, or none that reaches
+    // a gas station. Rather than leave you stranded for good, a can of fuel:
+    // a quarter of a tank, enough to drive to one yourself.
+    if (rescue.phase === 'failed') {
+      this.gas.fuel = LOW_FUEL
+      this.gas.phase = 'driving'
+      this.gas.towRequested = false
+      this.gas.message = 'EMERGENCY FUEL'
+      this.gas.messageFor = 4
+      this.rescue = null
+      if (truck) truck.visible = false
+      return
+    }
+
+    // The car's ride height, measured once as it sits stopped, so a car on
+    // the hook rides exactly as high as it did on its own wheels.
+    if (!wasHolding && rescueHolds(rescue) && v && v.body) {
+      const rear = this.rescueRear(rescue.car, rescue.wheelbase)
+      rescue.rest = v.body.translation().y - this.groundAt(rear.x, rear.z)
+    }
+
+    if (rescueHolds(rescue) && v && v.body) {
+      this.holdRescuedCar(v, rescue)
+    } else if (wasHolding && v && v.body) {
+      // SET DOWN. Through placeAt(), the one way a car is put down, and from
+      // then on it is yours again.
+      const c = rescue.car
+      const rear = this.rescueRear(c, rescue.wheelbase)
+      v.placeAt(c.x, this.groundAt(rear.x, rear.z) + (rescue.rest || 0.5) + 0.02,
+        c.z, c.heading)
+    }
+
+    if (rescue.phase === 'done') {
+      this.rescue = null
+      if (truck) truck.visible = false
+      return
+    }
+    if (truck) this.drawRescueTruck(truck, rescue)
+  }
+
+  /** The car's rear axle - the wheels still on the road while it is towed. */
+  rescueRear(car, wheelbase) {
+    if (car.rear) return car.rear
+    return {
+      x: car.x - Math.sin(car.heading) * wheelbase / 2,
+      z: car.z - Math.cos(car.heading) * wheelbase / 2
+    }
+  }
+
+  /**
+   * Put the player's body where the wheel-lift has it.
+   *
+   * Overwritten every frame, as rideTrain() does for the monorail, and for
+   * the same reason: asking the solver to hold a car on a hook is asking it
+   * for a joint it would fight. AND THE MESH, because this runs after the
+   * body was copied onto it and the camera follows the mesh.
+   */
+  holdRescuedCar(v, rescue) {
+    const c = rescue.car
+    const rear = this.rescueRear(c, rescue.wheelbase)
+    const y = this.groundAt(rear.x, rear.z) + (rescue.rest || 0.5) + (c.rise || 0)
+    if (!this._rescueQuat) {
+      this._rescueQuat = new THREE.Quaternion()
+      this._rescueEuler = new THREE.Euler()
+    }
+    // Nose up is negative about x - the same convention as the traffic's
+    // pitch and placeWreckCar().
+    this._rescueQuat.setFromEuler(this._rescueEuler.set(-(c.pitch || 0), c.heading, 0, 'YXZ'))
+    const q = this._rescueQuat
+    v.body.setTranslation({ x: c.x, y, z: c.z }, true)
+    v.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
+    v.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+    v.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+    v.mesh.position.set(c.x, y, c.z)
+    v.mesh.quaternion.copy(q)
+    v.heading = c.heading
+    // So the wheels roll while it is being towed.
+    v.currentSpeed = c.speed || 0
+    v.currentSteering = 0
+  }
+
+  /** The truck where the rescue says, its boom out and up as far as it says. */
+  drawRescueTruck(truck, rescue) {
+    const t = rescue.truck
+    if (!t || rescue.phase === 'stalled') {
+      truck.visible = false
+      return
+    }
+    truck.visible = true
+    const ground = this.groundAt(t.x, t.z)
+    const ahead = this.groundAt(t.x + Math.sin(t.heading) * 2, t.z + Math.cos(t.heading) * 2)
+    truck.position.set(t.x, ground, t.z)
+    truck.rotation.set(-Math.atan2(ahead - ground, 2), t.heading, 0, 'YXZ')
+    this.updateTowRig(truck, rescue.rig ? rescue.rig.reach : 0, rescue.rig ? rescue.rig.lift : 0)
+
+    const lights = truck.userData.lights
+    if (lights) {
+      const speed = Math.abs(t.speed || 0)
+      const level = lampBrightness({
+        gloom: gloomLevel(this.game.environment),
+        braking: false,
+        stopped: speed < 0.5,
+        indicate: 0,
+        blink: blinkOn(this.elapsed, 0)
+      })
+      lights.head.emissiveIntensity = level.head
+      lights.tail.emissiveIntensity = level.tail
+      lights.left.emissiveIntensity = level.left
+      lights.right.emissiveIntensity = level.right
+    }
+    // The amber bar is on for the whole job, which is what a recovery truck
+    // working at the roadside does.
+    const beat = sirenBeat(this.elapsed, SIREN_RATE)
+    for (const beacon of truck.userData.beacons || []) {
+      beacon.material.emissiveIntensity = (beacon.side === 1) === beat ? 2.4 : 0.05
+    }
   }
 
   /**
@@ -14181,7 +14379,7 @@ export class World {
       // low fuel takes it only when nothing else wants it. The gauge is drawn
       // separately and is always on screen, so being outranked here never
       // leaves you without the information.
-      gasHud(this.gas, hasTank(kind))
+      gasHud(this.gas, hasTank(kind), this.rescue ? rescueHud(this.rescue) : null)
     ])
   }
 
@@ -14288,6 +14486,7 @@ export class World {
     this.updateGarageDoors(delta)
     this.updateFire(delta)
     this.updateGas(delta)
+    this.updateRescue(delta)
     this.updateFuelAttendants()
     this.updatePolice(delta)
     this.updateAmbulance(delta)
