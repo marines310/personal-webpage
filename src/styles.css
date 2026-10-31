@@ -79,17 +79,34 @@ body {
   pointer-events: auto;
 }
 
+/* Speed, fuel and the controls hint, stacked in the bottom-left corner.
+   A column rather than two fixed boxes at guessed heights: the speedometer
+   used to sit at bottom: 100px and the hint, four lines tall, reached past
+   that and covered the fuel bar. */
+#hud-corner {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  pointer-events: none;
+}
+
+#hud-corner > * {
+  pointer-events: auto;
+}
+
 /* Speedometer */
 #speedometer {
-  position: fixed;
-  bottom: 100px;
-  left: 20px;
   background: rgba(0, 0, 0, 0.5);
   padding: 12px 20px;
   border-radius: 8px;
   backdrop-filter: blur(10px);
   text-align: center;
-  min-width: 80px;
+  min-width: 132px;
+  box-sizing: border-box;
 }
 
 #speedometer .speed-value {
@@ -539,9 +556,6 @@ body {
 
 /* Controls Hint */
 #controls-hint {
-  position: fixed;
-  bottom: 20px;
-  left: 20px;
   color: rgba(255, 255, 255, 0.7);
   font-size: 0.875rem;
   background: rgba(0, 0, 0, 0.5);
@@ -923,25 +937,60 @@ body {
    is something you watch rather than something that has happened.
 */
 #fuel {
-  margin-top: 9px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 #fuel.hidden {
   display: none;
 }
 
+#fuel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 5px;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+
+#fuel-label {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+#fuel-percent {
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
 #fuel-bar {
+  position: relative;
   width: 100%;
-  height: 6px;
-  border-radius: 3px;
+  height: 10px;
+  border-radius: 5px;
   background: rgba(255, 255, 255, 0.16);
   overflow: hidden;
+}
+
+/* Quarter marks, so "a bit under half" can be read off without the number. */
+#fuel-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,
+    transparent calc(25% - 1px), rgba(0, 0, 0, 0.45) calc(25% - 1px), rgba(0, 0, 0, 0.45) 25%,
+    transparent 25%, transparent calc(50% - 1px), rgba(0, 0, 0, 0.45) calc(50% - 1px), rgba(0, 0, 0, 0.45) 50%,
+    transparent 50%, transparent calc(75% - 1px), rgba(0, 0, 0, 0.45) calc(75% - 1px), rgba(0, 0, 0, 0.45) 75%,
+    transparent 75%);
+  pointer-events: none;
 }
 
 #fuel-fill {
   height: 100%;
   width: 100%;
-  border-radius: 3px;
+  border-radius: 5px;
   background: #43d98b;
   transition: width 0.25s linear, background-color 0.3s ease;
 }
@@ -965,12 +1014,15 @@ body {
   50% { opacity: 0.55; }
 }
 
-#fuel-label {
-  margin-top: 4px;
-  font-size: 0.6rem;
-  letter-spacing: 0.14em;
-  color: rgba(255, 255, 255, 0.55);
+#fuel-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  font-size: 0.55rem;
+  color: rgba(255, 255, 255, 0.45);
 }
 
-#fuel.low #fuel-label { color: #ffb547; }
-#fuel.empty #fuel-label { color: #ff5f56; }
+#fuel.low #fuel-label,
+#fuel.low #fuel-percent { color: #ffb547; }
+#fuel.empty #fuel-label,
+#fuel.empty #fuel-percent { color: #ff5f56; }
