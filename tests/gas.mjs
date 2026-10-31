@@ -12,6 +12,8 @@
  *   4. **You can leave at any time**, and you keep what went in.
  *   5. **Nothing runs past its ends** - no tank over full, none below empty.
  *   6. **Running dry asks for help once**, not sixty times a second.
+ *   7. **And the help comes**: a tow truck drives in, hooks you up without a
+ *      jump, and sets you down on a pump bay - see section 11.
  */
 import {
   TANK_SECONDS, IDLE_SHARE, LOW_FUEL, FILL_SECONDS, TOP_UP, AT_PUMP,
@@ -26,6 +28,10 @@ import {
   TRAFFIC_LENGTHS, pointAlong, BUS_STOP_REACH,
   FUEL_BAY_LONG, FUEL_BAY_WIDE, FUEL_ISLAND_LONG, FUEL_ISLAND_WIDE
 } from '../src/world/islandLayout.js'
+import {
+  newRescue, stepRescue, rescueHolds, rescueHud, planRescue, wheelbaseOf,
+  nearestLanePoint, RESCUE_SPAWN_DISTANCE
+} from '../src/world/roadsideTow.js'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -632,6 +638,164 @@ const stand = pumpStand(visitBay)
 chk('and lifts the nozzle from the bay side of the pump',
     Math.hypot(stand.x - visitBay.x, stand.z - visitBay.z) <
     Math.hypot(visitBay.pump.x - visitBay.x, visitBay.pump.z - visitBay.z))
+
+// ---------------------------------------------------------------------------
+console.log('\n11. Running dry: the tow truck comes for you\n')
+
+{
+  // The model: asking for help stops the burn and the fill while on the hook.
+  const s = tank(0.5)
+  stepGas(s, 1 / 60, { player: driver({ speed: 10 }), maxSpeed: MAX_SPEED,
+    bays: [{ x: 0, z: 0, heading: 0, station: 'x' }], towing: true })
+  chk('on the hook, nothing fills even parked on a bay', s.phase !== 'filling')
+  chk('and nothing burns', s.fuel === 0.5)
+  chk('gasHud hands the banner to the rescue',
+    gasHud(tank(0), true, { title: 'TOW TRUCK ON ITS WAY' }).title ===
+      'TOW TRUCK ON ITS WAY')
+}
+
+const rescueNet = net
+const rescueBays = getFuelBays(rescueNet)
+const wrap = (a) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a }
+
+/**
+ * A whole rescue, frame by frame, measuring what Mike would see: does
+ * anything jump, does the truck drive through the car, and where does the car
+ * end up.
+ */
+function rescueFrom(laneIndex, kind = 'sedan', length = 4.4, width = 2) {
+  const lane = rescueNet.lanes[laneIndex]
+  const at = pointAlong(lane, lane.length / 2, false, true)
+  const player = { x: at.x, z: at.z, heading: at.heading, speed: 0, length, width }
+  const r = newRescue()
+  const m = { phases: [], truckStep: 0, carStep: 0, carTurn: 0, truckTurn: 0, closest: Infinity, t: 0 }
+  let lastT = null, lastC = null
+  while (r.phase !== 'done' && r.phase !== 'failed' && m.t < 400) {
+    stepRescue(r, 1 / 60, { player, network: rescueNet, bays: rescueBays })
+    m.t += 1 / 60
+    if (m.phases[m.phases.length - 1] !== r.phase) m.phases.push(r.phase)
+    if (r.truck && r.phase !== 'stalled') {
+      if (lastT) {
+        m.truckStep = Math.max(m.truckStep, Math.hypot(r.truck.x - lastT.x, r.truck.z - lastT.z))
+        m.truckTurn = Math.max(m.truckTurn, Math.abs(wrap(r.truck.heading - lastT.heading)))
+      }
+      lastT = { ...r.truck }
+    }
+    if (rescueHolds(r)) {
+      if (lastC) {
+        m.carStep = Math.max(m.carStep, Math.hypot(r.car.x - lastC.x, r.car.z - lastC.z))
+        m.carTurn = Math.max(m.carTurn, Math.abs(wrap(r.car.heading - lastC.heading)))
+      }
+      lastC = { ...r.car }
+      if (r.phase === 'arriving' || r.phase === 'backing') {
+        m.closest = Math.min(m.closest, Math.hypot(r.truck.x - r.car.x, r.truck.z - r.car.z))
+        m.carStill = m.carStill ?? { ...r.car }
+        m.carMovedEarly = Math.max(m.carMovedEarly || 0,
+          Math.hypot(r.car.x - m.carStill.x, r.car.z - m.carStill.z))
+      }
+    }
+    if (r.phase === 'arriving' && m.spawnGap === undefined) {
+      m.spawnGap = Math.hypot(r.truck.x - player.x, r.truck.z - player.z)
+    }
+  }
+  return { r, m, player }
+}
+
+{
+  const s = newRescue()
+  stepRescue(s, 0.1, { player: driver({ speed: 6, heading: 0, length: 4.4, width: 2 }),
+    network: rescueNet, bays: rescueBays })
+  chk('nobody is sent while the car is still rolling', s.phase === 'stalled')
+  chk('and the car is still yours while it rolls', !rescueHolds(s))
+  chk('the banner says why', rescueHud(s).title === 'OUT OF FUEL')
+}
+
+// A handful of places around the map, and a bus, which is the hardest car to
+// get round and the longest on the hook.
+const lanesToTry = rescueNet.lanes
+  .map((lane, i) => ({ lane, i }))
+  .filter(({ lane }) => !lane.noTraffic && lane.length > 30)
+  .filter((_, k) => k % 9 === 0)
+  .map(({ i }) => i)
+const runs = lanesToTry.map(i => rescueFrom(i))
+runs.push(rescueFrom(lanesToTry[1], 'bus', TRAFFIC_LENGTHS.bus, 2.5))
+console.log(`   ${runs.length} rescues, ${runs.map(x => x.m.t.toFixed(0) + 's').join(' ')}`)
+
+const finished = runs.filter(x => x.r.phase === 'done')
+chk('every rescue finishes', finished.length === runs.length,
+  runs.filter(x => x.r.phase !== 'done').map(x => x.r.phase).join(','))
+chk('in the order a real one happens', finished.every(x =>
+  x.m.phases.join(' ') === 'stalled arriving backing hitching hauling dropping leaving done'),
+  finished.map(x => x.m.phases.join('>')).find(p => !p.startsWith('stalled>arriving>backing')) || '')
+
+const worst = (k) => Math.max(...finished.map(x => x.m[k]))
+chk('the truck starts out of sight', Math.min(...finished.map(x => x.m.spawnGap)) >= 55,
+  `${Math.min(...finished.map(x => x.m.spawnGap)).toFixed(1)}`)
+chk('it never jumps: no frame further than its top speed allows',
+  worst('truckStep') < 0.3, worst('truckStep').toFixed(3))
+chk('and never swings round on the spot', worst('truckTurn') < 0.08,
+  worst('truckTurn').toFixed(3))
+// A towed car swings wider than the truck through a tight corner - its middle
+// is five units behind the truck's - so the bound is the truck's top speed
+// with room for that swing, not the truck's own step.
+chk('your car never jumps either', worst('carStep') < 0.3, worst('carStep').toFixed(3))
+chk('and is never yanked round', worst('carTurn') < 0.08, worst('carTurn').toFixed(3))
+chk('your car stays put while the truck comes for it',
+  worst('carMovedEarly') < 1e-9, `${worst('carMovedEarly')}`)
+for (const x of finished) {
+  const need = x.player.width / 2 + 2.3 / 2
+  if (x.m.closest < need) {
+    chk(`the truck goes round, not through, the car (lane ${x.player.x.toFixed(0)})`, false,
+      `${x.m.closest.toFixed(2)} < ${need}`)
+  }
+}
+chk('the truck goes round your car, not through it',
+  finished.every(x => x.m.closest >= x.player.width / 2 + 2.3 / 2 - 0.05))
+
+const onBay = finished.map(x => Math.hypot(x.r.car.x - x.r.bay.x, x.r.car.z - x.r.bay.z))
+chk('it sets you down on a pump bay', Math.max(...onBay) < 0.05,
+  Math.max(...onBay).toFixed(3))
+chk('square to the bay', finished.every(x => Math.abs(wrap(x.r.car.heading - x.r.bay.heading)) < 0.01))
+chk('with the nose back down', finished.every(x => x.r.car.pitch < 1e-6))
+chk('within the reach of the pump', Math.max(...onBay) <= AT_PUMP)
+chk('and the nose is up while you are towed', finished.every(x => x.r.haul && x.r.rig))
+
+{
+  // Set down: the ordinary fuel rules take over, and the attendant comes.
+  const x = finished[0]
+  const bay = x.r.bay
+  const attendants = makeAttendants(rescueBays)
+  const s = tank(0)
+  s.towRequested = true
+  const ctx = {
+    player: { x: x.r.car.x, z: x.r.car.z, heading: x.r.car.heading, kind: 'sedan',
+      speed: 0, width: 2, length: 4.4 },
+    maxSpeed: MAX_SPEED, bays: rescueBays, attendants
+  }
+  for (let i = 0; i < 60 * 12; i++) stepGas(s, 1 / 60, ctx)
+  chk('dropped on the bay, the attendant fills you up', s.fuel > 0.5 && bay.station,
+    `${s.fuel}`)
+  chk('and the next time you run dry, help comes again', s.towRequested === false)
+}
+
+{
+  // The truck's banner points at the truck while it is coming.
+  const x = rescueFrom(lanesToTry[0])
+  chk('no plan is attempted with no gas stations',
+    planRescue(rescueNet, { x: 0, z: 0, heading: 0, length: 4.4, width: 2 }, []) === null)
+  const hud = rescueHud({ phase: 'arriving', truck: { x: 3, z: 4 } })
+  chk('while it comes, the arrow points at the truck', hud.target.x === 3 && hud.target.z === 4)
+  chk('the hook-up has a bar', rescueHud({ phase: 'hitching', t: 1 }).showBar)
+  chk('wheelbase is the fleet\'s 0.62 of the length', Math.abs(wheelbaseOf(10) - 6.2) < 1e-9)
+  chk('the circuit is not a road the truck will join', (() => {
+    const lane = rescueNet.lanes.findIndex(l => l.noTraffic)
+    if (lane < 0) return true
+    const p = rescueNet.lanes[lane].points[0]
+    const hit = nearestLanePoint(rescueNet, p.x, p.z, null)
+    return !rescueNet.lanes[hit.lane].noTraffic
+  })())
+  chk('the spawn distance is a real drive', RESCUE_SPAWN_DISTANCE >= 80 && x.r.phase === 'done')
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

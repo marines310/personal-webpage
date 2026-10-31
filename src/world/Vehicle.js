@@ -945,6 +945,18 @@ export class Vehicle {
       return
     }
 
+    // A dead engine is not a stuck car. Holding the throttle with an empty
+    // tank goes nowhere, and without this the recovery valve would read that
+    // as wedged and teleport you to the nearest road while the tow truck was
+    // on its way to where you used to be.
+    const world = this.game.world
+    if ((world && world.engineDead && world.engineDead()) ||
+        (world && world.rescueHolds && world.rescueHolds())) {
+      this.stuckFor = 0
+      this._stuckFrom = null
+      return
+    }
+
     const asking = Math.abs(inputs.getInput().forward) > 0.1
 
     // HOW FAR IT ACTUALLY WENT, not how fast it thinks it is going.
@@ -1011,8 +1023,18 @@ export class Vehicle {
     // gets pushed off its beam by a bridge.
     if (this.kind === 'monorail') return
 
+    // ON A TOW TRUCK'S HOOK, for the same reason: World.updateRescue() puts
+    // the body where the wheel-lift has it, and driving it as well would be
+    // two things writing one position.
+    const world = this.game.world
+    if (world && world.rescueHolds && world.rescueHolds()) return
+
     const p = this.params
-    const { forward, steering, boost, brake } = this.game.inputs.getInput()
+    const input = this.game.inputs.getInput()
+    const { steering, boost, brake } = input
+    // OUT OF FUEL, THE ENGINE IS DEAD. Steering and the brakes still work, so
+    // you can coast onto the verge, but nothing pulls - either way.
+    const forward = world && world.engineDead && world.engineDead() ? 0 : input.forward
 
     // Only the throttle needs solid ground; steering geometry still applies
     // while airborne so the car doesn't freeze mid-jump.
