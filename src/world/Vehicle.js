@@ -14,6 +14,7 @@ import {
   tuningFor, airborneVelocity, isGrounded, groundedWithCoyote, airYaw,
   tiltRates, isFlipped, TILT
 } from './driving.js'
+import { donutParams, nextDonutState, canDonut } from './donut.js'
 // World imports Vehicle nowhere, so this is not a cycle - and taking the
 // height from the same table the traffic uses is the point: the sedan you
 // drive is the sedan on the road.
@@ -244,6 +245,10 @@ export class Vehicle {
     this.indicator = 0
     this.stalk = 0
     this.stalkTurned = 0
+
+    // Donut mode: a toggle, off by default, and only ever true for a kind
+    // that can do it. See donut.js.
+    this.donut = false
     this.indicateState = { side: 0, held: 0 }
 
     // Scratch vectors, reused each frame to avoid garbage
@@ -273,6 +278,10 @@ export class Vehicle {
     // it. See driving.js - the per-kind numbers are multipliers of this.
     this._baseParams = { ...this.params }
     this.params = tuningFor(kind, this._baseParams)
+    // A kind that cannot donut cannot be left in donut mode. nextDonutState()
+    // would clear it on the next press anyway; this clears it on the swap, so
+    // the handling never lies for even one frame.
+    if (!canDonut(kind)) this.donut = false
     this.params.wheelbase = WHEELBASE_RATIO * this.size.length
 
     this.mesh = this.createMesh()
@@ -315,6 +324,10 @@ export class Vehicle {
     this.kind = kind
     this.size = vehicleSize(kind)
     this.params = tuningFor(kind, this._baseParams)
+    // A kind that cannot donut cannot be left in donut mode. nextDonutState()
+    // would clear it on the next press anyway; this clears it on the swap, so
+    // the handling never lies for even one frame.
+    if (!canDonut(kind)) this.donut = false
 
     // The arc grows with the body. Everything else about the handling is
     // deliberately identical between kinds - only the thing that is a
@@ -626,6 +639,14 @@ export class Vehicle {
     // decreases the heading here (see turnDirection), and the two conventions
     // meet in exactly one place: turnAmount.
     if (this.stalk) this.stalkTurned += turnAmount(step)
+
+    // The donut switch, read in the same place as the indicator stalk and
+    // for the same reason: both are one-shot presses, and reading them
+    // anywhere other than the one update per frame means a press is either
+    // missed or counted twice.
+    if (inputs.consumeDonut) {
+      this.donut = nextDonutState(this.donut, this.kind, inputs.consumeDonut())
+    }
 
     if (inputs.consumeIndicator) {
       const pressed = inputs.consumeIndicator()
@@ -945,6 +966,18 @@ export class Vehicle {
       return
     }
 
+    // A dead engine is not a stuck car. Holding the throttle with an empty
+    // tank goes nowhere, and without this the recovery valve would read that
+    // as wedged and teleport you to the nearest road while the tow truck was
+    // on its way to where you used to be.
+    const world = this.game.world
+    if ((world && world.engineDead && world.engineDead()) ||
+        (world && world.rescueHolds && world.rescueHolds())) {
+      this.stuckFor = 0
+      this._stuckFrom = null
+      return
+    }
+
     const asking = Math.abs(inputs.getInput().forward) > 0.1
 
     // HOW FAR IT ACTUALLY WENT, not how fast it thinks it is going.
@@ -1011,8 +1044,21 @@ export class Vehicle {
     // gets pushed off its beam by a bridge.
     if (this.kind === 'monorail') return
 
-    const p = this.params
-    const { forward, steering, boost, brake } = this.game.inputs.getInput()
+    // ON A TOW TRUCK'S HOOK, for the same reason: World.updateRescue() puts
+    // the body where the wheel-lift has it, and driving it as well would be
+    // two things writing one position.
+    const world = this.game.world
+    if (world && world.rescueHolds && world.rescueHolds()) return
+
+    // Donut mode is four multipliers on the handling and nothing else - no
+    // second velocity path to keep in step with this one. Off, or on a kind
+    // that cannot donut, this returns `this.params` itself.
+    const p = donutParams(this.params, this.kind, this.donut)
+    const input = this.game.inputs.getInput()
+    const { steering, boost, brake } = input
+    // OUT OF FUEL, THE ENGINE IS DEAD. Steering and the brakes still work, so
+    // you can coast onto the verge, but nothing pulls - either way.
+    const forward = world && world.engineDead && world.engineDead() ? 0 : input.forward
 
     // Only the throttle needs solid ground; steering geometry still applies
     // while airborne so the car doesn't freeze mid-jump.

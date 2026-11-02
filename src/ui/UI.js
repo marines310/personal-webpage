@@ -1,3 +1,4 @@
+import { donutHud } from '../world/donut.js'
 import { Game } from '../core/Game.js'
 import { getMapExtent, islandOutline } from '../world/islandLayout.js'
 import { missionArrow, formatDistance } from '../world/missions.js'
@@ -57,8 +58,11 @@ export class UI {
     this.hourSlider = document.getElementById('cond-hour')
     this.hourValue = document.getElementById('cond-hour-value')
 
+    this.donutEl = document.getElementById('donut')
+    this.donutState = document.getElementById('donut-state')
     this.fuelEl = document.getElementById('fuel')
     this.fuelFill = document.getElementById('fuel-fill')
+    this.fuelPercent = document.getElementById('fuel-percent')
     this.missionEl = document.getElementById('mission')
     this.missionTitle = document.getElementById('mission-title')
     this.missionBar = document.getElementById('mission-bar')
@@ -319,6 +323,7 @@ export class UI {
     this.updateCamera()
     this.updateMission()
     this.updateFuel()
+    this.updateDonut()
     this.updateRail()
   }
 
@@ -462,6 +467,29 @@ export class UI {
    * fire HUD and it is why the banner and the bar cannot disagree about what
    * is happening: there is one place that knows, and it is gasGame.js.
    */
+  /**
+   * Donut mode.
+   *
+   * Shown only on the kinds that have it, and donutHud() decides which those
+   * are - UI.js works nothing out for itself, the same rule the fuel gauge
+   * and the fire HUD follow.
+   */
+  updateDonut() {
+    const vehicle = this.game.vehicle
+    if (!this.donutEl || !vehicle) return
+
+    const hud = donutHud(vehicle.kind, vehicle.donut)
+
+    this.donutEl.classList.toggle('hidden', !hud.show)
+    if (!hud.show) return
+
+    this.donutEl.classList.toggle('on', hud.active)
+    if (this.donutState) {
+      const text = hud.active ? 'ON' : 'OFF  ·  G'
+      if (this.donutState.textContent !== text) this.donutState.textContent = text
+    }
+  }
+
   updateFuel() {
     const world = this.game.world
     if (!this.fuelEl || !world || !world.fuelGauge) return
@@ -471,8 +499,15 @@ export class UI {
     this.fuelEl.classList.toggle('hidden', !gauge.show)
     if (!gauge.show) return
 
+    const level = Math.max(0, Math.min(1, gauge.fuel))
     if (this.fuelFill) {
-      this.fuelFill.style.width = `${Math.max(0, Math.min(1, gauge.fuel)) * 100}%`
+      this.fuelFill.style.width = `${level * 100}%`
+    }
+    if (this.fuelPercent) {
+      // Rounded up, so the number never reads 0% while there is still fuel
+      // in the tank and the engine is still running.
+      const text = `${Math.ceil(level * 100)}%`
+      if (this.fuelPercent.textContent !== text) this.fuelPercent.textContent = text
     }
     this.fuelEl.classList.toggle('low', !!gauge.low && !gauge.empty)
     this.fuelEl.classList.toggle('empty', !!gauge.empty)

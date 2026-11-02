@@ -42,7 +42,8 @@ export class Inputs {
       cameraReset: false,
       cameraSave: false,
       indicateLeft: false,
-      indicateRight: false
+      indicateRight: false,
+      donut: false
     }
 
     // Mouse, for looking around. `dx`/`dy` accumulate pixels between reads
@@ -189,6 +190,10 @@ export class Inputs {
         return 'boost'
       case 'Space':
         return 'brake'
+      // G for the donut switch. Not a held key - see nextDonutState() in
+      // donut.js for why - so it lives in `pulses` with the camera snaps.
+      case 'KeyG':
+        return 'donut'
       case 'KeyC':
         return 'cameraReset'
       case 'KeyV':
@@ -285,6 +290,13 @@ export class Inputs {
   consumeCameraReset() {
     if (!this.pulses.cameraReset) return false
     this.pulses.cameraReset = false
+    return true
+  }
+
+  /** Did the player press G since this was last checked? */
+  consumeDonut() {
+    if (!this.pulses.donut) return false
+    this.pulses.donut = false
     return true
   }
 
