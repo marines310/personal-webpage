@@ -46,6 +46,10 @@ import {
   getFuelStations,
   getFuelBays,
   fuelApron,
+  FUEL_BAY_LONG,
+  FUEL_BAY_WIDE,
+  FUEL_ISLAND_LONG,
+  FUEL_ISLAND_WIDE,
   blocksStationEntrance,
   STATION_SETBACK,
   stationApron,
@@ -153,6 +157,18 @@ export const PAVING_CLEARANCE = 0.02
 export const PAVING_OVER_GRASS = 0.09
 
 /**
+ * And how far a gas forecourt stands over it.
+ *
+ * Not drapeOnSurface()'s 0.09 over grass. Every forecourt stands on its own
+ * levelled pad, and on level ground the grass cap and the collider are the
+ * same height, so the error that number covers is not there: measured on a
+ * half-unit grid over all four forecourts, the grass stood at most 0.02 over
+ * the collider. 0.09 would have put every car at a pump 0.11 deep in the
+ * concrete; this leaves it 0.04, which is the paint's own thickness.
+ */
+export const FORECOURT_CLEARANCE = 0.04
+
+/**
  * How far the grass cap sits above the sand it covers.
  *
  * Three centimetres, while the ground was flat. On a hill it cannot be: the
@@ -206,8 +222,9 @@ import {
 } from './monorailGame.js'
 import { chooseMission } from './missions.js'
 import {
-  newGasState, stepGas, gasHud, fuelGauge, hasTank
+  newGasState, stepGas, gasHud, fuelGauge, hasTank, makeAttendants, LOW_FUEL
 } from './gasGame.js'
+import { newRescue, stepRescue, rescueHolds, rescueHud } from './roadsideTow.js'
 import {
   newRaceState, stepRace, raceHud, gridOffset, gridSide,
   RACE_LAPS, RACE_FIELD, RACE_PACE
@@ -881,6 +898,11 @@ export class World {
     // and newGasState() is handed them the moment the first frame runs.
     this.gas = newGasState()
     this.fuelBays = getFuelBays(this.lanes)
+    this.fuelAttendants = makeAttendants(this.fuelBays)
+    this.createFuelAttendants()
+    // And the truck that comes for you when the tank runs dry.
+    this.rescue = null
+    this.createRescueTruck()
     this.police = newPoliceState()
     this.ambulance = newAmbulanceState()
     this.race = newRaceState()
@@ -1380,6 +1402,17 @@ export class World {
     position.needsUpdate = true
     geometry.computeVertexNormals()
     return geometry
+  }
+
+  /**
+   * How high a gas station's forecourt is, at a point on it.
+   *
+   * A height rather than a draped geometry, because a forecourt is not one
+   * mesh: the slab, the painted bays, the pump islands and the attendant
+   * standing on it all have to agree about where its top is.
+   */
+  forecourtAt(x, z) {
+    return this.surfaceAt(x, z) + FORECOURT_CLEARANCE
   }
 
   /**
@@ -2063,17 +2096,20 @@ export class World {
    * caller says which surface it is rather than working out an absolute
    * height that stops being true the moment the terrain moves.
    */
-  pavedPatch(cx, cz, width, depth, heading, y, material, steps = 8) {
+  pavedPatch(cx, cz, width, depth, heading, y, material, steps = 8, heightAt = null) {
     const fx = Math.sin(heading)
     const fz = Math.cos(heading)
     const sx = -fz
     const sz = fx
 
+    // `heightAt` replaces the height field when the patch has to sit on
+    // something else - a gas forecourt sits on the surface the cars drive on.
+    const base = heightAt || ((x, z) => this.groundAt(x, z))
     const positions = []
     const at = (a, b) => {
       const x = cx + sx * width * a + fx * depth * b
       const z = cz + sz * width * a + fz * depth * b
-      return [x, this.groundAt(x, z) + y, z]
+      return [x, base(x, z) + y, z]
     }
 
     for (let i = 0; i < steps; i++) {
@@ -5994,14 +6030,24 @@ export class World {
     // pavedPatch, not a slab: the driveway taught this one the expensive way.
     // A level plate over ground that falls stands proud at its far end and
     // every long vehicle sinks into it.
+    //
+    // ON THE SURFACE, NOT THE HEIGHT FIELD. This was laid SURFACE_PAVED + 0.02
+    // over groundAt() - 0.08 - which is right only where a road's claim has
+    // ducked the grass out of the way. The forecourt claims nothing (see the
+    // apron pad in getIslandTerrain()), so over most of it the grass cap
+    // stands SURFACE_GRASS, 0.30, over the height field and simply covered the
+    // concrete: from above, a strip of forecourt along the road and grass
+    // under the canopy and the bays. forecourtAt() is drapeOnSurface()'s rule,
+    // the one that fixed the hub plaza's rim the same way.
     const padX = station.x + fx * yard.offset
     const padZ = station.z + fz * yard.offset
-    this.pavedPatch(
+    const forecourt = this.pavedPatch(
       padX, padZ, yard.width, yard.depth, station.heading,
-      SURFACE_PAVED + 0.02,
+      0,
       new THREE.MeshStandardMaterial({
         color: PALETTE.concrete, roughness: 0.95
-      }))
+      }), 32, (x, z) => this.forecourtAt(x, z))
+    forecourt.userData.forecourt = station.id
 
     const group = new THREE.Group()
     group.position.set(station.x, this.groundAt(station.x, station.z), station.z)
@@ -6098,37 +6144,64 @@ export class World {
 
     this.fuelPumps = this.fuelPumps || []
 
-    bays.forEach((bay, i) => {
-      // Beside the bay, towards the middle of the forecourt, so the hose
-      // reaches the vehicle without the pump standing where a wheel goes.
-      const side = i < bays.length / 2 ? 1 : -1
-      const across = (bay.x - station.x) * -fz + (bay.z - station.z) * fx
-      const px = across + side * (station.bayWidth / 2 - 0.9)
+    bays.forEach((bay) => {
+      // BESIDE the bay, where the layout put it - see fuelPumpOut() in
+      // islandLayout.js. Stage one stood it at the end of the painted box,
+      // where a bus parked through it and no hose could reach a side.
+      // Converted into the group's frame: `px` across the frontage, `po` out
+      // from the kiosk.
+      const dx = bay.pump.x - station.x
+      const dz = bay.pump.z - station.z
+      const px = -dx * fz + dz * fx
+      const po = dx * fx + dz * fz
+      const bayOut = (bay.x - station.x) * fx + (bay.z - station.z) * fz
+      const facing = bayOut > po ? 1 : -1
 
+      // Standing ON the forecourt, which is not at the group's origin height:
+      // the group sits on the height field and the forecourt on the surface
+      // above it. Left at the group's zero the island was buried in the slab.
+      const deck = this.forecourtAt(bay.pump.x, bay.pump.z) -
+        this.groundAt(station.x, station.z)
+
+      // The island runs ALONG the bay, which runs along the frontage
       const island = new THREE.Mesh(
-        new THREE.BoxGeometry(1.6, 0.25, 3.4), trim)
-      island.position.set(px, 0.12, out)
+        new THREE.BoxGeometry(FUEL_ISLAND_LONG, 0.25, FUEL_ISLAND_WIDE), trim)
+      island.position.set(px, deck + 0.12, po)
       group.add(island)
 
       const pump = new THREE.Mesh(
-        new THREE.BoxGeometry(0.75, PUMP_HEIGHT, 1.1), pumpMat)
-      pump.position.set(px, 0.25 + PUMP_HEIGHT / 2, out)
+        new THREE.BoxGeometry(1.1, PUMP_HEIGHT, 0.75), pumpMat)
+      pump.position.set(px, deck + 0.25 + PUMP_HEIGHT / 2, po)
       group.add(pump)
 
+      // The lit face, towards the car
       const face = new THREE.Mesh(
         new THREE.PlaneGeometry(0.55, 0.7), faceMat)
-      face.position.set(px - side * 0.39, 0.25 + PUMP_HEIGHT * 0.72, out)
-      face.rotation.y = -side * Math.PI / 2
+      face.position.set(px + 0.2, deck + 0.25 + PUMP_HEIGHT * 0.72, po + facing * 0.39)
+      face.rotation.y = facing > 0 ? 0 : Math.PI
       group.add(face)
 
-      // Where the attendant stands and where the hose starts. Kept in WORLD
-      // coordinates, because stage two walks a figure to it and a figure is
-      // not in this group.
+      // The nozzle's hook, on the same face. The hose is drawn from here.
+      const holster = new THREE.Mesh(
+        new THREE.BoxGeometry(0.16, 0.3, 0.14),
+        new THREE.MeshStandardMaterial({ color: 0x23262b, roughness: 0.6 }))
+      holster.position.set(px - 0.3, deck + 0.25 + PUMP_HEIGHT * 0.5, po + facing * 0.42)
+      group.add(holster)
+
+      // Where the hose starts, in WORLD coordinates, because the attendant
+      // and the hose are not in this group.
+      const hx = px - 0.3
+      const ho = po + facing * 0.45
       this.fuelPumps.push({
         station: station.id,
         bay: bay.index,
-        x: station.x - fz * px + fx * out,
-        z: station.z + fx * px + fz * out
+        x: bay.pump.x,
+        z: bay.pump.z,
+        hose: {
+          x: station.x - fz * hx + fx * ho,
+          y: this.groundAt(station.x, station.z) + deck + 0.25 + PUMP_HEIGHT * 0.5,
+          z: station.z + fx * hx + fz * ho
+        }
       })
 
       this.paintBayOutline(bay, station)
@@ -6164,8 +6237,8 @@ export class World {
     const paint = this.fuelPaint = this.fuelPaint ||
       new THREE.MeshStandardMaterial({ color: 0xf4efd6, roughness: 0.9 })
 
-    const long = TRAFFIC_LENGTHS.bus + 1.5
-    const wide = Math.min(station.bayWidth - 1.6, 3.4)
+    const long = FUEL_BAY_LONG
+    const wide = Math.min(station.bayWidth - 1.6, FUEL_BAY_WIDE)
     const bx = Math.sin(bay.heading)
     const bz = Math.cos(bay.heading)
     const sx = -bz
@@ -6175,7 +6248,8 @@ export class World {
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), paint)
       mesh.rotation.x = -Math.PI / 2
       mesh.rotation.z = -turn
-      mesh.position.set(cx, this.groundAt(cx, cz) + SURFACE_PAVED + 0.05, cz)
+      // On the forecourt, a hair above it.
+      mesh.position.set(cx, this.forecourtAt(cx, cz) + 0.03, cz)
       this.game.add(mesh)
     }
 
@@ -8313,12 +8387,22 @@ export class World {
     const plots = getTownPlots(island)
     const roadside = getRoadsidePlots(island)
 
+    // Which plots actually got a building. The street dressing walks every
+    // plot, and a plot dropped here (because a station, a pier or a placed
+    // building already had the ground) still had its shopfront put up: a
+    // free-standing pane of glass with an awning, flush to a wall that was
+    // never built - square across the gas station and fire station doors,
+    // which is what Mike photographed. Recorded here rather than asked again
+    // later, because every building built pushes its own footprint, so
+    // clearOfPlaced() says no to every plot once the row is up.
+    const built = new Set()
     for (const plot of [...plots, ...roadside]) {
       if (!this.clearOfPlaced(plot.x, plot.z)) continue
       this.buildPlacedBuilding(island, {
         ...plot,
         floors: 2 + Math.floor(this.rand() * 4)
       })
+      built.add(plot)
     }
 
     for (const district of island.districts || []) {
@@ -8329,7 +8413,7 @@ export class World {
     // the pavements are. Everywhere else gets the scatter - which now fills
     // in AROUND the rows of buildings rather than laying them out: trees,
     // bushes, rocks, huts. It no longer places a single building.
-    if (plots.length) this.dressStreets(island, roads, plots)
+    if (plots.length) this.dressStreets(island, roads, plots, built)
     else this.scatterTheme(island, roads)
 
     const palmCount = island.palms !== undefined ? island.palms : 8
@@ -9659,7 +9743,7 @@ export class World {
    * at the kerb pointing along it, a tree belongs in the gap between two
    * buildings - none of which a random scatter can know.
    */
-  dressStreets(island, roads, plots) {
+  dressStreets(island, roads, plots, built = null) {
     const streets = roads.filter(r => r.street || r.ring)
 
     for (let i = 0; i < plots.length; i++) {
@@ -9680,8 +9764,17 @@ export class World {
 
       // Ground floor gets a shopfront on the busier streets. Not every
       // building - a street of nothing but shops reads as a film set.
+      //
+      // Only on a building that exists. The roll is still drawn for a plot
+      // with no building on it: rand() is one shared sequence, and skipping
+      // a draw here would repaint every car and container after this island.
+      const hasBuilding = !built || built.has(plot)
       if (this.rand() < 0.45) {
-        this.addShopfront(wx + fx * (plot.depth / 2), wz + fz * (plot.depth / 2), facing, plot.width)
+        if (hasBuilding) {
+          this.addShopfront(wx + fx * (plot.depth / 2), wz + fz * (plot.depth / 2), facing, plot.width)
+        } else {
+          this.rand() // the awning colour addShopfront() would have picked
+        }
       }
 
       // Kerbside dressing sits on the pavement between wall and road
@@ -10185,6 +10278,13 @@ export class World {
 
     // Keep clear of anything the map placed by hand
     if (!this.clearOfPlaced(localX, localZ)) return false
+
+    // And off the ground in front of a station's doors or a gas station's
+    // pumps. The station's own footprint is on the placed list, but its way
+    // in is not, and the scatter put a hut square across the blog fire
+    // station's doors.
+    if (this.accessStations &&
+        blocksStationEntrance(worldX, worldZ, this.accessStations)) return false
 
     // Clear of every road on this island?
     return distanceToNearestRoad(roads, localX, localZ) > clearance
@@ -12549,7 +12649,11 @@ export class World {
       ? {
           x: mesh.position.x, z: mesh.position.z,
           kind: vehicle.kind,
-          speed: vehicle.currentSpeed || 0
+          speed: vehicle.currentSpeed || 0,
+          // So the attendant goes to the right side of the right-sized car
+          heading: vehicle.heading,
+          width: vehicle.size && vehicle.size.width,
+          length: vehicle.size && vehicle.size.length
         }
       : null
 
@@ -12557,11 +12661,358 @@ export class World {
       player,
       maxSpeed: (vehicle && vehicle.params && vehicle.params.maxForwardSpeed) || 18,
       bays: this.fuelBays,
-      // Stage three hooks the tow truck on here. Until then running dry is a
-      // banner and an empty gauge, which is honest about what it does rather
-      // than half-starting a recovery that cannot finish.
-      tow: null
+      attendants: this.fuelAttendants,
+      // Stage three: running dry sends for the recovery truck, and while it
+      // has hold of the car the tank neither burns nor fills.
+      tow: () => this.callRescue(),
+      towing: this.rescueHolds()
     })
+  }
+
+  // -------------------------------------------------------------
+  // Running dry: the recovery truck (gas stage three)
+  // -------------------------------------------------------------
+
+  /**
+   * One tow truck, kept for the player.
+   *
+   * Its own mesh rather than one borrowed from the traffic: the two traffic
+   * tow trucks are lane-bound and on their own errands, and taking one off
+   * the road would leave a hole in the city's numbers the traffic tests were
+   * tuned to (see claude/tow-truck-and-the-recovery.md - two is measured).
+   * The same model, built by the same function, so it is unmistakably the
+   * same kind of truck.
+   */
+  createRescueTruck() {
+    this.rescueTruck = this.buildTowTruck(null)
+    this.rescueTruck.visible = false
+    this.game.add(this.rescueTruck)
+  }
+
+  /** gasGame.js asks for this exactly once each time the tank runs dry. */
+  callRescue() {
+    if (!this.rescue) this.rescue = newRescue()
+  }
+
+  /** Is the recovery truck holding the player's car? Vehicle.js asks. */
+  rescueHolds() {
+    return rescueHolds(this.rescue)
+  }
+
+  /**
+   * An empty tank and nothing pulling. Asked by Vehicle.js, which cuts the
+   * throttle - and nothing else, so you can still steer onto the verge.
+   */
+  engineDead() {
+    const gas = this.gas
+    const v = this.game.vehicle
+    return !!(gas && v && hasTank(v.kind) && gas.kind === v.kind &&
+      gas.fuel !== null && gas.fuel <= 0)
+  }
+
+  /**
+   * The rescue, one frame: step it, draw the truck, and while it has hold of
+   * the car, put the car where the wheel-lift has it.
+   */
+  updateRescue(delta) {
+    const rescue = this.rescue
+    const truck = this.rescueTruck
+    if (!rescue) {
+      if (truck) truck.visible = false
+      return
+    }
+
+    const v = this.game.vehicle
+    const mesh = v && v.mesh
+
+    // Called off before anyone was sent: filled up some other way, or it is
+    // a different vehicle now.
+    if (rescue.phase === 'stalled' && !this.engineDead()) {
+      this.rescue = null
+      return
+    }
+
+    const wasHolding = rescueHolds(rescue)
+    stepRescue(rescue, delta, {
+      player: mesh ? {
+        x: mesh.position.x, z: mesh.position.z,
+        heading: v.heading,
+        speed: v.getSpeed ? v.getSpeed() : 0,
+        length: v.size && v.size.length,
+        width: v.size && v.size.width
+      } : null,
+      network: this.lanes,
+      bays: this.fuelBays
+    })
+
+    // NO WAY TO GET YOU TO A PUMP - no road near enough, or none that reaches
+    // a gas station. Rather than leave you stranded for good, a can of fuel:
+    // a quarter of a tank, enough to drive to one yourself.
+    if (rescue.phase === 'failed') {
+      this.gas.fuel = LOW_FUEL
+      this.gas.phase = 'driving'
+      this.gas.towRequested = false
+      this.gas.message = 'EMERGENCY FUEL'
+      this.gas.messageFor = 4
+      this.rescue = null
+      if (truck) truck.visible = false
+      return
+    }
+
+    // The car's ride height, measured once as it sits stopped, so a car on
+    // the hook rides exactly as high as it did on its own wheels.
+    if (!wasHolding && rescueHolds(rescue) && v && v.body) {
+      const rear = this.rescueRear(rescue.car, rescue.wheelbase)
+      rescue.rest = v.body.translation().y - this.groundAt(rear.x, rear.z)
+    }
+
+    if (rescueHolds(rescue) && v && v.body) {
+      this.holdRescuedCar(v, rescue)
+    } else if (wasHolding && v && v.body) {
+      // SET DOWN. Through placeAt(), the one way a car is put down, and from
+      // then on it is yours again.
+      const c = rescue.car
+      const rear = this.rescueRear(c, rescue.wheelbase)
+      v.placeAt(c.x, this.groundAt(rear.x, rear.z) + (rescue.rest || 0.5) + 0.02,
+        c.z, c.heading)
+    }
+
+    if (rescue.phase === 'done') {
+      this.rescue = null
+      if (truck) truck.visible = false
+      return
+    }
+    if (truck) this.drawRescueTruck(truck, rescue)
+  }
+
+  /** The car's rear axle - the wheels still on the road while it is towed. */
+  rescueRear(car, wheelbase) {
+    if (car.rear) return car.rear
+    return {
+      x: car.x - Math.sin(car.heading) * wheelbase / 2,
+      z: car.z - Math.cos(car.heading) * wheelbase / 2
+    }
+  }
+
+  /**
+   * Put the player's body where the wheel-lift has it.
+   *
+   * Overwritten every frame, as rideTrain() does for the monorail, and for
+   * the same reason: asking the solver to hold a car on a hook is asking it
+   * for a joint it would fight. AND THE MESH, because this runs after the
+   * body was copied onto it and the camera follows the mesh.
+   */
+  holdRescuedCar(v, rescue) {
+    const c = rescue.car
+    const rear = this.rescueRear(c, rescue.wheelbase)
+    const y = this.groundAt(rear.x, rear.z) + (rescue.rest || 0.5) + (c.rise || 0)
+    if (!this._rescueQuat) {
+      this._rescueQuat = new THREE.Quaternion()
+      this._rescueEuler = new THREE.Euler()
+    }
+    // Nose up is negative about x - the same convention as the traffic's
+    // pitch and placeWreckCar().
+    this._rescueQuat.setFromEuler(this._rescueEuler.set(-(c.pitch || 0), c.heading, 0, 'YXZ'))
+    const q = this._rescueQuat
+    v.body.setTranslation({ x: c.x, y, z: c.z }, true)
+    v.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
+    v.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+    v.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+    v.mesh.position.set(c.x, y, c.z)
+    v.mesh.quaternion.copy(q)
+    v.heading = c.heading
+    // So the wheels roll while it is being towed.
+    v.currentSpeed = c.speed || 0
+    v.currentSteering = 0
+  }
+
+  /** The truck where the rescue says, its boom out and up as far as it says. */
+  drawRescueTruck(truck, rescue) {
+    const t = rescue.truck
+    if (!t || rescue.phase === 'stalled') {
+      truck.visible = false
+      return
+    }
+    truck.visible = true
+    const ground = this.groundAt(t.x, t.z)
+    const ahead = this.groundAt(t.x + Math.sin(t.heading) * 2, t.z + Math.cos(t.heading) * 2)
+    truck.position.set(t.x, ground, t.z)
+    truck.rotation.set(-Math.atan2(ahead - ground, 2), t.heading, 0, 'YXZ')
+    this.updateTowRig(truck, rescue.rig ? rescue.rig.reach : 0, rescue.rig ? rescue.rig.lift : 0)
+
+    const lights = truck.userData.lights
+    if (lights) {
+      const speed = Math.abs(t.speed || 0)
+      const level = lampBrightness({
+        gloom: gloomLevel(this.game.environment),
+        braking: false,
+        stopped: speed < 0.5,
+        indicate: 0,
+        blink: blinkOn(this.elapsed, 0)
+      })
+      lights.head.emissiveIntensity = level.head
+      lights.tail.emissiveIntensity = level.tail
+      lights.left.emissiveIntensity = level.left
+      lights.right.emissiveIntensity = level.right
+    }
+    // The amber bar is on for the whole job, which is what a recovery truck
+    // working at the roadside does.
+    const beat = sirenBeat(this.elapsed, SIREN_RATE)
+    for (const beacon of truck.userData.beacons || []) {
+      beacon.material.emissiveIntensity = (beacon.side === 1) === beat ? 2.4 : 0.05
+    }
+  }
+
+  /**
+   * One figure per gas station, and the hose from each pump.
+   *
+   * Four people, so a plain Group of boxes each rather than the pedestrians'
+   * instanced crowd - the same proportions (borrowed from the rig, so an
+   * attendant is exactly as tall as a passer-by) without a second instancing
+   * scheme for four of anything. Dressed in the station's trim green with a
+   * cap, so they read as staff and not as somebody who wandered onto the
+   * forecourt.
+   */
+  createFuelAttendants() {
+    this.attendantFigures = []
+    if (!this.fuelAttendants || !this.fuelAttendants.length) return
+
+    const rig = {
+      hip: 0.88, shoulder: 1.46, leg: 0.82, arm: 0.6,
+      head: 1.64, torso: 1.18, armX: 0.25, legX: 0.105
+    }
+    const uniform = new THREE.MeshStandardMaterial({
+      color: STATION_LOOKS.fuel.trim, roughness: 0.85, flatShading: true
+    })
+    const sleeve = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(STATION_LOOKS.fuel.trim).multiplyScalar(0.78),
+      roughness: 0.85, flatShading: true
+    })
+    const trousers = new THREE.MeshStandardMaterial({
+      color: 0x2f3a46, roughness: 0.9, flatShading: true
+    })
+    const skin = new THREE.MeshStandardMaterial({
+      color: 0xd8a271, roughness: 0.82, flatShading: true
+    })
+    const cap = new THREE.MeshStandardMaterial({
+      color: STATION_LOOKS.fuel.sign, roughness: 0.7, flatShading: true
+    })
+    const hoseMat = new THREE.MeshStandardMaterial({
+      color: 0x1d1f22, roughness: 0.7
+    })
+
+    const limb = (geometry, material, x, y) => {
+      const pivot = new THREE.Group()
+      pivot.position.set(x, y, 0)
+      pivot.add(new THREE.Mesh(geometry, material))
+      return pivot
+    }
+
+    for (const a of this.fuelAttendants) {
+      const body = new THREE.Group()
+
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.6, 0.24), uniform)
+      torso.position.y = rig.torso
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.27, 0.24), skin)
+      head.position.y = rig.head
+      const hat = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.09, 0.27), cap)
+      hat.position.y = rig.head + 0.17
+      const peak = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.03, 0.14), cap)
+      peak.position.set(0, rig.head + 0.13, 0.19)
+
+      const armL = limb(armGeometry(0.12, rig.arm, 0.13), sleeve, rig.armX, rig.shoulder)
+      const armR = limb(armGeometry(0.12, rig.arm, 0.13), sleeve, -rig.armX, rig.shoulder)
+      const legL = limb(legGeometry(0.16, rig.leg, 0.19), trousers, rig.legX, rig.hip)
+      const legR = limb(legGeometry(0.16, rig.leg, 0.19), trousers, -rig.legX, rig.hip)
+
+      body.add(torso, head, hat, peak, armL, armR, legL, legR)
+      body.traverse((part) => { if (part.isMesh) part.castShadow = true })
+      this.game.add(body)
+
+      const hose = new THREE.Mesh(new THREE.BufferGeometry(), hoseMat)
+      hose.visible = false
+      hose.frustumCulled = false
+      this.game.add(hose)
+
+      this.attendantFigures.push({
+        attendant: a, body, armL, armR, legL, legR, hose,
+        hoseKey: '', rig
+      })
+    }
+  }
+
+  /**
+   * Draw each attendant where gasGame.js says they are, and the hose from
+   * the pump to the nozzle while it is off its hook.
+   *
+   * The hose is a tube rebuilt only when its ends move. Standing at a car
+   * for nine seconds is one rebuild, not five hundred and forty.
+   */
+  updateFuelAttendants() {
+    if (!this.attendantFigures) return
+
+    for (const fig of this.attendantFigures) {
+      const a = fig.attendant
+      const y = this.forecourtAt(a.x, a.z)
+
+      const cycle = walkCycle(a, a.walking)
+      fig.body.position.set(a.x, y + cycle.bob, a.z)
+      fig.body.rotation.y = a.heading
+      fig.legL.rotation.x = cycle.legLeft
+      fig.legR.rotation.x = cycle.legRight
+      fig.armL.rotation.x = cycle.armLeft
+
+      // The right arm holds the nozzle: out in front while it is in the car
+      // or being carried, swinging with the walk otherwise.
+      const holding = a.hose
+      fig.armR.rotation.x = holding ? -1.1 : cycle.armRight
+
+      if (!holding) {
+        fig.hose.visible = false
+        continue
+      }
+
+      const pump = (this.fuelPumps || []).find(p =>
+        p.station === a.station && Math.abs(p.x - a.pump.x) < 1e-6 &&
+        Math.abs(p.z - a.pump.z) < 1e-6)
+      if (!pump) { fig.hose.visible = false; continue }
+
+      // The far end: in the car's filler while plugged in, otherwise in the
+      // attendant's right hand.
+      let end
+      if (a.nozzleIn && a.filler) {
+        end = new THREE.Vector3(a.filler.x, y + 1.0, a.filler.z)
+      } else {
+        const fx = Math.sin(a.heading)
+        const fz = Math.cos(a.heading)
+        const sx = -fz
+        const sz = fx
+        end = new THREE.Vector3(
+          a.x - sx * fig.rig.armX + fx * 0.5,
+          y + 1.05,
+          a.z - sz * fig.rig.armX + fz * 0.5)
+      }
+
+      const start = new THREE.Vector3(pump.hose.x, pump.hose.y, pump.hose.z)
+      const key = `${end.x.toFixed(2)},${end.y.toFixed(2)},${end.z.toFixed(2)}`
+      if (key !== fig.hoseKey) {
+        fig.hoseKey = key
+        // A hose hangs: down from the pump, along the ground a little, and up
+        // to the nozzle - three control points through a low middle.
+        const mid = start.clone().lerp(end, 0.5)
+        mid.y = Math.max(y + 0.12, Math.min(start.y, end.y) - 0.7)
+        const curve = new THREE.CatmullRomCurve3([
+          start,
+          start.clone().lerp(mid, 0.5).setY((start.y + mid.y) / 2 - 0.15),
+          mid,
+          end.clone().lerp(mid, 0.5).setY((end.y + mid.y) / 2 - 0.15),
+          end
+        ])
+        fig.hose.geometry.dispose()
+        fig.hose.geometry = new THREE.TubeGeometry(curve, 16, 0.035, 5, false)
+      }
+      fig.hose.visible = true
+    }
   }
 
   /** What the gauge shows. UI.js works nothing out for itself. */
@@ -13997,7 +14448,7 @@ export class World {
       // low fuel takes it only when nothing else wants it. The gauge is drawn
       // separately and is always on screen, so being outranked here never
       // leaves you without the information.
-      gasHud(this.gas, hasTank(kind))
+      gasHud(this.gas, hasTank(kind), this.rescue ? rescueHud(this.rescue) : null)
     ])
   }
 
@@ -14104,6 +14555,8 @@ export class World {
     this.updateGarageDoors(delta)
     this.updateFire(delta)
     this.updateGas(delta)
+    this.updateRescue(delta)
+    this.updateFuelAttendants()
     this.updatePolice(delta)
     this.updateAmbulance(delta)
     this.updateTow(delta)

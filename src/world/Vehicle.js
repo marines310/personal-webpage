@@ -1083,12 +1083,18 @@ export class Vehicle {
     const world = this.game.world
     if (world && world.rescueHolds && world.rescueHolds()) return
 
-    // Donut mode is four multipliers on the handling and nothing else - no
-    // second velocity path to keep in step with this one. Off, or on a kind
-    // that cannot donut, this returns `this.params` itself.
-    // Then the wheelie's caps on top, which come on with the pose rather than
-    // at the press. Nothing up, or a kind that cannot do it, and this returns
-    // whatever donutParams() handed over - the same object, unwrapped.
+    // The handling for this frame: the kind's own numbers, then donut mode's
+    // multipliers, then the wheelie's caps.
+    //
+    // Donut mode is four multipliers and nothing else - no second velocity
+    // path to keep in step with this one. The wheelie's caps come on WITH the
+    // pose rather than at the press, so asking for one at speed does not read
+    // as hitting a wall.
+    //
+    // Both return their input UNCHANGED - the same object, not a copy - when
+    // they are off or the kind cannot do them. So an ordinary car on an
+    // ordinary frame gets `this.params` itself, exactly as it did before
+    // either of these existed.
     const p = wheelieParams(
       donutParams(this.params, this.kind, this.donut), this.kind, this.wheelie)
     const input = this.game.inputs.getInput()
