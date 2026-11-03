@@ -43,7 +43,9 @@ export class Inputs {
       cameraSave: false,
       indicateLeft: false,
       indicateRight: false,
-      donut: false
+      donut: false,
+      wheelieTail: false,
+      wheelieNose: false
     }
 
     // Mouse, for looking around. `dx`/`dy` accumulate pixels between reads
@@ -194,6 +196,15 @@ export class Inputs {
       // donut.js for why - so it lives in `pulses` with the camera snaps.
       case 'KeyG':
         return 'donut'
+
+      // The two wheelies. T and Y because they are adjacent, unused, and
+      // nowhere near the driving keys - you press one of these while already
+      // holding W, so a key next to WASD would be reached by the wrong hand.
+      // Toggles rather than held keys, like G: see nextWheelieWant().
+      case 'KeyT':
+        return 'wheelieTail'
+      case 'KeyY':
+        return 'wheelieNose'
       case 'KeyC':
         return 'cameraReset'
       case 'KeyV':
@@ -298,6 +309,22 @@ export class Inputs {
     if (!this.pulses.donut) return false
     this.pulses.donut = false
     return true
+  }
+
+  /**
+   * Which wheelie was pressed since this was last checked.
+   *
+   * BOTH are returned from one call, and both are cleared by it, because the
+   * rule for a fumbled press that catches T and Y in the same frame lives in
+   * nextWheelieWant() - where it can be tested - rather than here. Reading
+   * them separately would make "both at once" depend on which was read first.
+   */
+  consumeWheelie() {
+    const tail = this.pulses.wheelieTail
+    const nose = this.pulses.wheelieNose
+    this.pulses.wheelieTail = false
+    this.pulses.wheelieNose = false
+    return { tail, nose }
   }
 
   /** Did the player press V since this was last checked? */

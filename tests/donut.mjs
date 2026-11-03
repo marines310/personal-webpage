@@ -165,8 +165,13 @@ const inputs = readFileSync(join(HERE, '..', 'src/systems/Inputs.js'), 'utf8')
 const ui = readFileSync(join(HERE, '..', 'src/ui/UI.js'), 'utf8')
 const html = readFileSync(join(HERE, '..', 'index.html'), 'utf8')
 
+// Wrapped by wheelieParams() since the wheelies went in, so this no longer
+// matches a whole line - but what it is checking is unchanged and is still
+// exact: the params the frame drives with pass through donutParams(), with
+// this kind and this vehicle's switch, on their way to being driven with.
 chk('the handling the frame drives with goes through donutParams()',
-    /const p = donutParams\(this\.params, this\.kind, this\.donut\)/.test(vehicle))
+    /const p = wheelieParams\(\s*donutParams\(this\.params, this\.kind, this\.donut\),/
+      .test(vehicle))
 
 // One-shot, read once per frame in the same place as the indicator stalk.
 // Read anywhere else and a press is either missed or counted twice.
