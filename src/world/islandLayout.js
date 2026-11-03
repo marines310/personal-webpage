@@ -5162,6 +5162,33 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
     }
   }
 
+  // AND WHICH OF THEM IS ACTUALLY ON THE LINE.
+  //
+  // One per red arm: the frontmost vehicle of those held there. The give-way
+  // rule below needs this distinction and nothing else does, so it is drawn
+  // here, where `heldAtRed` and `byLane` are both finished and the per-vehicle
+  // loop has not started - which is what keeps it independent of the order
+  // the vehicles happen to be in.
+  //
+  // Why the distinction earns its keep, measured over ten minutes:
+  //
+  //   give way to everyone, as before   5,161 vehicle-samples stuck
+  //   to nobody with a red ahead        1,963
+  //   to nobody STANDING at a red       2,375
+  //   to nobody ON a red stop line        625
+  //
+  // The last is the best by a factor of three, and the reason is the queue
+  // BEHIND the line. Those vehicles are strung back along an arm that crosses
+  // the junction, so they are genuinely in the way and yielding to them is
+  // what keeps the box clear. Exempt them too and cars nose in, get vetoed by
+  // the collision check, and jam nose to nose - which this file has learned
+  // the hard way twice already is far harder to clear than a polite wait.
+  const onRedLine = new Set()
+  for (const list of byLane.values()) {
+    const front = list[list.length - 1]
+    if (front && heldAtRed.has(front)) onRedLine.add(front)
+  }
+
   // Where each junction is claimed, so an unsignalled one gets some
   // give-and-take rather than a pile-up.
   //
@@ -5556,7 +5583,55 @@ export function stepTraffic(network, vehicles, delta, elapsed, player = null,
       // means no rule added here can ever leave something stuck for good.
       if (v.stopped > TRAFFIC_PATIENCE) continue
 
-      limit = Math.min(limit, gapSpeed(gap, v))
+      // NOBODY GIVES WAY TO A RED LIGHT.
+      //
+      // This is the single biggest jam on the map, and it is the one the
+      // honest `why` below made visible. Measured at the hub bridge - lane
+      // 159, the longest lane there is - the vehicle at its stop line was
+      // STOPPED for 90% of its own green, and in 775 of 883 samples it was
+      // giving way: 668 of them to a vehicle standing at the RED LIGHT on a
+      // crossing arm of the same junction.
+      //
+      // That vehicle was never going to move. It had a red. So the bridge
+      // yielded for the whole of its green to something that could only move
+      // once the bridge's own light had gone back to red - and the bridge let
+      // 18 vehicles out in ten minutes while comparable lanes managed 65 to
+      // 133. It was not congested; it was 30% full. It was simply polite.
+      //
+      // A signal has already allocated right of way at this junction, so
+      // giving way to a vehicle it is holding counts the same priority twice.
+      // Nothing is risked by ignoring it: the two-dimensional veto below
+      // still refuses any move that would put the two of them in the same
+      // place, which is the mechanism that is actually meant to stop a
+      // collision. Give way is about courtesy at an UNSIGNALLED crossing.
+      //
+      // `onRedLine`, not `heldAtRed`: the vehicle ON the stop line, not every
+      // vehicle queued behind it. See where that set is built for the four
+      // variants that were measured and why this is the one.
+      if (onRedLine.has(other.v)) continue
+
+      // THROUGH hold(), NOT `Math.min(limit, ...)`.
+      //
+      // This was the one rule in stepTraffic that could stop a vehicle dead
+      // without writing down why, and it was the biggest jam on the map. A
+      // car held here reported `cruise` - "nothing is limiting me" - while
+      // standing still, which had two consequences, both of them bad:
+      //
+      //   - `lawfulWait()` reads `why` and `waitingOn`. Giving way is as
+      //     lawful as a red light, but it looked like neither, so the queue
+      //     behind a give-way built up `blockedFor` and the patience valve
+      //     teleported cars out of a queue that was about to move anyway.
+      //   - `waitingOn` was never set, so the waiting graph ENDED at the
+      //     vehicle actually causing the hold-up. Every diagnostic walked the
+      //     chain, stopped at a car claiming to be cruising, and reported it
+      //     as the blocker. Three plausible culprits were measured and
+      //     cleared before this one was even visible.
+      //
+      // `hold` applies exactly the same minimum - it only lowers the limit -
+      // so the speed of every vehicle is unchanged. What changes is that the
+      // simulation can now see its own biggest cause of stopping.
+      hold(gapSpeed(gap, v), 'giving way')
+      if (v.why === 'giving way') v.waitingOn = other.v
     }
 
     // The player
