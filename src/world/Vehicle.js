@@ -14,6 +14,11 @@ import {
   tuningFor, airborneVelocity, isGrounded, groundedWithCoyote, airYaw,
   tiltRates, isFlipped, TILT
 } from './driving.js'
+import { donutParams, nextDonutState, canDonut } from './donut.js'
+import {
+  canWheelie, newWheelieState, nextWheelieWant, stepWheelie, wheeliePose,
+  wheelieParams
+} from './wheelie.js'
 // World imports Vehicle nowhere, so this is not a cycle - and taking the
 // height from the same table the traffic uses is the point: the sedan you
 // drive is the sedan on the road.
@@ -76,6 +81,15 @@ export const CAR_SCALE = 2.2
 export const CAR_LENGTH = 2 * CAR_SCALE       // 4.4, a sedan
 export const CAR_WIDTH = 1.9
 export const CAR_HEIGHT = 0.4 * CAR_SCALE
+
+/**
+ * The axis a wheelie turns about: the truck's own lateral axis.
+ *
+ * Shared and never written to, like the other module-level constants here. A
+ * `new THREE.Vector3(1, 0, 0)` inside applyWheelie() would be one allocation
+ * per vehicle per frame for a value that is the same every time.
+ */
+const WHEELIE_AXIS = new THREE.Vector3(1, 0, 0)
 
 const WHEEL_RADIUS = 0.25 * CAR_SCALE
 
@@ -244,6 +258,15 @@ export class Vehicle {
     this.indicator = 0
     this.stalk = 0
     this.stalkTurned = 0
+
+    // Donut mode: a toggle, off by default, and only ever true for a kind
+    // that can do it. See donut.js.
+    this.donut = false
+
+    // The wheelie, likewise. A small object rather than a flag because it has
+    // a direction and a position partway through the movement, and both of
+    // those belong next to each other. See wheelie.js.
+    this.wheelie = newWheelieState()
     this.indicateState = { side: 0, held: 0 }
 
     // Scratch vectors, reused each frame to avoid garbage
@@ -256,6 +279,10 @@ export class Vehicle {
     // read every frame rather than assumed - see tiltRates() in driving.js.
     this._up = new THREE.Vector3()
     this._nose = new THREE.Vector3()
+    // The wheelie pose, which runs every frame for every vehicle.
+    this._wheelieQuat = new THREE.Quaternion()
+    this._wheeliePivot = new THREE.Vector3()
+    this._wheelieShift = new THREE.Vector3()
     this._groundNormal = { x: 0, y: 1, z: 0 }
     this._flippedFor = 0
 
@@ -273,6 +300,11 @@ export class Vehicle {
     // it. See driving.js - the per-kind numbers are multipliers of this.
     this._baseParams = { ...this.params }
     this.params = tuningFor(kind, this._baseParams)
+    // A kind that cannot donut cannot be left in donut mode. nextDonutState()
+    // would clear it on the next press anyway; this clears it on the swap, so
+    // the handling never lies for even one frame.
+    if (!canDonut(kind)) this.donut = false
+    if (!canWheelie(kind)) this.wheelie = newWheelieState()
     this.params.wheelbase = WHEELBASE_RATIO * this.size.length
 
     this.mesh = this.createMesh()
@@ -315,6 +347,13 @@ export class Vehicle {
     this.kind = kind
     this.size = vehicleSize(kind)
     this.params = tuningFor(kind, this._baseParams)
+    // A kind that cannot donut cannot be left in donut mode. nextDonutState()
+    // would clear it on the next press anyway; this clears it on the swap, so
+    // the handling never lies for even one frame.
+    if (!canDonut(kind)) this.donut = false
+    // And a kind that cannot do wheelies is put back down flat, rather than
+    // being left drawn at an angle it can no longer get out of.
+    if (!canWheelie(kind)) this.wheelie = newWheelieState()
 
     // The arc grows with the body. Everything else about the handling is
     // deliberately identical between kinds - only the thing that is a
@@ -626,6 +665,21 @@ export class Vehicle {
     // decreases the heading here (see turnDirection), and the two conventions
     // meet in exactly one place: turnAmount.
     if (this.stalk) this.stalkTurned += turnAmount(step)
+
+    // The donut switch, read in the same place as the indicator stalk and
+    // for the same reason: both are one-shot presses, and reading them
+    // anywhere other than the one update per frame means a press is either
+    // missed or counted twice.
+    if (inputs.consumeDonut) {
+      this.donut = nextDonutState(this.donut, this.kind, inputs.consumeDonut())
+    }
+
+    // The two wheelie buttons, in the same place and for the same reason.
+    if (inputs.consumeWheelie) {
+      const { tail, nose } = inputs.consumeWheelie()
+      this.wheelie.want =
+        nextWheelieWant(this.wheelie.want, this.kind, tail, nose)
+    }
 
     if (inputs.consumeIndicator) {
       const pressed = inputs.consumeIndicator()
@@ -1029,7 +1083,20 @@ export class Vehicle {
     const world = this.game.world
     if (world && world.rescueHolds && world.rescueHolds()) return
 
-    const p = this.params
+    // The handling for this frame: the kind's own numbers, then donut mode's
+    // multipliers, then the wheelie's caps.
+    //
+    // Donut mode is four multipliers and nothing else - no second velocity
+    // path to keep in step with this one. The wheelie's caps come on WITH the
+    // pose rather than at the press, so asking for one at speed does not read
+    // as hitting a wall.
+    //
+    // Both return their input UNCHANGED - the same object, not a copy - when
+    // they are off or the kind cannot do them. So an ordinary car on an
+    // ordinary frame gets `this.params` itself, exactly as it did before
+    // either of these existed.
+    const p = wheelieParams(
+      donutParams(this.params, this.kind, this.donut), this.kind, this.wheelie)
     const input = this.game.inputs.getInput()
     const { steering, boost, brake } = input
     // OUT OF FUEL, THE ENGINE IS DEAD. Steering and the brakes still work, so
@@ -1374,6 +1441,47 @@ export class Vehicle {
     this.placeAt(at.x, at.y + 1.2, at.z, this.heading || 0)
   }
 
+  /**
+   * Draw the truck standing on its tail or its nose.
+   *
+   * THE ONLY PLACE the mesh is allowed to disagree with the body, and it runs
+   * immediately after the two have been put in step - so a reader of
+   * postPhysicsUpdate sees the body's own pose, and then sees the one thing
+   * done on top of it. See wheelie.js for why this is drawn rather than
+   * physical, and for the measurement that settled it.
+   *
+   * The pivot is the axle the truck is standing on, and holding it still is
+   * what keeps the back wheels on the road instead of swinging the whole truck
+   * through it. A rotation about the mesh's own centre would move that pivot
+   * to `R . p`; adding `p - R . p`, turned into world space, puts it back.
+   * That is three lines of vector arithmetic and it is the difference between
+   * a wheelie and a truck sunk to its axles.
+   */
+  applyWheelie(delta) {
+    stepWheelie(this.wheelie, this.kind, delta)
+
+    const pose = wheeliePose(
+      this.wheelie, this.kind, this.params.wheelbase, CAR_HEIGHT)
+
+    // Nothing up: the mesh is left exactly as the body set it, untouched.
+    if (!pose.active) return
+
+    // Negated, because `pose.pitch` is positive for nose UP and a positive
+    // rotation about +X takes the nose down. wheeliePose() says so too; this
+    // is the one place that sign is cashed in.
+    this._wheelieQuat.setFromAxisAngle(WHEELIE_AXIS, -pose.pitch)
+
+    this._wheeliePivot.set(0, pose.pivot.y, pose.pivot.z)
+    this._wheelieShift.copy(this._wheeliePivot)
+      .applyQuaternion(this._wheelieQuat)      // R . p
+      .sub(this._wheeliePivot)                 // R . p - p
+      .negate()                                // p - R . p
+      .applyQuaternion(this.mesh.quaternion)   // into world space
+
+    this.mesh.quaternion.multiply(this._wheelieQuat)
+    this.mesh.position.add(this._wheelieShift)
+  }
+
   postPhysicsUpdate(delta) {
     if (!this.body) return
 
@@ -1383,6 +1491,8 @@ export class Vehicle {
 
     this.mesh.position.set(position.x, position.y, position.z)
     this.mesh.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w)
+
+    this.applyWheelie(delta)
 
     // --- Wheel visuals ---
     // Spin rate follows real rolling: omega = v / r. Sign follows travel

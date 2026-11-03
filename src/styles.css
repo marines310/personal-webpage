@@ -1026,3 +1026,66 @@ body {
 #fuel.low #fuel-percent { color: #ffb547; }
 #fuel.empty #fuel-label,
 #fuel.empty #fuel-percent { color: #ff5f56; }
+
+/* ---------------------------------------------------------------------------
+   Donut mode
+   ---------------------------------------------------------------------------
+   Under the fuel gauge, in the same panel. Hidden entirely on the kinds that
+   cannot do it - a control you are told about and cannot use is worse than
+   one you are not told about, and the vehicle selector is where you find out
+   what a vehicle can do.
+*/
+#donut {
+  margin-top: 9px;
+  font-size: 0.6rem;
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+#donut.hidden {
+  display: none;
+}
+
+#donut-state {
+  font-weight: bold;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+#donut.on {
+  color: #ff8ad4;
+}
+
+#donut.on #donut-state {
+  color: #ff8ad4;
+}
+
+/* ---------------------------------------------------------------------------
+   Wheelies
+   ---------------------------------------------------------------------------
+   Under the donut line, same panel, same rules - and the same amber the stunt
+   park uses, so the two stunt controls are not both pink and indistinguishable
+   out of the corner of your eye.
+*/
+#wheelie {
+  margin-top: 5px;
+  font-size: 0.6rem;
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+#wheelie.hidden {
+  display: none;
+}
+
+#wheelie-state {
+  font-weight: bold;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+#wheelie.on {
+  color: #ffb347;
+}
+
+#wheelie.on #wheelie-state {
+  color: #ffb347;
+}

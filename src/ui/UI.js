@@ -1,3 +1,5 @@
+import { donutHud } from '../world/donut.js'
+import { wheelieHud } from '../world/wheelie.js'
 import { Game } from '../core/Game.js'
 import { getMapExtent, islandOutline } from '../world/islandLayout.js'
 import { missionArrow, formatDistance } from '../world/missions.js'
@@ -57,6 +59,10 @@ export class UI {
     this.hourSlider = document.getElementById('cond-hour')
     this.hourValue = document.getElementById('cond-hour-value')
 
+    this.donutEl = document.getElementById('donut')
+    this.donutState = document.getElementById('donut-state')
+    this.wheelieEl = document.getElementById('wheelie')
+    this.wheelieState = document.getElementById('wheelie-state')
     this.fuelEl = document.getElementById('fuel')
     this.fuelFill = document.getElementById('fuel-fill')
     this.fuelPercent = document.getElementById('fuel-percent')
@@ -320,6 +326,8 @@ export class UI {
     this.updateCamera()
     this.updateMission()
     this.updateFuel()
+    this.updateDonut()
+    this.updateWheelie()
     this.updateRail()
   }
 
@@ -463,6 +471,64 @@ export class UI {
    * fire HUD and it is why the banner and the bar cannot disagree about what
    * is happening: there is one place that knows, and it is gasGame.js.
    */
+  /**
+   * Donut mode.
+   *
+   * Shown only on the kinds that have it, and donutHud() decides which those
+   * are - UI.js works nothing out for itself, the same rule the fuel gauge
+   * and the fire HUD follow.
+   */
+  updateDonut() {
+    const vehicle = this.game.vehicle
+    if (!this.donutEl || !vehicle) return
+
+    const hud = donutHud(vehicle.kind, vehicle.donut)
+
+    this.donutEl.classList.toggle('hidden', !hud.show)
+    if (!hud.show) return
+
+    this.donutEl.classList.toggle('on', hud.active)
+    if (this.donutState) {
+      const text = hud.active ? 'ON' : 'OFF  ·  G'
+      if (this.donutState.textContent !== text) this.donutState.textContent = text
+    }
+  }
+
+  /**
+   * Wheelies.
+   *
+   * Both keys are named while it is off, because there are two of them and
+   * nothing else on screen would ever tell you about the second one. Once it
+   * is up the line says which end, which is the only thing left worth saying.
+   */
+  updateWheelie() {
+    const vehicle = this.game.vehicle
+    if (!this.wheelieEl || !vehicle) return
+
+    const hud = wheelieHud(vehicle.kind, vehicle.wheelie)
+
+    this.wheelieEl.classList.toggle('hidden', !hud.show)
+
+    // CLEARED ON THE WAY OUT, not just hidden. Returning early here left the
+    // `on` class and the last label - "NOSE" - sitting on a hidden element,
+    // and swapping monster truck to sedan to monster truck showed that stale
+    // NOSE for the frame before the next update. Hidden is not the same as
+    // reset, and the element is reused.
+    if (!hud.show) {
+      this.wheelieEl.classList.remove('on')
+      if (this.wheelieState) this.wheelieState.textContent = 'OFF'
+      return
+    }
+
+    this.wheelieEl.classList.toggle('on', hud.active)
+    if (this.wheelieState) {
+      const text = hud.active ? hud.label : 'OFF  ·  T / Y'
+      if (this.wheelieState.textContent !== text) {
+        this.wheelieState.textContent = text
+      }
+    }
+  }
+
   updateFuel() {
     const world = this.game.world
     if (!this.fuelEl || !world || !world.fuelGauge) return

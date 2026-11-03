@@ -7,3 +7,5 @@ dist
 # stay short. They are notes for one commit, not part of the project, and one
 # of them got committed on 13 August because `git add -A` sweeps up everything.
 commit-msg.txt
+gas-stage1.patch
+gas-stage1-status.md
