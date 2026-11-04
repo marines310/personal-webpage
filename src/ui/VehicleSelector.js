@@ -324,6 +324,36 @@ export class VehicleSelector {
     vehicle.body.setTranslation({ x, y, z }, true)
     vehicle.heading = from.heading
 
+    // AND ITS ROTATION, which this used to leave to the physics.
+    //
+    // That was the bug Mike reported as a bus standing on its end outside the
+    // garage. This function owns the body for the length of the roll-out - it
+    // writes the translation outright every frame - but it was only writing
+    // two thirds of the transform and letting Rapier do the rest. That was
+    // harmless while the chassis had pitch and roll locked. It has not since
+    // `createVehicleChassis` stopped locking them, and the controller that
+    // keeps a vehicle upright instead - `tiltRates()`, in Vehicle.js - lives
+    // below the `isBusy()` guard in `prePhysicsUpdate`, so it is switched off
+    // for exactly as long as this is running.
+    //
+    // So for the length of the roll-out, a vehicle crossing the lip of the
+    // apron had nothing holding it level. Measured on a bus driving straight
+    // out: its up axis went 0.999 -> 0.961 -> 0.806 -> 0.651 and kept going,
+    // and `isFlipped()` never fired because that only counts a vehicle past
+    // ONTO ITS ROOF, not one standing on its end.
+    //
+    // A pure yaw, matching the heading set on the line above - the same fact
+    // in the two forms the rest of the code keeps it in, and the same
+    // expression `Vehicle.placeAt()` uses. No pitch, no roll, no drift.
+    const half = from.heading / 2
+    vehicle.body.setRotation(
+      { x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) }, true)
+
+    // And no leftover spin to carry out of the door. Without this the body
+    // keeps whatever angular velocity it picked up while it was being placed,
+    // and spends it the instant control is handed back.
+    vehicle.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+
     // HANDED OVER AT THE SPEED IT WAS ACTUALLY DOING, not from a standstill.
     //
     // The roll-out covers the bay-to-apron run in ROLL_OUT_SECONDS and then
