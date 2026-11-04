@@ -30,10 +30,14 @@ import {
   DEFAULT_ROAD_WIDTH
 } from '../src/world/islandLayout.js'
 import { chooseMission } from '../src/world/missions.js'
+import { WHEELIE_TUNING } from '../src/world/wheelie.js'
+import { readFileSync } from 'fs'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
 import {
   tuningFor, airborneVelocity, isGrounded, groundedWithCoyote, airYaw,
   COYOTE_TIME, GROUND_REACH, AIR_YAW,
-  tiltRates, uprightError, pathError, isFlipped, TILT
+  tiltRates, uprightError, pathError, isFlipped, flippedAngleDegrees, TILT
 } from '../src/world/driving.js'
 import { distanceToEdge, insetPolygon } from '../src/world/shapes.js'
 
@@ -931,6 +935,49 @@ console.log('\n13. Pitch and roll\n')
   chk('and leaning hard is not', !isFlipped({ x: 0.9, y: 0.4, z: 0 }))
   chk('self-righting waits long enough to read as a roll',
       TILT.flipSeconds > 1.5 && TILT.flipSeconds < 4, `${TILT.flipSeconds}s`)
+
+  // ON ITS END COUNTS, and it did not used to.
+  //
+  // Mike found a bus standing bolt upright outside the garage. Its up axis
+  // was pointing sideways - up.y about 0 - which is not "on its roof", so the
+  // old -0.15 threshold left it standing there for good. The cause is fixed
+  // in VehicleSelector (see below); this is the net under it.
+  chk('standing on its end counts as stuck', isFlipped({ x: 0, y: 0, z: 0.99 }))
+  chk('and so does just past onto its side',
+      isFlipped({ x: 0, y: -0.05, z: 0.99 }))
+  console.log(`   anything more than ${flippedAngleDegrees().toFixed(0)} degrees ` +
+              `over counts as stuck`)
+  chk('the threshold is past leaning and short of upside down',
+      flippedAngleDegrees() > 70 && flippedAngleDegrees() < 95,
+      `${flippedAngleDegrees().toFixed(1)} degrees`)
+
+  // It must not catch anything a player does on purpose. The steepest of
+  // those is the monster truck's wheelie, and it is nowhere near.
+  chk('a full wheelie is not mistaken for being stuck',
+      !isFlipped({ x: 0, y: Math.cos(WHEELIE_TUNING.maxTailPitch), z: 0 }),
+      `up.y ${Math.cos(WHEELIE_TUNING.maxTailPitch).toFixed(2)}`)
+  chk('nor a nose stand',
+      !isFlipped({ x: 0, y: Math.cos(WHEELIE_TUNING.maxNosePitch), z: 0 }))
+  chk('nor a car on a steep hill',
+      !isFlipped({ x: 0.5, y: Math.cos(0.6), z: 0 }), '35 degrees')
+
+  // THE CAUSE, read out of the file rather than trusted.
+  //
+  // The roll-out writes the body's translation outright every frame. It has
+  // to write the rotation too, or the physics owns a third of the transform
+  // with no upright controller running - `prePhysicsUpdate` returns early for
+  // the whole time `isBusy()` is true, and that is exactly the roll-out.
+  const selector = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src/ui/VehicleSelector.js'),
+    'utf8')
+  chk('the garage roll-out sets the rotation, not just the position',
+      /vehicle\.body\.setTranslation\(\{ x, y, z \}, true\)[\s\S]{0,2000}?vehicle\.body\.setRotation\(/
+        .test(selector))
+  chk('and it is a pure yaw, with no pitch or roll in it',
+      /setRotation\(\s*\{ x: 0, y: Math\.sin\(half\), z: 0, w: Math\.cos\(half\) \}/
+        .test(selector))
+  chk('and it clears the spin so none is carried out of the door',
+      /vehicle\.body\.setAngvel\(\{ x: 0, y: 0, z: 0 \}, true\)/.test(selector))
 }
 
 // ---------------------------------------------------------------------------

@@ -331,10 +331,27 @@ export const TILT = {
   pathAlign: 2.6,
   /** Radians per second, on pitch and roll together. */
   maxRate: 3.4,
-  /** Upside down for longer than this and it rights itself. */
+  /** Stuck on its side or its roof for longer than this and it rights itself. */
   flipSeconds: 2.2,
-  /** up.y below this counts as on its roof. */
-  flippedBelow: -0.15
+  /**
+   * How far over counts as stuck.
+   *
+   * This was -0.15 - more than 98 degrees over, so a vehicle had to be
+   * properly on its ROOF before anything came to get it. Mike found the hole
+   * in that: a bus standing bolt upright on its end outside the garage, up.y
+   * about 0, which is not on its roof and so was left standing there.
+   *
+   * 0.17 is about 80 degrees. Past that a vehicle is on its side and is not
+   * driving anywhere under its own power, whatever put it there - and the
+   * cause Mike hit is fixed separately, in VehicleSelector's roll-out. This
+   * is the net under it, for the ways there will always be.
+   *
+   * It cannot catch ordinary driving. A monster truck at full wheelie is 30
+   * degrees over (up.y 0.86); the steepest terrain in the world is nothing
+   * like 80; and flipSeconds means it has to stay there for over two seconds
+   * continuously, which a jump or a hard landing does not.
+   */
+  flippedBelow: 0.17
 }
 
 /** Cross product, because three of these are needed and none of them is THREE. */
@@ -438,4 +455,14 @@ export function tiltRates({ up, forward, angVel, velocity, grounded,
 /** On its roof, as opposed to merely leaning. */
 export function isFlipped(up) {
   return up.y < TILT.flippedBelow
+}
+
+/**
+ * The same question in degrees, for the places that want to say it out loud.
+ *
+ * Exported so a test can state the threshold as an angle rather than as a
+ * cosine - "80 degrees over" is checkable by eye and `0.17` is not.
+ */
+export function flippedAngleDegrees() {
+  return Math.acos(Math.max(-1, Math.min(1, TILT.flippedBelow))) * 180 / Math.PI
 }

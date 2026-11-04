@@ -344,8 +344,19 @@ chk('the handling goes through wheelieParams()',
 // upright spring never hears about the wheelie, so nothing it does can change.
 chk('the upright spring is not told about the wheelie at all',
     !/wheelie: /.test(vehicle))
-chk('and driving.js knows nothing about wheelies either',
-    !/wheelie/i.test(read('src/world/driving.js')))
+// CODE, not the word. This used to be `!/wheelie/i.test(...)` and it failed
+// the moment driving.js gained a COMMENT mentioning wheelies - the note on
+// TILT.flippedBelow explaining that a full wheelie must not be mistaken for a
+// vehicle stuck on its side. That cross-reference is worth having; what must
+// not be there is a dependency.
+const driving = read('src/world/driving.js')
+chk('driving.js does not import anything from wheelie.js',
+    !/from\s+['"]\.\/wheelie\.js['"]/.test(driving))
+chk('and calls none of its functions',
+    !/\b(wheeliePose|wheelieParams|stepWheelie|canWheelie|nextWheelieWant|wheelieHud)\s*\(/
+      .test(driving))
+chk('so the physics still has exactly one idea of which way up a vehicle is',
+    !/WHEELIE_TUNING|wheelie\./.test(driving))
 
 // No allocation in a path that runs for every vehicle, every frame.
 chk('the pose allocates nothing per frame',
