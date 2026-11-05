@@ -161,6 +161,36 @@ export const ANIMATE_RANGE = 95
 /** How near a stopped vehicle's door a waiting person will board from. */
 export const BOARD_REACH = 6
 
+/**
+ * How briskly somebody walks to or from a bus door.
+ *
+ * Faster than a stroll and slower than the startled run: a bus is waiting,
+ * and the whole door cycle is a few seconds, so a passenger ambling across at
+ * WALK_SPEED would still be outside when the doors shut.
+ */
+export const BOARD_WALK = 2.1
+
+/**
+ * How far away somebody has to be to be recruited as an alighting passenger.
+ *
+ * The city has a fixed number of people, so the ones who get OFF the bus are
+ * ones who were somewhere else a moment ago, moved to the door. Taking them
+ * from far away is the whole trick - nobody is watching that bit of pavement,
+ * so nobody sees a pedestrian vanish from it.
+ */
+export const ALIGHT_FROM = 70
+
+/**
+ * How far a passenger will walk from the door to the pavement.
+ *
+ * At a real stop this is a couple of units - the stop IS a pavement node, so
+ * the kerb is right there. The cap is for everywhere else: stop the bus in
+ * the middle of a field and the nearest pavement is a hundred units away, and
+ * rather than have passengers set off on a cross-country hike, nobody gets
+ * off. A test that parked a bus off the map found this.
+ */
+export const ALIGHT_MAX_WALK = 25
+
 // ---------------------------------------------------------------------------
 // THE PAVEMENT NETWORK
 // ---------------------------------------------------------------------------
@@ -865,6 +895,48 @@ function stepOne(net, person, delta, vehicles, rand) {
       return
     }
 
+    // WALKING TO OR FROM A BUS DOOR.
+    //
+    // Both are the same movement - head for a point, and on arrival hand
+    // yourself back to the pavement - so they share a branch and differ only
+    // in where they are going and what the arrival means.
+    //
+    // Deliberately NOT on the pavement graph while this is happening. A
+    // passenger stepping off a bus is standing in the road for a second or
+    // two, which is exactly right and is why `cross` and `dodge` are
+    // free-form too.
+    case 'boarding':
+    case 'alighting': {
+      const dx = (person.goX || 0) - person.x
+      const dz = (person.goZ || 0) - person.z
+      const d = Math.hypot(dx, dz)
+      const step = BOARD_WALK * delta
+
+      person.travelled += step
+      if (d > 1e-6) person.heading = Math.atan2(dx, dz)
+
+      // Arrived, or close enough that another step would overshoot.
+      if (d <= step || d < 0.05) {
+        // Either way they are done with this bus and should not immediately
+        // queue for the next one - otherwise a passenger who has just got off
+        // rolls for `waiting` at the same stop and gets straight back on.
+        person.cooldown = STOP_COOLDOWN
+        person.waited = 0
+        person.edge = -1
+        // ABOARD, or on the pavement. Both go back to the network: the city
+        // has a fixed number of people, so a passenger who boards is not
+        // deleted, they are put back somewhere to walk again. From the
+        // kerb nobody can tell the difference, and the alternative is a
+        // city that empties one bus at a time.
+        rejoin(net, person, rand)
+        return
+      }
+
+      person.x += (dx / d) * step
+      person.z += (dz / d) * step
+      return
+    }
+
     case 'kerb': {
       // Waiting to cross. The patience is what stops a jam on the road from
       // pinning somebody to a kerb for the rest of the session.
@@ -1035,7 +1107,8 @@ export function walkCycle(person, moving = true) {
 /** Is this person moving under their own steam this frame? */
 export function isWalking(person) {
   return person.mode === 'walk' || person.mode === 'cross' ||
-         person.mode === 'dodge' || person.startled > 0
+         person.mode === 'dodge' || person.mode === 'boarding' ||
+         person.mode === 'alighting' || person.startled > 0
 }
 
 /**
@@ -1065,9 +1138,92 @@ export function boardable(people, at, reach = BOARD_REACH) {
     Math.hypot(a.x - at.x, a.z - at.z) - Math.hypot(b.x - at.x, b.z - at.z))
 }
 
+/**
+ * Send people from the shelter onto the bus.
+ *
+ * `boardable()` above answers who COULD get on; this is the half that was
+ * left for the bus game to write. The nearest `howMany` of them stop waiting
+ * and walk to the door.
+ *
+ * Returns how many actually set off, which may be fewer than asked for if the
+ * queue is short - the caller wants the real number, because it is also the
+ * number the bus is about to carry.
+ */
+export function boardBus(people, at, howMany, reach = BOARD_REACH) {
+  if (!people || !at || howMany <= 0) return 0
+
+  const queue = boardable(people, at, reach)
+  const taking = queue.slice(0, howMany)
+
+  for (const person of taking) {
+    person.mode = 'boarding'
+    person.goX = at.x
+    person.goZ = at.z
+    person.travelled = 0
+    person.waited = 0
+    person.wants = -1
+  }
+
+  return taking.length
+}
+
+/**
+ * Put people off the bus onto the pavement.
+ *
+ * The ones who get off were somewhere else a moment ago. The city has a fixed
+ * number of people - PEDESTRIANS of them, in one instanced mesh per body part
+ * - so a passenger cannot be conjured and then thrown away; they have to be
+ * borrowed. Borrowed from FAR AWAY (see ALIGHT_FROM), because nobody is
+ * watching that bit of pavement, and only from people who are plainly walking:
+ * taking somebody mid-crossing would pull them out of the road.
+ *
+ * They are placed at the door and walk to the nearest bit of pavement, which
+ * is where `rejoin()` would have put them anyway.
+ */
+export function alightBus(net, people, at, howMany, rand = Math.random) {
+  if (!net || !people || !at || howMany <= 0) return 0
+
+  // Where they step off TO: the nearest pavement node to the door.
+  let best = -1
+  let bestD = Infinity
+  for (let i = 0; i < net.nodes.length; i++) {
+    const node = net.nodes[i]
+    if (!node.links.length) continue
+    const d = Math.hypot(node.x - at.x, node.z - at.z)
+    if (d < bestD) { bestD = d; best = i }
+  }
+  // Nowhere sensible to step off TO. See ALIGHT_MAX_WALK.
+  if (best < 0 || bestD > ALIGHT_MAX_WALK) return 0
+
+  const to = net.nodes[best]
+  let sent = 0
+
+  for (const person of people) {
+    if (sent >= howMany) break
+    if (person.mode !== 'walk') continue
+    if (person.startled > 0) continue
+    if (Math.hypot(person.x - at.x, person.z - at.z) < ALIGHT_FROM) continue
+
+    person.mode = 'alighting'
+    person.x = at.x
+    person.z = at.z
+    person.goX = to.x
+    person.goZ = to.z
+    person.edge = -1
+    person.along = 0
+    person.travelled = 0
+    person.waited = 0
+    person.wants = -1
+    sent++
+  }
+
+  return sent
+}
+
 /** A count of who is doing what, for a test or a probe to assert on. */
 export function census(people) {
-  const out = { walk: 0, cross: 0, kerb: 0, waiting: 0, platform: 0, dodge: 0 }
+  const out = { walk: 0, cross: 0, kerb: 0, waiting: 0, platform: 0, dodge: 0,
+                boarding: 0, alighting: 0 }
   for (const person of people) out[person.mode] = (out[person.mode] || 0) + 1
   return out
 }
