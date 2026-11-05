@@ -923,12 +923,15 @@ function stepOne(net, person, delta, vehicles, rand) {
         person.cooldown = STOP_COOLDOWN
         person.waited = 0
         person.edge = -1
-        // ABOARD, or on the pavement. Both go back to the network: the city
-        // has a fixed number of people, so a passenger who boards is not
-        // deleted, they are put back somewhere to walk again. From the
-        // kerb nobody can tell the difference, and the alternative is a
-        // city that empties one bus at a time.
-        rejoin(net, person, rand)
+        // Both go back to the network - the city has a fixed number of
+        // people - but to DIFFERENT places. Somebody getting off is standing
+        // by the kerb and simply joins it. Somebody getting on has to
+        // disappear, so they go a long way away (see rejoinFar). The first
+        // version sent both to the nearest node, and the nearest node to a
+        // bus door is the shelter: the boarders walked to the bus and popped
+        // straight back into the queue.
+        if (person.mode === 'boarding') rejoinFar(net, person, rand)
+        else rejoin(net, person, rand)
         return
       }
 
@@ -1046,6 +1049,38 @@ export function nearestThreat(person, vehicles) {
 }
 
 /** Put somebody back on the nearest pavement after they have run off it. */
+/**
+ * Put somebody back on the pavement a long way from here.
+ *
+ * For a passenger who has just BOARDED. `rejoin()` snaps to the nearest node,
+ * and the nearest node to a bus door is the shelter the passenger just walked
+ * away from - so they reached the door and popped straight back to the queue.
+ * From the kerb that reads as a shuffle, not as getting on a bus.
+ *
+ * The city has a fixed number of people, so they cannot simply be removed;
+ * they go somewhere nobody is looking. Among nodes at least `atLeast` away, a
+ * random one, so the same stop does not keep refilling from the same place.
+ */
+function rejoinFar(net, person, rand, atLeast = ALIGHT_FROM) {
+  const far = []
+  for (let i = 0; i < net.nodes.length; i++) {
+    const n = net.nodes[i]
+    if (!n.links.length) continue
+    if (Math.hypot(n.x - person.x, n.z - person.z) < atLeast) continue
+    far.push(i)
+  }
+  // A map too small to have anywhere far: the nearest will have to do.
+  if (!far.length) { rejoin(net, person, rand); return }
+
+  const pick = far[Math.floor(rand() * far.length)]
+  person.node = pick
+  person.x = net.nodes[pick].x
+  person.z = net.nodes[pick].z
+  person.edge = -1
+  person.mode = 'walk'
+  setOff(net, person, rand)
+}
+
 function rejoin(net, person, rand) {
   let best = -1
   let bestD = Infinity
