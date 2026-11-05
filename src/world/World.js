@@ -14468,11 +14468,21 @@ export class World {
     if (!player || !this.people || !this.people.length) return
     if (door.stage !== 'alighting' && door.stage !== 'boarding') return
 
+    // THE RIGHT-HAND SIDE, which is the kerb side: lanes sit a quarter of
+    // the road's width to the right of the centre line. Forward is
+    // (sin h, cos h), so right is (-cos h, sin h) - the same pair the gas
+    // attendant uses to find the pump side of the car in gasGame.js.
+    //
+    // The first version had the signs the other way round and put the door
+    // in the middle of the road, which would have walked every passenger
+    // into the traffic. A right-hand vector is the easiest thing in the
+    // world to get backwards, which is why the test checks the SIGN and not
+    // just that an offset exists.
     const heading = player.heading || 0
     const side = (player.width || 2.5) / 2 + 0.7
     const at = {
-      x: player.x + Math.cos(heading) * side,
-      z: player.z - Math.sin(heading) * side,
+      x: player.x - Math.cos(heading) * side,
+      z: player.z + Math.sin(heading) * side,
       kind: 'bus'
     }
 
