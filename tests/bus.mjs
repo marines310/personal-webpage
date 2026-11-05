@@ -405,6 +405,19 @@ chk('World.js is given the stops and the player, and decides nothing itself',
 // the first sign would have been a white screen in the browser.
 const imports = (world.match(/from '\.\/busGame\.js'/g) || []).length
 chk('World.js imports from busGame.js at all', imports === 1, `${imports} times`)
+
+// THE RING ON THE ROAD. Drawn at AT_STOP radius, so it is the stop zone made
+// visible rather than a decoration near it; moved, not rebuilt; and added to
+// the scene the way everything else in World.js is - the first version wrote
+// `this.scene.add`, which does not exist, and would have been a white screen.
+chk('there is a ring on the road at the next stop',
+    /createBusStopMarker\(\)/.test(world) && /updateBusStopMarker\(delta\)/.test(world))
+chk('and it is exactly the size of the stop zone',
+    /RingGeometry\(BUS_AT_STOP - [\d.]+, BUS_AT_STOP,/.test(world))
+chk('and it is added to the scene the way everything else is',
+    /this\.game\.add\(ring\)/.test(world) && !/this\.scene\.add\(ring\)/.test(world))
+chk('and it follows busNextStop() and hides when there is none',
+    /const stop = busNextStop\(this\.bus\)[\s\S]{0,80}?if \(!stop\) \{ ring\.visible = false/.test(world))
 // THE FIGURES. World.js watches the door stage for a CHANGE and sends the
 // walkers once per change - poll it and a fresh set is recruited every frame.
 chk('World.js sends the figures on a change of door stage, not every frame',

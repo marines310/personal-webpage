@@ -520,6 +520,14 @@ console.log('\nGetting on and off a bus\n')
   chk('and the city still has every one of its people',
       people.length === before, `${people.length} of ${before}`)
 
+  // AND THEY ARE GONE FROM THE STOP. The first version put them back on the
+  // nearest node - the shelter - so they walked to the bus and popped straight
+  // back into the queue. A passenger who has boarded must be nowhere near.
+  const boarded = people.filter(p => p.cooldown > 0 && p.mode === 'walk')
+  const stillHere = boarded.filter(p => Math.hypot(p.x - door.x, p.z - door.z) < 30)
+  chk('and somebody who boarded is nowhere near the stop afterwards',
+      stillHere.length === 0, `${stillHere.length} of ${boarded.length} still within 30`)
+
   // Getting off, at a REAL stop - which is a pavement node, so the kerb they
   // step onto is a step away.
   const realStop = stops[0]

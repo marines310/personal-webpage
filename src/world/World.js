@@ -222,7 +222,7 @@ import {
 } from './monorailGame.js'
 import {
   newBusState, stepBus, busHud, busPanel, doorPhase as busDoorPhase,
-  nextStop as busNextStop
+  nextStop as busNextStop, AT_STOP as BUS_AT_STOP
 } from './busGame.js'
 import { chooseMission } from './missions.js'
 import {
@@ -917,6 +917,7 @@ export class World {
     // The bus route. After getBusStops(), because a route is made of them -
     // though not until the player actually gets into a bus.
     this.bus = newBusState()
+    this.createBusStopMarker()
     this.rail = newMonorailState()
   }
 
@@ -12689,6 +12690,7 @@ export class World {
     // Watched as a transition rather than polled, because each group sets off
     // once - poll it and you recruit a fresh set of passengers every frame.
     this.updateBusPassengers(player)
+    this.updateBusStopMarker(delta)
 
     stepGas(this.gas, delta, {
       player,
@@ -14448,6 +14450,56 @@ export class World {
     for (const [name, material] of Object.entries(this.raceLamps)) {
       material.emissiveIntensity = this.race.light === name ? 2.4 : 0
     }
+  }
+
+  /**
+   * A ring on the road at the stop you are being sent to.
+   *
+   * Mike, after the first drive: "the bus target seems to keep moving. At
+   * the very least, show a circle on the road or something where I have to
+   * stop." The arrow is a compass - it swings through ninety degrees as you
+   * pull in alongside a stop - and the metres count down and then back up if
+   * you roll past. Neither tells you WHERE to stop, only how far off you are.
+   *
+   * This does. It is drawn at exactly AT_STOP radius, which is the distance
+   * the doors open at, so the ring is not decoration: stop with the bus
+   * inside it and the doors open. One mesh, moved rather than rebuilt, and
+   * hidden when there is nothing to point at.
+   */
+  createBusStopMarker() {
+    const geometry = new THREE.RingGeometry(BUS_AT_STOP - 0.55, BUS_AT_STOP, 48)
+    const material = new THREE.MeshBasicMaterial({
+      color: 0x7ad7ff,
+      transparent: true,
+      opacity: 0.75,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    })
+    const ring = new THREE.Mesh(geometry, material)
+    ring.rotation.x = -Math.PI / 2
+    ring.visible = false
+    ring.renderOrder = 3
+    this.game.add(ring)
+    this.busStopMarker = ring
+    this._busMarkerPulse = 0
+  }
+
+  updateBusStopMarker(delta) {
+    const ring = this.busStopMarker
+    if (!ring) return
+
+    const stop = busNextStop(this.bus)
+    if (!stop) { ring.visible = false; return }
+
+    ring.visible = true
+    ring.position.set(stop.x, this.groundAt(stop.x, stop.z) + 0.06, stop.z)
+
+    // A slow breathe, so the eye finds it on a busy street. Scale rather
+    // than opacity, because a ring the size of the stop zone that is
+    // visibly the size of the stop zone is the whole point.
+    this._busMarkerPulse += delta
+    const breathe = 1 + 0.04 * Math.sin(this._busMarkerPulse * 2.2)
+    ring.scale.set(breathe, breathe, 1)
   }
 
   /**
