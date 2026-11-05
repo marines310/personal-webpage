@@ -405,6 +405,16 @@ chk('World.js is given the stops and the player, and decides nothing itself',
 // the first sign would have been a white screen in the browser.
 const imports = (world.match(/from '\.\/busGame\.js'/g) || []).length
 chk('World.js imports from busGame.js at all', imports === 1, `${imports} times`)
+// THE FIGURES. World.js watches the door stage for a CHANGE and sends the
+// walkers once per change - poll it and a fresh set is recruited every frame.
+chk('World.js sends the figures on a change of door stage, not every frame',
+    /door\.stage === this\._busStage\) return/.test(world) &&
+    /this\._busStage = door\.stage/.test(world))
+chk('alighting figures come from alightBus(), boarding ones from boardBus()',
+    /door\.stage === 'alighting'[\s\S]{0,120}?alightBus\(this\.pedestrianNet, this\.people, at, door\.alighting\)/.test(world) &&
+    /door\.stage === 'boarding'[\s\S]{0,120}?boardBus\(this\.people, at, door\.boarding\)/.test(world))
+chk('and the door is a point BESIDE the bus, not its middle',
+    /Math\.cos\(heading\) \* side/.test(world) && /Math\.sin\(heading\) \* side/.test(world))
 chk('and it asks pedestrians.js who is actually at the shelter',
     /waiting:[\s\S]{0,300}?boardable\(this\.people,[\s\S]{0,80}?kind: 'bus'/.test(world))
 

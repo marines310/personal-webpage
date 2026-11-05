@@ -35,9 +35,10 @@ import { distanceToPath } from '../src/world/curves.js'
 import {
   buildPavements, pavementRun, platformSpots, makePedestrians, stepPedestrians,
   buildRoadIndex, clearOfRoads, walkCycle, isWalking, boardable, census,
-  nearestThreat, timeToReach, crossingClear,
+  nearestThreat, timeToReach, crossingClear, boardBus, alightBus,
   WALK_SPEED, STRIDE, PEDESTRIANS, MOUTH_SPAN, DODGE_SIGHT, RUN_SPEED,
-  CROSS_CLEAR_SECONDS, WAIT_SECONDS
+  CROSS_CLEAR_SECONDS, WAIT_SECONDS, BOARD_REACH, BOARD_WALK, ALIGHT_FROM,
+  ALIGHT_MAX_WALK
 } from '../src/world/pedestrians.js'
 
 let pass = 0, fail = 0
@@ -478,6 +479,106 @@ console.log('\n12. Platforms are standing room, not walking room')
       `${standing.filter((p, i) => !near(p.x, where[i].x)).length} moved`)
   chk('a person standing still is not animated as walking',
       standing.every(p => !isWalking(p)))
+}
+
+// ---------------------------------------------------------------------------
+// Getting on and off a bus.
+//
+// `boardable()` had been here since before there was a bus game - "THE HOOK
+// FOR THE NEXT GAME, and the reason the waiting people exist at all". These
+// are the two halves that finally call it.
+//
+// What they are really guarding is that the city keeps its people. There are
+// exactly PEDESTRIANS of them in one instanced mesh per body part, so nobody
+// can be conjured for a bus or thrown away by one: a passenger who boards is
+// put back on the pavement somewhere else, and a passenger who gets off was
+// borrowed from somewhere else a moment earlier.
+console.log('\nGetting on and off a bus\n')
+{
+  // The same network the rest of this file uses, rather than a second one -
+  // building it costs three cold seconds.
+  const people = makePedestrians(net, 120)
+  const before = people.length
+
+  // Somebody standing at a stop, and a bus pulled up beside them.
+  const waiting = people.find(p => p.mode === 'waiting') || people[0]
+  waiting.mode = 'waiting'
+  waiting.waited = 0
+  const door = { x: waiting.x + 1.5, z: waiting.z, kind: 'bus' }
+
+  const got = boardBus(people, door, 3)
+  chk('somebody at the stop sets off for the door', got >= 1, `${got}`)
+  chk('and they are marked as boarding',
+      people.filter(p => p.mode === 'boarding').length === got)
+  chk('nobody is created to do it', people.length === before)
+
+  // Walk them in. They should reach the door and be handed back to the
+  // pavement, not deleted.
+  for (let i = 0; i < 400; i++) stepPedestrians(net, people, 1 / 30, {})
+  chk('they arrive and go back to walking',
+      people.filter(p => p.mode === 'boarding').length === 0)
+  chk('and the city still has every one of its people',
+      people.length === before, `${people.length} of ${before}`)
+
+  // Getting off, at a REAL stop - which is a pavement node, so the kerb they
+  // step onto is a step away.
+  const realStop = stops[0]
+  const doorAt = { x: realStop.x + 1.2, z: realStop.z, kind: 'bus' }
+  const moved = people
+    .filter(p => Math.hypot(p.x - doorAt.x, p.z - doorAt.z) >= ALIGHT_FROM).length
+  const off = alightBus(net, people, doorAt, 4)
+  chk('passengers get off', off > 0 && off <= 4, `${off}`)
+  chk('and they are taken from far away, where nobody is looking',
+      moved > 0)
+  chk('they start at the door', people
+    .filter(p => p.mode === 'alighting')
+    .every(p => Math.hypot(p.x - doorAt.x, p.z - doorAt.z) < 0.001))
+
+  for (let i = 0; i < 600; i++) stepPedestrians(net, people, 1 / 30, {})
+  chk('they walk clear and rejoin the pavement',
+      people.filter(p => p.mode === 'alighting').length === 0)
+  chk('and the count is STILL the same', people.length === before)
+
+  // PARKED NOWHERE NEAR A PAVEMENT, nobody gets off. The alternative is
+  // passengers setting off on a cross-country walk to the nearest kerb, which
+  // is what the first version of this did - a bus parked off the map had them
+  // still walking six hundred frames later.
+  chk('a bus stopped in the middle of nowhere lets nobody off',
+      alightBus(net, people, { x: 9000, z: 9000, kind: 'bus' }, 4) === 0)
+  chk('and the walk from a door is capped at a sane distance',
+      ALIGHT_MAX_WALK > 5 && ALIGHT_MAX_WALK < 60, `${ALIGHT_MAX_WALK}`)
+
+  // Somebody mid-crossing must not be yanked out of the road to play a
+  // passenger - that is a pedestrian teleporting out of traffic.
+  const crosser = people.find(p => p.mode === 'cross')
+  if (crosser) {
+    const wasAt = { x: crosser.x, z: crosser.z }
+    alightBus(net, people, { x: crosser.x + 200, z: crosser.z + 200 }, 8)
+    chk('nobody is taken out of the middle of a crossing',
+        crosser.mode === 'cross' || (crosser.x === wasAt.x && crosser.z === wasAt.z))
+  } else {
+    chk('nobody is taken out of the middle of a crossing', true)
+  }
+
+  // The legs have to move, or a passenger slides to the bus like a chess piece.
+  chk('a boarding passenger is animated as walking',
+      isWalking({ mode: 'boarding', startled: 0 }) &&
+      isWalking({ mode: 'alighting', startled: 0 }))
+  chk('and they walk briskly, because a bus is waiting',
+      BOARD_WALK > WALK_SPEED && BOARD_WALK < RUN_SPEED,
+      `${BOARD_WALK}`)
+  chk('the reach to the door is about a bus width',
+      BOARD_REACH >= 4 && BOARD_REACH <= 10)
+
+  // Nonsense in, nothing out - these run on a frame where anything may be
+  // missing, and a throw here is a dead city.
+  chk('no people, no bus, no crash',
+      boardBus(null, door, 2) === 0 && boardBus(people, null, 2) === 0 &&
+      boardBus(people, door, 0) === 0)
+  chk('and the same getting off',
+      alightBus(null, people, door, 2) === 0 &&
+      alightBus(net, people, null, 2) === 0 &&
+      alightBus(net, people, door, 0) === 0)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

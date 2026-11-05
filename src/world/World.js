@@ -211,7 +211,7 @@ import {
 import { CAR_HEIGHT } from './Vehicle.js'
 import {
   buildPavements as buildPavementGraph, platformSpots, makePedestrians,
-  stepPedestrians, walkCycle, isWalking, boardable,
+  stepPedestrians, walkCycle, isWalking, boardable, boardBus, alightBus,
   PEDESTRIANS, DRAW_RANGE, ANIMATE_RANGE
 } from './pedestrians.js'
 import {
@@ -12683,6 +12683,13 @@ export class World {
                     this.game.vehicleSelector.isBusy())
     })
 
+    // THE FIGURES ON AND OFF.
+    //
+    // busGame.js says WHEN and HOW MANY; pedestrians.js owns the walking.
+    // Watched as a transition rather than polled, because each group sets off
+    // once - poll it and you recruit a fresh set of passengers every frame.
+    this.updateBusPassengers(player)
+
     stepGas(this.gas, delta, {
       player,
       maxSpeed: (vehicle && vehicle.params && vehicle.params.maxForwardSpeed) || 18,
@@ -14440,6 +14447,39 @@ export class World {
     if (!this.raceLamps) return
     for (const [name, material] of Object.entries(this.raceLamps)) {
       material.emissiveIntensity = this.race.light === name ? 2.4 : 0
+    }
+  }
+
+  /**
+   * Passengers walking on and off, driven off the door cycle.
+   *
+   * The door is a point BESIDE the bus, not its middle - aim a passenger at
+   * the middle and they walk into the bodywork and stand inside it. Offset to
+   * the kerb side from the bus's own heading and width, so it is right for a
+   * bus and would be right for anything else that ever carried people.
+   */
+  updateBusPassengers(player) {
+    const door = busDoorPhase(this.bus)
+
+    // Nothing to do unless the stage has just changed.
+    if (door.stage === this._busStage) return
+    this._busStage = door.stage
+
+    if (!player || !this.people || !this.people.length) return
+    if (door.stage !== 'alighting' && door.stage !== 'boarding') return
+
+    const heading = player.heading || 0
+    const side = (player.width || 2.5) / 2 + 0.7
+    const at = {
+      x: player.x + Math.cos(heading) * side,
+      z: player.z - Math.sin(heading) * side,
+      kind: 'bus'
+    }
+
+    if (door.stage === 'alighting' && door.alighting > 0) {
+      alightBus(this.pedestrianNet, this.people, at, door.alighting)
+    } else if (door.stage === 'boarding' && door.boarding > 0) {
+      boardBus(this.people, at, door.boarding)
     }
   }
 
