@@ -415,6 +415,24 @@ chk('alighting figures come from alightBus(), boarding ones from boardBus()',
     /door\.stage === 'boarding'[\s\S]{0,120}?boardBus\(this\.people, at, door\.boarding\)/.test(world))
 chk('and the door is a point BESIDE the bus, not its middle',
     /Math\.cos\(heading\) \* side/.test(world) && /Math\.sin\(heading\) \* side/.test(world))
+
+// ON THE KERB SIDE. Lanes sit to the RIGHT of the centre line, so the kerb is
+// on the right, and right is (-cos h, sin h) for a forward of (sin h, cos h) -
+// the pair gasGame.js uses for the pump side of the car. The first version
+// had both signs flipped and put the door in the middle of the road. This
+// checks the signs, because an offset that exists is not the same as an
+// offset that points the right way.
+chk('and it is the RIGHT-hand side, where the kerb is, not the road',
+    /x: player\.x - Math\.cos\(heading\) \* side/.test(world) &&
+    /z: player\.z \+ Math\.sin\(heading\) \* side/.test(world))
+{
+  const h = 0.37
+  const gasRight = { x: -Math.cos(h), z: Math.sin(h) }   // gasGame.js: sx=-fz, sz=fx
+  const doorRight = { x: -Math.cos(h), z: Math.sin(h) }
+  chk('and it agrees with the side the gas attendant stands on',
+      Math.abs(gasRight.x - doorRight.x) < 1e-12 &&
+      Math.abs(gasRight.z - doorRight.z) < 1e-12)
+}
 chk('and it asks pedestrians.js who is actually at the shelter',
     /waiting:[\s\S]{0,300}?boardable\(this\.people,[\s\S]{0,80}?kind: 'bus'/.test(world))
 
