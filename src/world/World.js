@@ -220,6 +220,10 @@ import {
   // so the two cannot drift apart. See updateMonorailCab().
   DOOR_SECONDS as RAIL_DOOR_SECONDS
 } from './monorailGame.js'
+import {
+  newBusState, stepBus, busHud, busPanel, doorPhase as busDoorPhase,
+  nextStop as busNextStop
+} from './busGame.js'
 import { chooseMission } from './missions.js'
 import {
   newGasState, stepGas, gasHud, fuelGauge, hasTank, makeAttendants, LOW_FUEL
@@ -910,6 +914,9 @@ export class World {
     this.crashSites = this.findCrashSites()
     this.createWreckCars()
     this.tow = newTowState()
+    // The bus route. After getBusStops(), because a route is made of them -
+    // though not until the player actually gets into a bus.
+    this.bus = newBusState()
     this.rail = newMonorailState()
   }
 
@@ -12657,6 +12664,25 @@ export class World {
         }
       : null
 
+    // THE BUS ROUTE. Given the stops and the player and nothing else; every
+    // decision in it - which stops, who boards, how long the doors take, what
+    // the time was worth - is in busGame.js where a test can reach it.
+    stepBus(this.bus, delta, {
+      player,
+      stops: this.busStops || [],
+      // WHO IS ACTUALLY AT THE SHELTER. pedestrians.js has carried
+      // boardable() since before busGame.js existed, left for this - "the
+      // reason the waiting people exist at all". So the number who get on is
+      // the number standing there, not a dice roll that disagrees with them.
+      waiting: (player && this.people && this.people.length)
+        ? boardable(this.people, { x: player.x, z: player.z, kind: 'bus' }).length
+        : undefined,
+      // The garage still has the wheel while it rolls you out to the apron.
+      // One flag, asked in the one place that already owns the answer.
+      controlled: !(this.game.vehicleSelector &&
+                    this.game.vehicleSelector.isBusy())
+    })
+
     stepGas(this.gas, delta, {
       player,
       maxSpeed: (vehicle && vehicle.params && vehicle.params.maxForwardSpeed) || 18,
@@ -14444,6 +14470,9 @@ export class World {
         mesh ? { x: mesh.position.x, z: mesh.position.z } : null,
         garage ? { x: garage.x, z: garage.z } : null),
       raceHud(this.race),
+      // The route only ever claims the arrow while you are driving the bus,
+      // so it cannot take it from a fire you are fighting.
+      busHud(this.bus, kind === 'bus'),
       // LAST on purpose. A callout you are actually running keeps the arrow;
       // low fuel takes it only when nothing else wants it. The gauge is drawn
       // separately and is always on screen, so being outranked here never
