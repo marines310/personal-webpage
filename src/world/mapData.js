@@ -228,8 +228,9 @@ export const ISLANDS = [
     id: 'stunt',
     // MOVED AND WIDENED so the stadium could grow. Mike: "I also want the
     // monster truck stadium bigger so I can feel like it's a real stadium."
-    // (The stadium has since gone - "too small and too cluttered" - and the
-    // island is open ground. The size and position stand.)
+    // (The stadium's SEATING has since gone - "too small and too cluttered"
+    // - and the jumps stayed on open ground with a rim. The size and
+    // position stand.)
     //
     // It could not simply get a bigger radius. This island is wedged between
     // ABOUT and PROJECTS - measured coast to coast, six units of water to one

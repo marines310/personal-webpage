@@ -510,8 +510,10 @@ console.log('\nThe beam has nothing to go through on the stunt island\n')
 // dead code worth removing rather than machinery worth keeping."
 //
 // The stand is gone (Mike, 6 November: "Maybe the stadium can just go"), so
-// the holes went with it. What is left to guard is the premise: nothing on
-// that island is tall enough to need a hole.
+// the holes went with it. The JUMPS came back the same day ("I only meant
+// removal of the audience section"), so what is left to guard is the
+// premise: nothing on that island is tall enough to need a hole - and the
+// tallest thing there is now a four-unit mound, not a flat floor.
 {
   chk('course.js no longer describes a stand', COURSE.ARENA_STANDS === undefined)
 
@@ -520,10 +522,15 @@ console.log('\nThe beam has nothing to go through on the stunt island\n')
   chk('and World.js no longer cuts holes for the beam',
       !/underMonorail\(/.test(world) && !/buildArenaStands\(/.test(world))
 
-  // The floor is the only thing built there, and it is flat on the ground.
-  chk('the open ground sits far below the beam',
-      COURSE.COURSE_GROUND + 1 < MONORAIL_HEIGHT,
-      `${COURSE.COURSE_GROUND} against ${MONORAIL_HEIGHT}`)
+  // The tallest thing on the floor, with the crush pile's wrecks on top of
+  // their mound, against the beam's underside. tests/race.mjs separately
+  // checks that no mound has a pier in it.
+  const all = [...COURSE.STUNT_MOUNDS, COURSE.STUNT_DOUBLE.takeOff, COURSE.STUNT_DOUBLE.landing]
+  const tallest = Math.max(...all.map(m =>
+    COURSE.COURSE_GROUND + m.height + (m.crush ? COURSE.CRUSH_PILE.height + 1.2 : 0)))
+  console.log(`   tallest jump ${tallest.toFixed(1)}, beam underside ${underside}`)
+  chk('the tallest jump sits well below the beam',
+      tallest + 2 < underside, `${tallest.toFixed(1)} against ${underside}`)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

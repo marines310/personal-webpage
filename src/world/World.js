@@ -245,7 +245,7 @@ import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
 import {
   COURSE_GROUND, COURSE_ROAD, walkLoop, outsetLoop, pointAlongRing,
   OPEN_GROUND_INSET, OPEN_GROUND_RIM, RACE_LINE_AT, GRID_COLUMN_OFFSET, CIRCUIT_GATE,
-  pitStraightPlan
+  pitStraightPlan, moundSolid, crushSolid, STUNT_COURSE, MOUND_PAINT, CRUSH_PILE
 } from './course.js'
 import {
   loftSolid, carBody, raceBody, monsterBody, wheelPositions, WHEEL,
@@ -11682,13 +11682,317 @@ export class World {
       color: PALETTE.sandWet, roughness: 0.99, flatShading: true
     })
 
+    // Dark EARTH for the mounds, not near-black. An earlier attempt at fixing
+    // an invisible arena went all the way to 0x33363d, which reads from the
+    // driver's seat as a hole in the floor rather than a heap of dirt on it.
+    // This is three stops below the floor's 0xd3bf8c - dark enough to see
+    // against it from two hundred units up, brown enough to be a mound.
+    const moundMat = new THREE.MeshStandardMaterial({
+      color: 0x6b5233, roughness: 0.98, flatShading: true
+    })
+    const launchMat = new THREE.MeshStandardMaterial({
+      color: 0x5d4629, roughness: 0.96, flatShading: true
+    })
+    const paints = {
+      red: new THREE.MeshStandardMaterial({
+        color: 0xc4322a, roughness: 0.9, flatShading: true
+      }),
+      blue: new THREE.MeshStandardMaterial({
+        color: 0x2f5fa8, roughness: 0.9, flatShading: true
+      }),
+      hazard: new THREE.MeshStandardMaterial({
+        color: PALETTE.crane, roughness: 0.88, flatShading: true
+      })
+    }
+
     // Inset from the ring road by less than the arena was, because there is
     // no longer a barrier or seating to leave room for - the floor runs
     // almost to the kerb. OPEN_GROUND_INSET is in course.js with the rest of
-    // the island's few remaining numbers.
+    // the island's numbers.
     this.buildInfield(island, ring, OPEN_GROUND_INSET, dirtMat)
+
+    // THE JUMPS. Back by request - see THE JUMPS in course.js. Every one is
+    // a mound, sloped on all four faces, so it can be hit from any direction
+    // and jumped off. See moundSolid().
+    STUNT_COURSE.mounds.forEach((spec, i) => {
+      const solid = this.buildMound(island, spec, moundMat,
+        paints[MOUND_PAINT[i % MOUND_PAINT.length]])
+      if (spec.crush) this.buildCrushCars(island, spec, solid)
+    })
+
+    // The double: take-off, gap, landing, sized for the monster truck.
+    const double = STUNT_COURSE.double
+    this.stuntTakeOff = this.buildMound(island, double.takeOff, launchMat, paints.hazard)
+    this.buildMound(island, double.landing, moundMat, paints.hazard)
+    this.markLaunchLip(island, double.takeOff, this.stuntTakeOff)
+
     this.buildOpenGroundRim(island, ring)
   }
+
+  /**
+   * One mound: the mesh and the collider, from the same triangles.
+   *
+   * This is why `moundSolid()` returns vertices rather than a description.
+   * `Physics.js` has no pitch anywhere in its API - every collider in this
+   * world before the courses was a box with a yaw or a cylinder on end - so a
+   * sloped anything has to be a triangle mesh. Building the picture and the
+   * collision from ONE array means they cannot drift apart, which is the
+   * mistake this codebase keeps making: the kerb drawn 0.12 above a collider
+   * that followed the ground, the car drawn 2.57 wide against a 1.9 collider.
+   *
+   * World-space vertices with the mesh left at the origin, the same way the
+   * island ground is built, so there is no transform to get wrong either.
+   */
+  buildMound(island, spec, material, paint = null) {
+    const solid = moundSolid({
+      ...spec,
+      x: island.x + spec.x,
+      z: island.z + spec.z
+    })
+
+    const geometry = new THREE.BufferGeometry()
+    const positions = new Float32Array(solid.positions)
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geometry.computeVertexNormals()
+
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    this.game.add(mesh)
+
+    this.game.physics.createStaticTrimesh(positions, new Uint32Array(solid.indices))
+
+    // The flat top, painted.
+    //
+    // Not decoration, and this is the second time this exact lesson has been
+    // paid for. Photographed from above, the first version of this arena was
+    // an empty brown field: the obstacles were built in a dirt colour standing
+    // on dirt, and the two were within a few percent of each other, so there
+    // was nothing to see and nothing to aim at. A Monster Jam floor is dark
+    // shapes with painted tops on tan dirt for the same reason - from the
+    // cheap seats, and from the driver's seat, colour is the only thing that
+    // says where an obstacle is.
+    if (paint) {
+      const t = solid.top
+      const flat = new THREE.BufferGeometry()
+      // WOUND BACKWARDS ON PURPOSE, relative to the order moundSolid() hands
+      // the corners back in. `solid.top` runs clockwise seen from above, and a
+      // clockwise triangle faces DOWN - so the first version of this quad was
+      // culled from every camera that could have seen it, and every mound in
+      // the arena photographed as an unpainted black shape. Setting the normal
+      // attribute to +Y did not save it: three.js culls on winding, not on the
+      // normal you claim.
+      flat.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+        t[0].x, solid.topY + 0.04, t[0].z,
+        t[2].x, solid.topY + 0.04, t[2].z,
+        t[1].x, solid.topY + 0.04, t[1].z,
+        t[0].x, solid.topY + 0.04, t[0].z,
+        t[3].x, solid.topY + 0.04, t[3].z,
+        t[2].x, solid.topY + 0.04, t[2].z
+      ]), 3))
+      const normals = new Float32Array(18)
+      for (let i = 1; i < 18; i += 3) normals[i] = 1
+      flat.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+      const top = new THREE.Mesh(flat, paint)
+      top.receiveShadow = true
+      this.game.add(top)
+    }
+
+    return solid
+  }
+
+  /** The hazard paint. One material for every mark on both courses. */
+  courseMarkMaterial() {
+    if (!this._courseMark) {
+      this._courseMark = new THREE.MeshStandardMaterial({
+        color: PALETTE.crane, roughness: 0.8, flatShading: true
+      })
+    }
+    return this._courseMark
+  }
+
+  /**
+   * A bright bar across the lip of the launch, and chevrons pointing at it.
+   *
+   * Photographed from above, the first version of this arena was a brown
+   * field: the mounds were the same colour as the dirt to within a few percent,
+   * so from any distance there was nothing to see and nothing to aim at. Hazard
+   * paint on the edge of a take-off is what a real course does, for exactly the
+   * same reason.
+   */
+  markLaunchLip(island, spec, solid) {
+    const material = this.courseMarkMaterial()
+
+    const bar = new THREE.Mesh(
+      new THREE.BoxGeometry(spec.topWidth + 2, 0.3, 1.1), material)
+    bar.position.set(solid.crest.x, solid.crest.y + 0.12, solid.crest.z)
+    bar.rotation.y = spec.heading
+    this.game.add(bar)
+
+    // Chevrons on the floor pointing at the take-off, so it reads as the thing
+    // to aim at from the far end of the arena rather than as one more mound.
+    const fx = Math.sin(spec.heading)
+    const fz = Math.cos(spec.heading)
+    for (let i = 0; i < 4; i++) {
+      const back = 20 + i * 6
+      const x = island.x + spec.x - fx * back
+      const z = island.z + spec.z - fz * back
+      for (const side of [-1, 1]) {
+        const wing = new THREE.Mesh(
+          new THREE.BoxGeometry(0.9, 0.08, 4.6), material)
+        wing.position.set(x + Math.cos(spec.heading) * side * 1.5,
+                          COURSE_GROUND + 0.05,
+                          z - Math.sin(spec.heading) * side * 1.5)
+        wing.rotation.y = spec.heading + side * 0.55
+        this.game.add(wing)
+      }
+    }
+  }
+
+  /**
+   * A WRECK: a car that has already been driven over.
+   *
+   * Not `buildTrafficVehicle()`. Mike's note was that the crush pile was
+   * "essentially worthless car assets placed in the game", and half of why is
+   * that they were showroom cars - correct paint, clean glass, four round
+   * wheels - sitting upright on a jump. A wreck has to look wrecked or the
+   * pile reads as a car park somebody has parked on a hill.
+   *
+   * Built from the same loft as a real car so the proportions are right, then
+   * ruined: squashed to two-thirds height, the roof caved in on one side, the
+   * paint dulled towards rust, the glass gone and replaced with a dark hole,
+   * and the wheels flat.
+   */
+  buildWreck(colour, seed = 0) {
+    const group = new THREE.Group()
+    const trim = this.vehicleTrim()
+    const length = 4.4
+    const width = 1.9
+
+    // Dulled towards rust rather than the showroom colour, because a bright
+    // clean panel is the single thing that says "this car is fine".
+    const rust = new THREE.Color(colour).lerp(new THREE.Color(0x8a7460), 0.4)
+    const body = new THREE.MeshStandardMaterial({
+      color: rust, roughness: 0.92, metalness: 0.1, flatShading: true
+    })
+    const dark = new THREE.MeshStandardMaterial({
+      color: 0x14171b, roughness: 0.95, flatShading: true
+    })
+
+    // Squashed, but still a car. The first version flattened it to 0.96 tall
+    // and then scaled it to 0.72 of that, which is 0.7 units for a 4.4-long
+    // body - at which point it reads as a dark slab rather than as a wreck,
+    // and a slab is no more interesting than the showroom car it replaced.
+    const shape = carBody(length, width, {
+      sill: 0.2, shoulder: 0.78, roof: 1.3,
+      noseDrop: 0.22, tuck: 0.82
+    })
+    // Crumpled: the nose and tail pushed down further than the middle, which
+    // is what a car looks like after something heavy has been over it.
+    const crush = shape.lower.map((sec, i) => ({
+      ...sec,
+      yTop: sec.yTop - (i === 0 || i === 4 ? 0.16 : 0) - (seed % 2) * 0.04
+    }))
+    group.add(this.loftMesh(crush, body))
+
+    // The cabin, caved in on one side - a different amount each time, so a
+    // pile of three does not read as three copies.
+    const lean = (seed % 3) * 0.06 - 0.06
+    group.add(this.loftMesh(shape.cabin.map((sec) => ({
+      ...sec,
+      halfWidth: sec.halfWidth * 0.9,
+      yTop: sec.yTop - 0.12,
+      xShift: lean
+    })), body))
+
+    // No glass. A dark band where the windows were, which reads as an empty
+    // shell rather than as tinted glazing.
+    group.add(this.loftMesh(shape.cabin.map((sec) => ({
+      ...sec,
+      halfWidth: sec.halfWidth * 0.92,
+      yBottom: sec.yBottom + 0.06,
+      yTop: sec.yTop - 0.2,
+      xShift: lean
+    })), dark))
+
+    // Flat tyres: the same wheels, squashed, and no rim showing. The hub
+    // height comes off wheelPositions() like everywhere else rather than being
+    // written down - worldsanity.mjs cannot tell a local offset from a world
+    // placement when both coordinates are names, and it is right not to try.
+    for (const at of wheelPositions(length, width, 0.34, 0.3)) {
+      const tyre = new THREE.Mesh(
+        this.sharedGeometry('wrecktyre', () =>
+          new THREE.CylinderGeometry(0.34, 0.34, 0.3, 10)), trim.tyre)
+      tyre.rotation.z = Math.PI / 2
+      tyre.scale.set(1, 1, 0.55)
+      const pivot = new THREE.Group()
+      pivot.position.set(at.x, at.y * 0.6, at.z)
+      pivot.add(tyre)
+      group.add(pivot)
+    }
+
+    return group
+  }
+
+  /**
+   * The crush pile: a RAMP made of wrecks.
+   *
+   * The whole of Mike's complaint, answered in the collider rather than in the
+   * model. It used to be three cars each wrapped in a static BOX - a 1.1-high
+   * vertical wall at the top of a slope - so driving at the pile stopped you
+   * dead. Now there is ONE trimesh over the pile, built by the same
+   * `moundSolid()` as every other obstacle in the arena and therefore with the
+   * same 25-degree faces, and the wrecks have no collider at all. You drive up
+   * the mound, up over the wrecks, and off the far side.
+   *
+   * See CRUSH_PILE in course.js for why, and for the numbers.
+   */
+  buildCrushCars(island, spec, solid) {
+    const colours = [PALETTE.carRed, PALETTE.carBlue, PALETTE.carSand,
+                     PALETTE.carGreen, PALETTE.carGrey]
+
+    // The ramp. Built in world coordinates like every other mound, standing on
+    // the crest of the one it decorates.
+    const ramp = crushSolid(
+      { x: island.x + spec.x, z: island.z + spec.z, heading: spec.heading },
+      solid.crest.y)
+
+    const positions = new Float32Array(ramp.positions)
+    this.game.physics.createStaticTrimesh(
+      positions, new Uint32Array(ramp.indices))
+
+    // The ramp itself is NOT drawn. The wrecks are what you see; the trimesh
+    // is the shape you drive on, and a visible dirt wedge under a pile of cars
+    // would look like the cars were sitting in a skip.
+    const sx = Math.cos(spec.heading)
+    const sz = -Math.sin(spec.heading)
+    const spread = Math.min(2.2, (CRUSH_PILE.topWidth + 1.6) /
+                                 Math.max(1, spec.crush - 1))
+
+    for (let i = 0; i < spec.crush; i++) {
+      const across = (i - (spec.crush - 1) / 2) * spread
+      const x = island.x + spec.x + sx * across
+      const z = island.z + spec.z + sz * across
+
+      // SUNK INTO THE RAMP, and measured off the RAMP rather than off the
+      // mound under it. Taking the height from `solid.crest.y` - the parent
+      // mound's top - left the wrecks floating a clear unit above the ramp
+      // they are supposed to be the surface of, which is exactly what the
+      // first photograph showed.
+      //
+      // Each one sits a little below the ramp's own top face, so the trimesh
+      // you drive on runs through the wrecks rather than over them: you go up
+      // the cars, not up an invisible wedge above the cars.
+      const mesh = this.buildWreck(colours[i % colours.length], i)
+      const middle = i === Math.floor(spec.crush / 2)
+      mesh.position.set(x, ramp.topY - (middle ? 0.5 : 0.72), z)
+      mesh.rotation.set(0, spec.heading + Math.PI / 2 + (i - 1) * 0.16,
+                        (i % 2 ? 1 : -1) * 0.09, 'YXZ')
+      mesh.scale.set(1, 0.88, 1)
+      this.game.add(mesh)
+    }
+  }
+
 
   /**
    * The boundary: one raised rim round the whole island, with a collider.
