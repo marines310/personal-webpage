@@ -228,6 +228,8 @@ export const ISLANDS = [
     id: 'stunt',
     // MOVED AND WIDENED so the stadium could grow. Mike: "I also want the
     // monster truck stadium bigger so I can feel like it's a real stadium."
+    // (The stadium has since gone - "too small and too cluttered" - and the
+    // island is open ground. The size and position stand.)
     //
     // It could not simply get a bigger radius. This island is wedged between
     // ABOUT and PROJECTS - measured coast to coast, six units of water to one
@@ -241,13 +243,12 @@ export const ISLANDS = [
     //
     // It does NOT shift along z, and that is not an oversight. The monorail
     // beam runs island to island in world coordinates, so moving this island
-    // changes where the beam crosses it - and the jump course is laid out down
-    // the spine BETWEEN the three piers. An earlier version shifted six units
-    // south as well, which moved the pier line six units north in island terms
-    // and put a concrete column through the middle of the 'step' mound.
-    // `tests/race.mjs` caught it; `tools/solveCourse.mjs` is the solver that
-    // says where the obstacles can go, which STUNT_MOUNDS always claimed to
-    // have been produced by and which had not actually been kept.
+    // changes where the beam crosses it. When this was the stadium, the jump
+    // course was laid out down the spine BETWEEN the three piers, and a
+    // version that shifted six units south put a concrete column through the
+    // middle of a mound. The mounds are gone - the island is open ground now
+    // (see course.js, THE OPEN GROUND) - but the piers are still there, and
+    // anything built here again should be laid out around them.
     x: 173.4,
     z: 159.8,
     radius: 72,

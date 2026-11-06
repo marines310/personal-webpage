@@ -243,9 +243,9 @@ import {
 } from './shapes.js'
 import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
 import {
-  COURSE_GROUND, COURSE_ROAD, moundSolid, walkLoop, outsetLoop, pointAlongRing,
-  STUNT_COURSE, MOUND_PAINT, RACE_LINE_AT, GRID_COLUMN_OFFSET, CIRCUIT_GATE,
-  crushSolid, CRUSH_PILE, pitStraightPlan
+  COURSE_GROUND, COURSE_ROAD, walkLoop, outsetLoop, pointAlongRing,
+  OPEN_GROUND_INSET, OPEN_GROUND_RIM, RACE_LINE_AT, GRID_COLUMN_OFFSET, CIRCUIT_GATE,
+  pitStraightPlan
 } from './course.js'
 import {
   loftSolid, carBody, raceBody, monsterBody, wheelPositions, WHEEL,
@@ -11177,7 +11177,7 @@ export class World {
   // -------------------------------------------------------------
 
   /**
-   * The stunt arena and the speedway.
+   * The open ground and the speedway.
    *
    * Called after the roads and before the ports, and it draws NOTHING from
    * `this.rand()` - not one call, anywhere below this line. That is deliberate
@@ -11190,88 +11190,6 @@ export class World {
   createCourses() {
     this.buildStuntPark()
     this.buildSpeedway()
-  }
-
-  /**
-   * One mound: the mesh and the collider, from the same triangles.
-   *
-   * This is why `moundSolid()` returns vertices rather than a description.
-   * `Physics.js` has no pitch anywhere in its API - every collider in this
-   * world before the courses was a box with a yaw or a cylinder on end - so a
-   * sloped anything has to be a triangle mesh. Building the picture and the
-   * collision from ONE array means they cannot drift apart, which is the
-   * mistake this codebase keeps making: the kerb drawn 0.12 above a collider
-   * that followed the ground, the car drawn 2.57 wide against a 1.9 collider.
-   *
-   * World-space vertices with the mesh left at the origin, the same way the
-   * island ground is built, so there is no transform to get wrong either.
-   */
-  buildMound(island, spec, material, paint = null) {
-    const solid = moundSolid({
-      ...spec,
-      x: island.x + spec.x,
-      z: island.z + spec.z
-    })
-
-    const geometry = new THREE.BufferGeometry()
-    const positions = new Float32Array(solid.positions)
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-    geometry.computeVertexNormals()
-
-    const mesh = new THREE.Mesh(geometry, material)
-    mesh.castShadow = true
-    mesh.receiveShadow = true
-    this.game.add(mesh)
-
-    this.game.physics.createStaticTrimesh(positions, new Uint32Array(solid.indices))
-
-    // The flat top, painted.
-    //
-    // Not decoration, and this is the second time this exact lesson has been
-    // paid for. Photographed from above, the first version of this arena was
-    // an empty brown field: the obstacles were built in a dirt colour standing
-    // on dirt, and the two were within a few percent of each other, so there
-    // was nothing to see and nothing to aim at. A Monster Jam floor is dark
-    // shapes with painted tops on tan dirt for the same reason - from the
-    // cheap seats, and from the driver's seat, colour is the only thing that
-    // says where an obstacle is.
-    if (paint) {
-      const t = solid.top
-      const flat = new THREE.BufferGeometry()
-      // WOUND BACKWARDS ON PURPOSE, relative to the order moundSolid() hands
-      // the corners back in. `solid.top` runs clockwise seen from above, and a
-      // clockwise triangle faces DOWN - so the first version of this quad was
-      // culled from every camera that could have seen it, and every mound in
-      // the arena photographed as an unpainted black shape. Setting the normal
-      // attribute to +Y did not save it: three.js culls on winding, not on the
-      // normal you claim.
-      flat.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
-        t[0].x, solid.topY + 0.04, t[0].z,
-        t[2].x, solid.topY + 0.04, t[2].z,
-        t[1].x, solid.topY + 0.04, t[1].z,
-        t[0].x, solid.topY + 0.04, t[0].z,
-        t[3].x, solid.topY + 0.04, t[3].z,
-        t[2].x, solid.topY + 0.04, t[2].z
-      ]), 3))
-      const normals = new Float32Array(18)
-      for (let i = 1; i < 18; i += 3) normals[i] = 1
-      flat.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
-      const top = new THREE.Mesh(flat, paint)
-      top.receiveShadow = true
-      this.game.add(top)
-    }
-
-    return solid
-  }
-
-  /** The hazard paint. One material for every mark on both courses. */
-  courseMarkMaterial() {
-    if (!this._courseMark) {
-      this._courseMark = new THREE.MeshStandardMaterial({
-        color: PALETTE.crane, roughness: 0.8, flatShading: true
-      })
-    }
-    return this._courseMark
   }
 
   /**
@@ -11338,9 +11256,32 @@ export class World {
   }
 
   // -------------------------------------------------------------
-  // The stunt arena
+  // The open ground
   // -------------------------------------------------------------
 
+  /**
+   * A big flat floor and nothing on it.
+   *
+   * This was the monster truck stadium: mounds, a double jump, crush cars, a
+   * barrier, two banks of seating with a roof, and floodlights - seven
+   * builders and four hundred lines of course data behind them. Mike, 6
+   * November: "Too small and too cluttered. Maybe the stadium can just go."
+   *
+   * So it went, and the island it stood on became the open space he had
+   * asked for separately - somewhere to do donuts and wheelies without
+   * hitting anything. One job instead of two, on an island that already
+   * exists, which matters because this island cannot grow: it is wedged
+   * between ABOUT and PROJECTS with six units of water to one side (see
+   * mapData.js). Clearing it is the only way to make it feel bigger.
+   *
+   * Everything about the stadium is gone rather than switched off - the
+   * builders, the course data in course.js, the tests of that data - because
+   * four hundred lines describing a thing that is not built is a trap for
+   * whoever reads this next. The ring road stays: it is what the bridge
+   * joins to, and it is still `noTraffic`, so the floor is yours.
+   *
+   * Still no `this.rand()` below this line - see createCourses().
+   */
   buildStuntPark() {
     const island = getIsland('stunt')
     if (!island) return
@@ -11348,605 +11289,86 @@ export class World {
     const ring = getIslandRing(island)
     if (!ring) return
 
-    // Dirt light, mounds dark. The other way round - `timber` mounds on
-    // `cliff` dirt - was tried and the two are the same colour to within a few
-    // percent, so the whole arena photographed as an empty brown field.
+    // The same dirt the arena floor was, which is the one part of it that
+    // was right: light enough to see a dark tyre mark on, and visibly not a
+    // road, so you know you are off the street grid.
     const dirtMat = new THREE.MeshStandardMaterial({
       color: PALETTE.sandWet, roughness: 0.99, flatShading: true
     })
-    // Dark bodies, painted tops, on tan dirt - which is what the reference
-    // arenas look like and, more to the point, the only combination in which
-    // anything is visible. See buildMound().
-    // Dark EARTH, not near-black. The first attempt at fixing the invisible
-    // arena went all the way to 0x33363d, which reads from the driver's seat
-    // as a hole in the floor rather than a heap of dirt on it. This is three
-    // stops below the floor's 0xd3bf8c - dark enough to see against it from
-    // two hundred units up, brown enough to be a mound.
-    const moundMat = new THREE.MeshStandardMaterial({
-      color: 0x6b5233, roughness: 0.98, flatShading: true
-    })
-    const launchMat = new THREE.MeshStandardMaterial({
-      color: 0x5d4629, roughness: 0.96, flatShading: true
-    })
-    const paints = {
-      red: new THREE.MeshStandardMaterial({
-        color: 0xc4322a, roughness: 0.9, flatShading: true
-      }),
-      blue: new THREE.MeshStandardMaterial({
-        color: 0x2f5fa8, roughness: 0.9, flatShading: true
-      }),
-      hazard: new THREE.MeshStandardMaterial({
-        color: PALETTE.crane, roughness: 0.88, flatShading: true
-      })
-    }
 
-    this.buildInfield(island, ring, STUNT_COURSE.padInset, dirtMat)
-    this.buildArenaLines(island, ring)
-
-    // The floor. Everything here is a mound - sloped on all four faces, so it
-    // can be hit from any direction and jumped off. See moundSolid().
-    STUNT_COURSE.mounds.forEach((spec, i) => {
-      const solid = this.buildMound(island, spec, moundMat,
-        paints[MOUND_PAINT[i % MOUND_PAINT.length]])
-      if (spec.crush) this.buildCrushCars(island, spec, solid)
-    })
-
-    // The double: take-off, gap, landing, sized for the monster truck.
-    const double = STUNT_COURSE.double
-    this.stuntTakeOff = this.buildMound(island, double.takeOff, launchMat, paints.hazard)
-    this.buildMound(island, double.landing, moundMat, paints.hazard)
-    this.markLaunchLip(island, double.takeOff, this.stuntTakeOff)
-
-    this.buildArenaBarrier(island, ring)
-    this.buildArenaStands(island, ring)
-    this.buildArenaLights(island, ring)
+    // Inset from the ring road by less than the arena was, because there is
+    // no longer a barrier or seating to leave room for - the floor runs
+    // almost to the kerb. OPEN_GROUND_INSET is in course.js with the rest of
+    // the island's few remaining numbers.
+    this.buildInfield(island, ring, OPEN_GROUND_INSET, dirtMat)
+    this.buildOpenGroundRim(island, ring)
   }
 
   /**
-   * A bright bar across the lip of the launch, and chevrons pointing at it.
+   * The boundary: one raised rim round the whole island, with a collider.
    *
-   * Photographed from above, the first version of this arena was a brown
-   * field: the mounds were the same colour as the dirt to within a few percent,
-   * so from any distance there was nothing to see and nothing to aim at. Hazard
-   * paint on the edge of a take-off is what a real course does, for exactly the
-   * same reason.
-   */
-  markLaunchLip(island, spec, solid) {
-    const material = this.courseMarkMaterial()
-
-    const bar = new THREE.Mesh(
-      new THREE.BoxGeometry(spec.topWidth + 2, 0.3, 1.1), material)
-    bar.position.set(solid.crest.x, solid.crest.y + 0.12, solid.crest.z)
-    bar.rotation.y = spec.heading
-    this.game.add(bar)
-
-    // Chevrons on the floor pointing at the take-off, so it reads as the thing
-    // to aim at from the far end of the arena rather than as one more mound.
-    const fx = Math.sin(spec.heading)
-    const fz = Math.cos(spec.heading)
-    for (let i = 0; i < 4; i++) {
-      const back = 20 + i * 6
-      const x = island.x + spec.x - fx * back
-      const z = island.z + spec.z - fz * back
-      for (const side of [-1, 1]) {
-        const wing = new THREE.Mesh(
-          new THREE.BoxGeometry(0.9, 0.08, 4.6), material)
-        wing.position.set(x + Math.cos(spec.heading) * side * 1.5,
-                          COURSE_GROUND + 0.05,
-                          z - Math.sin(spec.heading) * side * 1.5)
-        wing.rotation.y = spec.heading + side * 0.55
-        this.game.add(wing)
-      }
-    }
-  }
-
-  /**
-   * The white racing oval painted on the dirt.
+   * Mike: "The monster truck field needs a boundary so the cars don't fall
+   * into the ocean." See OPEN_GROUND_RIM for why it is a rim and not a stand
+   * - there are four and a half units between the road and the water at the
+   * narrow end, and nothing deeper fits.
    *
-   * Every arena floor in the reference has one, and it is doing more than
-   * decoration: it is the line the racing runs on, and it turns a featureless
-   * brown oval into a place with a direction. Two lines rather than one,
-   * because one reads as an edge and two read as a track.
-   */
-  buildArenaLines(island, ring) {
-    const paint = new THREE.MeshStandardMaterial({
-      color: PALETTE.roadLine, roughness: 0.85, flatShading: true
-    })
-    const line = STUNT_COURSE.line
-
-    for (const inset of [line.outer, line.inner]) {
-      const loop = insetPolygon(ring, inset)
-      if (!loop || loop.length < 3) continue
-      const path = loop.map(p => ({ x: island.x + p.x, z: island.z + p.z }))
-      path.push({ ...path[0] })
-      this.buildFlatRibbon(path, line.width, COURSE_GROUND + 0.04, paint)
-    }
-  }
-
-  /**
-   * The padded barrier round the floor, and the hole you drive in through.
+   * Built the way the speedway's armco is: the ring road outset by a fixed
+   * distance, walked in blocks, a box per block, and `circuitGate()` leaving
+   * the corridor the bridge road needs. That gate is the thing the first
+   * armco forgot - a wall all the way round an island is a wall across the
+   * bridge - so it is reused rather than rewritten.
    *
-   * Waist high, soft-looking, and a real collider - without one the interesting
-   * half of the arena becomes "how do I get back on the floor after
-   * overshooting". The gap is put where the bridge road comes ashore, which is
-   * found rather than hardcoded: the landing direction is in the map data, so
-   * moving the island moves the entrance with it.
+   * Two faces: concrete, and a band of the island's own accent colour along
+   * the top, so from the field it reads as a stage edge rather than a kerb.
+   * The collider is taller than the drawn rim and reaches below the ground:
+   * a wall that starts AT ground level has a seam a wheel can catch, and a
+   * monster truck coming off the kerb at speed has more than a metre of air.
    */
-  buildArenaBarrier(island, ring) {
-    const b = STUNT_COURSE.barrier
-    const loop = insetPolygon(ring, b.inset)
+  buildOpenGroundRim(island, ring) {
+    const rim = OPEN_GROUND_RIM
+    const loop = outsetLoop(ring, rim.out)
     if (!loop || loop.length < 3) return
 
     const path = loop.map(p => ({ x: p.x, z: p.z }))
     path.push({ ...path[0] })
-    const blocks = walkLoop(path, b.blockLength)
-    if (!blocks.length) return
 
-    const padMat = new THREE.MeshStandardMaterial({
-      color: PALETTE.ambulanceStripe, roughness: 0.85, flatShading: true
+    const concrete = new THREE.MeshStandardMaterial({
+      color: 0xb9b4a8, roughness: 0.95, flatShading: true
     })
-    const panelMat = new THREE.MeshStandardMaterial({
-      color: PALETTE.wallWhite, roughness: 0.8, flatShading: true
+    const band = new THREE.MeshStandardMaterial({
+      color: island.accent || 0xff8c42, roughness: 0.8, flatShading: true
     })
 
-    const entrance = this.arenaEntranceFraction(island, blocks)
+    const gate = this.circuitGate(island, CIRCUIT_GATE)
+    const y = COURSE_GROUND
 
-    blocks.forEach((at, i) => {
-      // The vehicle entrance: a hole wide enough to drive a bus through.
-      const away = Math.abs(((at.fraction - entrance) % 1 + 1.5) % 1 - 0.5)
-      if (away * blocks.length * b.blockLength < b.gap * b.blockLength / 2) return
-
-      // Alternating panels, which is what the sponsor boards in the reference
-      // look like from any distance worth caring about.
-      const material = i % 4 === 1 ? panelMat : padMat
-      const block = new THREE.Mesh(
-        new THREE.BoxGeometry(b.thickness, b.height, b.blockLength * 0.94), material)
-      block.position.set(island.x + at.x, COURSE_GROUND + b.height / 2,
-                         island.z + at.z)
-      block.rotation.y = at.heading
-      block.castShadow = true
-      block.receiveShadow = true
-      this.game.add(block)
-
-      this.game.physics.createStaticBoxAt(
-        island.x + at.x, COURSE_GROUND + b.height / 2, island.z + at.z,
-        b.thickness, b.height, b.blockLength * 0.94, at.heading)
-    })
-  }
-
-  /**
-   * Where round the arena the bridge road arrives, as a fraction of the loop.
-   *
-   * Read from the island's bridge landing rather than written down, so the
-   * entrance follows the island if it ever moves in mapData.js. Falls back to
-   * the start of the loop, which is at least deterministic.
-   */
-  arenaEntranceFraction(island, blocks) {
-    const landings = getBridgeLandings(island)
-    if (!landings.length || !blocks.length) return 0
-
-    const dirX = landings[0].dirX
-    const dirZ = landings[0].dirZ
-    let best = 0
-    let bestDot = -Infinity
-    for (const at of blocks) {
-      const len = Math.hypot(at.x, at.z) || 1
-      const dot = (at.x / len) * dirX + (at.z / len) * dirZ
-      if (dot > bestDot) { bestDot = dot; best = at.fraction }
-    }
-    return best
-  }
-
-  /**
-   * Banked seating, stepping up and OUTWARD from the ring road.
-   *
-   * Outward, over the beach and out past the waterline on columns, because
-   * there is nowhere else for it. Measured on this island: from the ring
-   * road's outer kerb to the coastline is under six units, and five tiers of
-   * seating is thirteen. Building them inward instead would have taken a third
-   * of the arena floor, on an island whose narrow end is already only
-   * twenty-five units across.
-   *
-   * A stand cantilevered out over the water on piles is a real thing, it is
-   * the same trick the airport platform already uses here, and it means the
-   * whole of the floor stays floor.
-   */
-  /**
-   * Is this spot under the monorail?
-   *
-   * Mike: "the monorail has to go through/clip through a stadium twice... the
-   * monorail shouldn't have to go through a wall."
-   *
-   * Measured, the loop crosses the stunt arena's seating twice - in one side
-   * and out the other - and it is a height problem exactly as he guessed: the
-   * beam sits at MONORAIL_HEIGHT (11), an eight-tier stand tops out at 13.9
-   * and its roof at 19.4.
-   *
-   * Raising the beam is the wrong cure. It would have to go to 22 to clear the
-   * roof, taking every pier, every platform and the walk up to them with it,
-   * to solve a problem in one building. Re-routing the loop was tried at
-   * length and is worse than it sounds - the curve is fitted from control
-   * points and then filleted at a 40-unit radius, and a fillet rounds a corner
-   * by cutting ACROSS it, so a detour pushed out by 12 units came back 39
-   * units inside the island. Three attempts, best radius 21.56 against the
-   * 36.61 the loop has now.
-   *
-   * The arena already knows how to leave a hole in itself: `entranceGap`,
-   * where the bridge road comes ashore. This is the same idea, and a railway
-   * running through a purpose-built opening in a stand is a better sight than
-   * either a taller railway or a longer one.
-   *
-   * Measured against the drawn route rather than a bearing from the centre,
-   * because the beam crosses on two different bearings and a dot-product test
-   * would need to know about both.
-   */
-  underMonorail(x, z, margin = MONORAIL_CORRIDOR) {
-    if (!this.monorail || !this.monorail.points) return false
-    return distanceToPath(this.monorail.points, x, z) < margin
-  }
-
-  buildArenaStands(island, ring) {
-    const s = STUNT_COURSE.stands
-    const seatMat = new THREE.MeshStandardMaterial({
-      color: PALETTE.concrete, roughness: 0.94, flatShading: true
-    })
-    const crowdMats = [
-      new THREE.MeshStandardMaterial({ color: 0x3f6fb5, roughness: 0.95, flatShading: true }),
-      new THREE.MeshStandardMaterial({ color: 0xc94f4f, roughness: 0.95, flatShading: true }),
-      new THREE.MeshStandardMaterial({ color: 0xe8ecf1, roughness: 0.95, flatShading: true })
-    ]
-    const pileMat = new THREE.MeshStandardMaterial({
-      color: PALETTE.beamDark, roughness: 0.9, flatShading: true
-    })
-
-    const entrance = null
-    const landings = getBridgeLandings(island)
-    const dir = landings.length ? landings[0] : null
-
-    for (let tier = 0; tier < s.tiers; tier++) {
-      // Each tier is the ring road pushed further out. A negative inset is an
-      // OUTSET, which insetPolygon handles: it is the same maths with the sign
-      // flipped, and it is why the tiers stay parallel to the coast rather
-      // than drifting into it at the ends.
-      const out = s.fromRing + tier * s.tread
-      const loop = outsetLoop(ring, out)
-      if (!loop || loop.length < 3) continue
-
-      const path = loop.map(p => ({ x: p.x, z: p.z }))
-      path.push({ ...path[0] })
-      const seats = walkLoop(path, s.tread * 1.6)
-      const y = COURSE_GROUND + (tier + 1) * s.rise
-
-      seats.forEach((at, i) => {
-        // A hole where the bridge road comes ashore. Without it the road runs
-        // into the back of a grandstand.
-        if (dir) {
-          const len = Math.hypot(at.x, at.z) || 1
-          const dot = (at.x / len) * dir.dirX + (at.z / len) * dir.dirZ
-          if (dot > 0.86) return
-        }
-
-        // And a hole where the monorail crosses, for the same reason: without
-        // it the beam runs through the back of a grandstand. See
-        // underMonorail().
-        if (this.underMonorail(island.x + at.x, island.z + at.z,
-                               MONORAIL_CORRIDOR + s.tread)) {
-          return
-        }
-
-        const step = new THREE.Mesh(
-          new THREE.BoxGeometry(s.tread, s.rise * 2.2, s.tread * 1.55), seatMat)
-        step.position.set(island.x + at.x, y - s.rise * 1.1, island.z + at.z)
-        step.rotation.y = at.heading
-        step.receiveShadow = true
-        this.game.add(step)
-
-        // A crowd, as three colours of small block. Nobody is going to count
-        // them, and at this distance a crowd IS three colours of small block.
-        if (tier > 0 && i % 2 === 0) {
-          const people = new THREE.Mesh(
-            new THREE.BoxGeometry(1.5, 1.1, s.tread * 1.3),
-            crowdMats[(i + tier) % crowdMats.length])
-          people.position.set(island.x + at.x, y + 0.55, island.z + at.z)
-          people.rotation.y = at.heading
-          this.game.add(people)
-        }
-
-        // The outer tiers stand over the water, so they stand on something.
-        // Two ranks of piles now rather than one: at eight tiers the last
-        // three are all out past the beach and a single row under the very
-        // back looked like the stand was balanced on a fence.
-        if (tier >= s.tiers - 3 && tier % 2 === 1 && i % 3 === 0) {
-          const drop = y - COURSE_GROUND + 8
-          const pile = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.75, 0.95, drop, 6), pileMat)
-          pile.position.set(island.x + at.x, y - drop / 2, island.z + at.z)
-          this.game.add(pile)
-        }
-      })
-    }
-
-    // --- The roof over the back rows ---
-    //
-    // The thing that turns a bank of seating into a stadium. It is a ring of
-    // panels above the back tiers, carried on columns that come down behind
-    // the stand rather than through it, with the same hole for the bridge road
-    // that the seating has.
-    const r = s.roof
-    if (r) {
-      const roofMat = new THREE.MeshStandardMaterial({
-        color: PALETTE.trainSkirt, roughness: 0.82, flatShading: true
-      })
-      const backOut = s.fromRing + (s.tiers - 1) * s.tread
-      const roofOut = backOut - (s.tiers - 1 - r.from) * s.tread + r.depth / 2
-      const loop = outsetLoop(ring, roofOut)
-      if (loop && loop.length >= 3) {
-        const path = loop.map(p => ({ x: p.x, z: p.z }))
-        path.push({ ...path[0] })
-        const panels = walkLoop(path, r.depth)
-        const y = COURSE_GROUND + s.tiers * s.rise + r.above
-
-        panels.forEach((at, i) => {
-          if (dir) {
-            const len = Math.hypot(at.x, at.z) || 1
-            const dot = (at.x / len) * dir.dirX + (at.z / len) * dir.dirZ
-            if (dot > 0.86) return
-          }
-
-          // The roof is the highest part of the stand and the beam passes
-          // BELOW it, so this hole matters more than the one in the seating.
-          // Wider than the seats' gap by half a panel, so the opening reads as
-          // deliberate from underneath rather than as a missing tile.
-          if (this.underMonorail(island.x + at.x, island.z + at.z,
-                                 MONORAIL_CORRIDOR + r.depth)) {
-            return
-          }
-          // Sized to the spacing walkLoop() actually used, plus a hair of
-          // overlap so the ring has no gaps in it. At 1.9x the spacing every
-          // panel was drawn twice over, which is a lot of triangles to spend
-          // on being darker.
-          const panel = new THREE.Mesh(
-            new THREE.BoxGeometry(r.depth * 1.08, r.thickness, r.depth * 1.02),
-            roofMat)
-          panel.position.set(island.x + at.x, y, island.z + at.z)
-          panel.rotation.y = at.heading
-          panel.castShadow = true
-          this.game.add(panel)
-
-          // A column every third panel, dropped BEHIND the back row so it
-          // never lands in the seating.
-          //
-          // "Behind" is perpendicular to the stand, taken from the panel's own
-          // heading - not radially outward from the island's centre, which is
-          // what the first version did. On a long island the two are the same
-          // only at the ends; along the flanks, radially-outward pointed
-          // sideways and put columns down through the seating.
-          if (i % 3 === 0) {
-            const outX = Math.cos(at.heading)
-            const outZ = -Math.sin(at.heading)
-            const side = (at.x * outX + at.z * outZ) < 0 ? -1 : 1
-            const cx = at.x + outX * side * r.depth * 0.62
-            const cz = at.z + outZ * side * r.depth * 0.62
-            const col = new THREE.Mesh(
-              new THREE.CylinderGeometry(0.5, 0.6, y - COURSE_GROUND, 6), pileMat)
-            col.position.set(island.x + cx, COURSE_GROUND + (y - COURSE_GROUND) / 2,
-              island.z + cz)
-            this.game.add(col)
-          }
-        })
-      }
-    }
-  }
-
-  /**
-   * Floodlight towers.
-   *
-   * Registered as night emissives, so the arena lights up after dark with
-   * everything else rather than being a stadium nobody bothered to switch on.
-   */
-  buildArenaLights(island, ring) {
-    const l = STUNT_COURSE.lights
-    const loop = outsetLoop(ring, STUNT_COURSE.stands.fromRing +
-      STUNT_COURSE.stands.tiers * STUNT_COURSE.stands.tread)
-    if (!loop || loop.length < 3) return
-
-    const path = loop.map(p => ({ x: p.x, z: p.z }))
-    path.push({ ...path[0] })
-    const spots = walkLoop(path, 4)
-    if (!spots.length) return
-
-    const mastMat = new THREE.MeshStandardMaterial({
-      color: PALETTE.beamDark, roughness: 0.85, flatShading: true
-    })
-
-    for (const fraction of l.at) {
-      const at = spots[Math.floor(fraction * spots.length) % spots.length]
+    walkLoop(path, rim.block).forEach((at) => {
+      if (gate(at.x, at.z)) return
       const x = island.x + at.x
       const z = island.z + at.z
+      // A hair longer than the spacing so the blocks overlap on the bends
+      // rather than leaving a sliver of daylight at every joint.
+      const len = rim.block + 0.3
 
-      const mast = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.55, 1.1, l.height, 6), mastMat)
-      mast.position.set(x, COURSE_GROUND + l.height / 2, z)
-      mast.castShadow = true
-      this.game.add(mast)
+      const wall = new THREE.Mesh(
+        new THREE.BoxGeometry(rim.thick, rim.height, len), concrete)
+      wall.position.set(x, y + rim.height / 2, z)
+      wall.rotation.y = at.heading
+      wall.castShadow = true
+      wall.receiveShadow = true
+      this.game.add(wall)
 
-      const head = new THREE.Mesh(
-        new THREE.BoxGeometry(7, 2.2, 1.4), mastMat)
-      head.position.set(x, COURSE_GROUND + l.height + 1, z)
-      // Face the middle of the island, which is where the floor is.
-      head.rotation.y = Math.atan2(island.x - x, island.z - z)
-      this.game.add(head)
+      const top = new THREE.Mesh(
+        new THREE.BoxGeometry(rim.thick + 0.08, 0.18, len), band)
+      top.position.set(x, y + rim.height + 0.09, z)
+      top.rotation.y = at.heading
+      this.game.add(top)
 
-      const lampMat = new THREE.MeshStandardMaterial({
-        color: 0xf2efe4, roughness: 0.4, flatShading: true,
-        emissive: new THREE.Color(PALETTE.lampLit), emissiveIntensity: 0
-      })
-      for (let i = 0; i < l.lamps; i++) {
-        const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.4, 0.4), lampMat)
-        const across = (i - (l.lamps - 1) / 2) * 1.1
-        lamp.position.set(
-          x + Math.cos(head.rotation.y) * across + Math.sin(head.rotation.y) * 0.8,
-          COURSE_GROUND + l.height + 1,
-          z - Math.sin(head.rotation.y) * across + Math.cos(head.rotation.y) * 0.8)
-        lamp.rotation.y = head.rotation.y
-        this.game.add(lamp)
-      }
-      this.registerNightLight(lampMat, 3.4)
-    }
-  }
-
-  /**
-   * The wrecks on top of a crush mound.
-   *
-   * Built from the traffic's own vehicle builders - the same trick the roadside
-   * crash uses. A row of boxes reads as a row of boxes; these are the cars you
-   * have spent all session driving past, which is worth more than any amount of
-   * bespoke geometry. Laid out on a fixed lattice rather than scattered,
-   * because scattering would mean drawing from the world's shared random
-   * sequence - see createCourses().
-   */
-  /**
-   * A WRECK: a car that has already been driven over.
-   *
-   * Not `buildTrafficVehicle()`. Mike's note was that the crush pile was
-   * "essentially worthless car assets placed in the game", and half of why is
-   * that they were showroom cars - correct paint, clean glass, four round
-   * wheels - sitting upright on a jump. A wreck has to look wrecked or the
-   * pile reads as a car park somebody has parked on a hill.
-   *
-   * Built from the same loft as a real car so the proportions are right, then
-   * ruined: squashed to two-thirds height, the roof caved in on one side, the
-   * paint dulled towards rust, the glass gone and replaced with a dark hole,
-   * and the wheels flat.
-   */
-  buildWreck(colour, seed = 0) {
-    const group = new THREE.Group()
-    const trim = this.vehicleTrim()
-    const length = 4.4
-    const width = 1.9
-
-    // Dulled towards rust rather than the showroom colour, because a bright
-    // clean panel is the single thing that says "this car is fine".
-    const rust = new THREE.Color(colour).lerp(new THREE.Color(0x8a7460), 0.4)
-    const body = new THREE.MeshStandardMaterial({
-      color: rust, roughness: 0.92, metalness: 0.1, flatShading: true
+      // Taller than it looks and sunk half a unit, see above.
+      this.game.physics.createStaticBoxAt(
+        x, y + rim.height / 2 + 0.25, z,
+        rim.thick, rim.height + 1.5, len, at.heading)
     })
-    const dark = new THREE.MeshStandardMaterial({
-      color: 0x14171b, roughness: 0.95, flatShading: true
-    })
-
-    // Squashed, but still a car. The first version flattened it to 0.96 tall
-    // and then scaled it to 0.72 of that, which is 0.7 units for a 4.4-long
-    // body - at which point it reads as a dark slab rather than as a wreck,
-    // and a slab is no more interesting than the showroom car it replaced.
-    const shape = carBody(length, width, {
-      sill: 0.2, shoulder: 0.78, roof: 1.3,
-      noseDrop: 0.22, tuck: 0.82
-    })
-    // Crumpled: the nose and tail pushed down further than the middle, which
-    // is what a car looks like after something heavy has been over it.
-    const crush = shape.lower.map((sec, i) => ({
-      ...sec,
-      yTop: sec.yTop - (i === 0 || i === 4 ? 0.16 : 0) - (seed % 2) * 0.04
-    }))
-    group.add(this.loftMesh(crush, body))
-
-    // The cabin, caved in on one side - a different amount each time, so a
-    // pile of three does not read as three copies.
-    const lean = (seed % 3) * 0.06 - 0.06
-    group.add(this.loftMesh(shape.cabin.map((sec) => ({
-      ...sec,
-      halfWidth: sec.halfWidth * 0.9,
-      yTop: sec.yTop - 0.12,
-      xShift: lean
-    })), body))
-
-    // No glass. A dark band where the windows were, which reads as an empty
-    // shell rather than as tinted glazing.
-    group.add(this.loftMesh(shape.cabin.map((sec) => ({
-      ...sec,
-      halfWidth: sec.halfWidth * 0.92,
-      yBottom: sec.yBottom + 0.06,
-      yTop: sec.yTop - 0.2,
-      xShift: lean
-    })), dark))
-
-    // Flat tyres: the same wheels, squashed, and no rim showing. The hub
-    // height comes off wheelPositions() like everywhere else rather than being
-    // written down - worldsanity.mjs cannot tell a local offset from a world
-    // placement when both coordinates are names, and it is right not to try.
-    for (const at of wheelPositions(length, width, 0.34, 0.3)) {
-      const tyre = new THREE.Mesh(
-        this.sharedGeometry('wrecktyre', () =>
-          new THREE.CylinderGeometry(0.34, 0.34, 0.3, 10)), trim.tyre)
-      tyre.rotation.z = Math.PI / 2
-      tyre.scale.set(1, 1, 0.55)
-      const pivot = new THREE.Group()
-      pivot.position.set(at.x, at.y * 0.6, at.z)
-      pivot.add(tyre)
-      group.add(pivot)
-    }
-
-    return group
-  }
-
-  /**
-   * The crush pile: a RAMP made of wrecks.
-   *
-   * The whole of Mike's complaint, answered in the collider rather than in the
-   * model. It used to be three cars each wrapped in a static BOX - a 1.1-high
-   * vertical wall at the top of a slope - so driving at the pile stopped you
-   * dead. Now there is ONE trimesh over the pile, built by the same
-   * `moundSolid()` as every other obstacle in the arena and therefore with the
-   * same 25-degree faces, and the wrecks have no collider at all. You drive up
-   * the mound, up over the wrecks, and off the far side.
-   *
-   * See CRUSH_PILE in course.js for why, and for the numbers.
-   */
-  buildCrushCars(island, spec, solid) {
-    const colours = [PALETTE.carRed, PALETTE.carBlue, PALETTE.carSand,
-                     PALETTE.carGreen, PALETTE.carGrey]
-
-    // The ramp. Built in world coordinates like every other mound, standing on
-    // the crest of the one it decorates.
-    const ramp = crushSolid(
-      { x: island.x + spec.x, z: island.z + spec.z, heading: spec.heading },
-      solid.crest.y)
-
-    const positions = new Float32Array(ramp.positions)
-    this.game.physics.createStaticTrimesh(
-      positions, new Uint32Array(ramp.indices))
-
-    // The ramp itself is NOT drawn. The wrecks are what you see; the trimesh
-    // is the shape you drive on, and a visible dirt wedge under a pile of cars
-    // would look like the cars were sitting in a skip.
-    const sx = Math.cos(spec.heading)
-    const sz = -Math.sin(spec.heading)
-    const spread = Math.min(2.2, (CRUSH_PILE.topWidth + 1.6) /
-                                 Math.max(1, spec.crush - 1))
-
-    for (let i = 0; i < spec.crush; i++) {
-      const across = (i - (spec.crush - 1) / 2) * spread
-      const x = island.x + spec.x + sx * across
-      const z = island.z + spec.z + sz * across
-
-      // SUNK INTO THE RAMP, and measured off the RAMP rather than off the
-      // mound under it. Taking the height from `solid.crest.y` - the parent
-      // mound's top - left the wrecks floating a clear unit above the ramp
-      // they are supposed to be the surface of, which is exactly what the
-      // first photograph showed.
-      //
-      // Each one sits a little below the ramp's own top face, so the trimesh
-      // you drive on runs through the wrecks rather than over them: you go up
-      // the cars, not up an invisible wedge above the cars.
-      const mesh = this.buildWreck(colours[i % colours.length], i)
-      const middle = i === Math.floor(spec.crush / 2)
-      mesh.position.set(x, ramp.topY - (middle ? 0.5 : 0.72), z)
-      mesh.rotation.set(0, spec.heading + Math.PI / 2 + (i - 1) * 0.16,
-                        (i % 2 ? 1 : -1) * 0.09, 'YXZ')
-      mesh.scale.set(1, 0.88, 1)
-      this.game.add(mesh)
-    }
   }
 
   // -------------------------------------------------------------
