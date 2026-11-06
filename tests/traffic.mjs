@@ -45,6 +45,7 @@ import {
   SHORT_LANE_CLEAR,
   SHORT_LANE_PENALTY
 } from '../src/world/islandLayout.js'
+import { isTwoWheeler } from '../src/world/twoWheels.js'
 
 let pass = 0, fail = 0
 const chk = (n, c, d = '') => {
@@ -675,9 +676,15 @@ for (const f of fittings(CAR_WIDTH, 2.2)) {
 }
 
 // Every AI vehicle. Their lamps use the same 0.3w placement; their wheels use
-// a fixed 0.3 tyre.
+// a fixed 0.3 tyre. A bike has ONE lamp on the centreline, two wheels on the
+// centreline, and an indicator 0.2 out either side - the `bike` style in
+// addVehicleLamps - so it is checked against that layout instead.
 for (const [kind, width] of Object.entries(TRAFFIC_WIDTHS)) {
-  const checks = [
+  const checks = isTwoWheeler(kind) ? [
+    { name: 'headlight', centre: 0, size: 0.2 },
+    { name: 'indicator', centre: 0.2, size: 0.07 },
+    { name: 'wheel', centre: 0, size: 0.21 }
+  ] : [
     { name: 'headlight', centre: width * 0.3, size: 0.4 },
     { name: 'taillight', centre: width * 0.3, size: 0.35 },
     { name: 'wheel', centre: width / 2 - 0.3 / 2, size: 0.3 }

@@ -38,6 +38,7 @@ const SUITES = [
   'wheelie.mjs',       // wheelies: which way it leans, and the limits it keeps
   'bus.mjs',           // the bus route: stops, doors, passengers and the score
   'fireworks.mjs',     // fireworks for winning the race: the show, the physics, the buffer
+  'twowheels.mjs',     // the motorcycle and the scooter: two wheels, the lean, the tables
   'fire.mjs',          // the fire callout: who may fight it, and getting there
   'police.mjs',        // the pursuit: the robber, the bump, the background chases
   'ambulance.mjs',     // the crash: loading the patient, and the run against the clock

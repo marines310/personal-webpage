@@ -78,6 +78,56 @@ export const VEHICLE_TUNING = {
     rollingResistance: 1.1,
     airControl: 0.25,           // it is not supposed to be off the ground
     label: 'downforce'
+  },
+
+  /**
+   * The motorcycle: quick, light, and it turns by leaning rather than by
+   * lock - see twoWheels.js for the lean. Faster than a saloon and well short
+   * of the racing car, which keeps the racing car the point of the race.
+   *
+   * The LOCK is bigger than a car's because a bike at walking pace turns in
+   * its own length, and the high-speed reduction is a little gentler because
+   * a bike at speed still steers - it just does it by leaning, which the
+   * drawn lean sells. Weak brakes on purpose: a bike stops in a longer
+   * distance than a car, and a player who has just come off the racing car
+   * should feel that.
+   */
+  motorcycle: {
+    maxForwardSpeed: 1.3,       // 23.4
+    forwardAccel: 1.45,
+    boostMultiplier: 0.85,      // 1.36 - under the saloon's, like the rest
+    maxReverseSpeed: 0.45,      // paddling it backwards with your feet
+    reverseAccel: 0.5,
+    maxSteerAngle: 1.15,        // 0.8 rad - it turns in its own length
+    highSpeedSteerReduction: 0.75,
+    handbrakeStrength: 0.8,
+    engineBrakeStrength: 0.9,
+    rollingResistance: 0.9,
+    airControl: 0.4,            // a bike off a kerb is a bike, not a brick
+    label: 'lean'
+  },
+
+  /**
+   * The motor scooter: slow, tiny, and it turns on a coin.
+   *
+   * The slowest thing in the world now, under the monster truck, and that is
+   * the joke of it - it is for pottering round the town, not for the circuit.
+   * Huge lock and almost no high-speed reduction, because it never reaches a
+   * speed where the reduction would matter.
+   */
+  scooter: {
+    maxForwardSpeed: 0.62,      // 11.2 - the saloons in the traffic pass it
+    forwardAccel: 0.7,
+    boostMultiplier: 0.85,
+    maxReverseSpeed: 0.45,
+    reverseAccel: 0.5,
+    maxSteerAngle: 1.4,         // 0.98 rad - the biggest lock in the fleet
+    highSpeedSteerReduction: 0.5,
+    handbrakeStrength: 0.75,
+    engineBrakeStrength: 0.8,
+    rollingResistance: 1.15,
+    airControl: 0.3,
+    label: 'nippy'
   }
 }
 

@@ -66,7 +66,12 @@ export const TANK_SECONDS = {
   bus: 360,
   fire: 330,
   race: 300,
-  monster: 270
+  monster: 270,
+  // Small engines and small tanks that cancel out to something sensible. The
+  // scooter sips harder than anything - a 50cc engine flat out is still
+  // nothing - and the motorcycle sits with the saloons.
+  motorcycle: 540,
+  scooter: 600
 }
 
 /**

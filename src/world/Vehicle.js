@@ -19,6 +19,7 @@ import {
   canWheelie, newWheelieState, nextWheelieWant, stepWheelie, wheeliePose,
   wheelieParams
 } from './wheelie.js'
+import { newLeanState, stepLean, leanPose } from './twoWheels.js'
 // World imports Vehicle nowhere, so this is not a cycle - and taking the
 // height from the same table the traffic uses is the point: the sedan you
 // drive is the sedan on the road.
@@ -90,6 +91,9 @@ export const CAR_HEIGHT = 0.4 * CAR_SCALE
  * per vehicle per frame for a value that is the same every time.
  */
 const WHEELIE_AXIS = new THREE.Vector3(1, 0, 0)
+
+/** And the axis a bike leans about: its own nose axis. See twoWheels.js. */
+const LEAN_AXIS = new THREE.Vector3(0, 0, 1)
 
 const WHEEL_RADIUS = 0.25 * CAR_SCALE
 
@@ -267,6 +271,9 @@ export class Vehicle {
     // a direction and a position partway through the movement, and both of
     // those belong next to each other. See wheelie.js.
     this.wheelie = newWheelieState()
+    // The lean, for the two kinds on two wheels. Zero for everything else and
+    // stays zero - stepLean() puts it there for any kind it does not know.
+    this.lean = newLeanState()
     this.indicateState = { side: 0, held: 0 }
 
     // Scratch vectors, reused each frame to avoid garbage
@@ -283,6 +290,10 @@ export class Vehicle {
     this._wheelieQuat = new THREE.Quaternion()
     this._wheeliePivot = new THREE.Vector3()
     this._wheelieShift = new THREE.Vector3()
+    // The lean pose, the same three scratch objects for the same job.
+    this._leanQuat = new THREE.Quaternion()
+    this._leanPivot = new THREE.Vector3()
+    this._leanShift = new THREE.Vector3()
     this._groundNormal = { x: 0, y: 1, z: 0 }
     this._flippedFor = 0
 
@@ -305,6 +316,7 @@ export class Vehicle {
     // the handling never lies for even one frame.
     if (!canDonut(kind)) this.donut = false
     if (!canWheelie(kind)) this.wheelie = newWheelieState()
+    this.lean = newLeanState()
     this.params.wheelbase = WHEELBASE_RATIO * this.size.length
 
     this.mesh = this.createMesh()
@@ -354,6 +366,8 @@ export class Vehicle {
     // And a kind that cannot do wheelies is put back down flat, rather than
     // being left drawn at an angle it can no longer get out of.
     if (!canWheelie(kind)) this.wheelie = newWheelieState()
+    // And nothing starts out leaning, bike or not.
+    this.lean = newLeanState()
 
     // The arc grows with the body. Everything else about the handling is
     // deliberately identical between kinds - only the thing that is a
@@ -1482,6 +1496,40 @@ export class Vehicle {
     this.mesh.position.add(this._wheelieShift)
   }
 
+  /**
+   * Draw a bike leaning into its corner.
+   *
+   * The second and last place the mesh disagrees with the body, and the same
+   * arithmetic as the wheelie with a different axis and a different pivot:
+   * the pivot is the line where the tyres touch the road, so the tyres stay
+   * put and the rider swings over them. See twoWheels.js for why it is drawn
+   * and how far.
+   *
+   * Runs for every vehicle, like applyWheelie, and costs a kind lookup and a
+   * return for everything that is not a bike.
+   */
+  applyLean(delta) {
+    stepLean(this.lean, this.kind, this.currentSteering, this.params.maxSteerAngle,
+      this.currentSpeed, this.params.maxForwardSpeed, delta)
+
+    const pose = leanPose(this.lean, this.kind, CAR_HEIGHT)
+    if (!pose.active) return
+
+    // Negated: `roll` is positive leaning LEFT, towards +X, and a positive
+    // turn about +Z takes the top of the bike towards -X. leanPose() says so.
+    this._leanQuat.setFromAxisAngle(LEAN_AXIS, -pose.roll)
+
+    this._leanPivot.set(0, pose.pivot.y, 0)
+    this._leanShift.copy(this._leanPivot)
+      .applyQuaternion(this._leanQuat)       // R . p
+      .sub(this._leanPivot)                  // R . p - p
+      .negate()                              // p - R . p
+      .applyQuaternion(this.mesh.quaternion) // into world space
+
+    this.mesh.quaternion.multiply(this._leanQuat)
+    this.mesh.position.add(this._leanShift)
+  }
+
   postPhysicsUpdate(delta) {
     if (!this.body) return
 
@@ -1493,6 +1541,7 @@ export class Vehicle {
     this.mesh.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w)
 
     this.applyWheelie(delta)
+    this.applyLean(delta)
 
     // --- Wheel visuals ---
     // Spin rate follows real rolling: omega = v / r. Sign follows travel
@@ -1500,11 +1549,17 @@ export class Vehicle {
     const spin = (this.currentSpeed / WHEEL_RADIUS) * delta
 
     for (let i = 0; i < this.wheels.length; i++) {
-      const { pivot, wheel, baseRotationY } = this.wheels[i]
+      const { pivot, wheel, baseRotationY, front } = this.wheels[i]
       wheel.rotation.x += spin
 
-      // Front wheels (0,1) steer with the current wheel angle
-      if (i < 2) {
+      // The front wheels steer with the current wheel angle. A wheel that
+      // SAYS which end it is on is believed; one that does not (a loaded
+      // model's, or the default car's) is at the front if it is one of the
+      // first two, which is the order both builders put them in. A bike has
+      // one front wheel, so "the first two" would steer its back wheel too
+      // and the whole bike would crab.
+      const steers = front !== undefined ? front : i < 2
+      if (steers) {
         pivot.rotation.y = (baseRotationY || 0) + this.currentSteering
       }
     }

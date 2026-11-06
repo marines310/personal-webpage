@@ -51,7 +51,9 @@ const LABELS = {
   monster: 'Monster Truck',
   race: 'Race Car',
   tow: 'Tow Truck',
-  monorail: 'Monorail'
+  monorail: 'Monorail',
+  motorcycle: 'Motorcycle',
+  scooter: 'Motor Scooter'
 }
 
 /** How long the roll-out takes, and how far it goes. */

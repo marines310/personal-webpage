@@ -1012,6 +1012,14 @@ export const TRAFFIC_LENGTHS = {
   monster: 5.4,
   race: 5.0,
 
+  // Two wheels. Short, and the collider is the same plain box every kind
+  // gets, so a bike's "length" is its wheelbase and a bit: a motorcycle is
+  // nearly all wheelbase. Player-only, like the two above, and for the same
+  // reason - a scooter in the traffic model would need the headway, the
+  // lane-sharing and the knock code to learn what a filtering bike is.
+  motorcycle: 2.3,
+  scooter: 1.9,
+
   /**
    * The monorail, and why this number is 11 rather than 33.
    *
@@ -1062,7 +1070,13 @@ export const TRAFFIC_WIDTHS = {
   // outside the bodywork.
   monster: 2.5,
   race: 1.95,
-  monorail: 2.4
+  monorail: 2.4,
+  // A bike's width is its handlebars, and this is the collider too. Narrower
+  // than that and the box is a plank balanced on its edge, which the upright
+  // spring can hold but the solver argues with on every kerb. 0.8 is the
+  // narrowest thing in the world and has the rider's knees inside it.
+  motorcycle: 0.8,
+  scooter: 0.75
 }
 
 /** Emergency lights: full flashes a second. */

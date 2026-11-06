@@ -57,6 +57,15 @@ export const VEHICLE_MASSES = {
   monster: 5.0,
   race: 1.1,
 
+  // Two wheels and a rider. A real motorcycle is 200kg against a saloon's
+  // 1,500, which is 0.2 on this scale, and at 0.2 a bus is twenty times the
+  // bike and every touch is the end of the run - the same unplayability the
+  // bus-against-sedan note above found at 8:1. 0.5 keeps a bike the lightest
+  // thing on the road by a clear margin and still lets it be nudged rather
+  // than erased.
+  motorcycle: 0.5,
+  scooter: 0.4,
+
   // Held on the beam by the timetable, not by physics. It is in the table so
   // that massOf() never has to guess, and it is enormous so that the answer,
   // if it is ever asked, is "the train wins".

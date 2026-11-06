@@ -21,6 +21,9 @@ import {
 } from '../src/world/vehicleParts.js'
 import { TRAFFIC_LENGTHS, TRAFFIC_WIDTHS } from '../src/world/islandLayout.js'
 import { VEHICLE_MASS } from '../src/systems/Physics.js'
+import {
+  isTwoWheeler, twoWheelPositions, TWO_WHEEL_KINDS, BIKE_WHEEL_RADIUS
+} from '../src/world/twoWheels.js'
 import { readFileSync } from 'node:fs'
 
 let pass = 0, fail = 0
@@ -247,11 +250,21 @@ console.log('\n4. The wheels fit inside the vehicle\n')
 for (const kind of Object.keys(TRAFFIC_LENGTHS)) {
   const length = TRAFFIC_LENGTHS[kind]
   const width = TRAFFIC_WIDTHS[kind]
-  const radius = 0.5
-  const thickness = 0.36
-  const wheels = wheelPositions(length, width, radius, thickness)
+  // A bike's wheels are smaller and in line; everything else gets a car's
+  // four at the corners. Both have to fit inside the box the kind is
+  // collided with, for the same reason.
+  const bike = isTwoWheeler(kind)
+  const radius = bike ? BIKE_WHEEL_RADIUS[kind] : 0.5
+  const thickness = bike ? 0.2 : 0.36
+  const wheels = bike ? twoWheelPositions(length, radius)
+                      : wheelPositions(length, width, radius, thickness)
 
-  chk(`${kind.padEnd(12)} has four wheels`, wheels.length === 4)
+  chk(`${kind.padEnd(12)} has ${bike ? 'two' : 'four'} wheels`,
+      wheels.length === (bike ? 2 : 4))
+  if (bike) {
+    chk(`${kind.padEnd(12)} has them on the centreline, front first`,
+        wheels.every(w => w.x === 0) && wheels[0].front && !wheels[1].front)
+  }
   const widest = Math.max(...wheels.map((w) => Math.abs(w.x) + thickness / 2))
   chk(`${kind.padEnd(12)} keeps them inside its own width`,
       widest <= width / 2 + 1e-9, `${widest.toFixed(2)} against ${(width / 2).toFixed(2)}`)
@@ -328,8 +341,18 @@ console.log('\n6. A bus weighs more than a saloon\n')
   chk('a fire engine outweighs an ambulance, which outweighs an SUV',
       VEHICLE_MASS.fire > VEHICLE_MASS.ambulance &&
       VEHICLE_MASS.ambulance > VEHICLE_MASS.suv)
-  chk('and a racing car is the lightest',
-      VEHICLE_MASS.race === Math.min(...Object.values(VEHICLE_MASS)))
+  const fourWheels = Object.entries(VEHICLE_MASS)
+    .filter(([k]) => !isTwoWheeler(k)).map(([, m]) => m)
+  chk('and a racing car is the lightest thing with four wheels',
+      VEHICLE_MASS.race === Math.min(...fourWheels))
+  chk('the two bikes are lighter than that',
+      TWO_WHEEL_KINDS.every(k => VEHICLE_MASS[k] < VEHICLE_MASS.race))
+  // But not by the factor the real things differ by - see Physics.js: the
+  // solver kicks a light body harder off every trimesh edge, and 2.5 was
+  // the mass the whole fleet used to have and was measured as the problem.
+  chk('and not so light the kerbs throw them about',
+      TWO_WHEEL_KINDS.every(k => VEHICLE_MASS[k] >= 1.8),
+      TWO_WHEEL_KINDS.map(k => `${k} ${VEHICLE_MASS[k]}`).join(', '))
 
   // Roughly with size, or something will behave oddly against its neighbours.
   const bySize = Object.keys(TRAFFIC_LENGTHS)
@@ -338,7 +361,8 @@ console.log('\n6. A bus weighs more than a saloon\n')
     // road. A monorail weighing more than a bus is correct and would fail
     // "the bus is the heaviest thing on the road" - which is a statement about
     // roads.
-    .filter((k) => k !== 'monster' && k !== 'race' && k !== 'monorail')
+    .filter((k) => k !== 'monster' && k !== 'race' && k !== 'monorail' &&
+                   !isTwoWheeler(k))
     .sort((a, b) => TRAFFIC_LENGTHS[a] * TRAFFIC_WIDTHS[a] -
                     TRAFFIC_LENGTHS[b] * TRAFFIC_WIDTHS[b])
   let ordered = true

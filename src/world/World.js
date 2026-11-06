@@ -251,6 +251,7 @@ import {
   loftSolid, carBody, raceBody, monsterBody, wheelPositions, WHEEL,
   trainCarBody, fuselageBody, helicopterBody, wingBody, canopyLobes
 } from './vehicleParts.js'
+import { twoWheelPositions, BIKE_WHEEL_RADIUS } from './twoWheels.js'
 
 /**
  * World - builds the geography described by islandLayout.js.
@@ -384,7 +385,12 @@ export const TRAFFIC_HEIGHTS = {
   // whole reason for existing and the racing car's whole reason for being
   // quick, so it is the first number either of them gets.
   monster: 3.2,
-  race: 1.1
+  race: 1.1,
+  // A bike's height is its RIDER - the machine itself is under a unit tall.
+  // Used for the lamp height and the garage preview, so it has to be the
+  // top of the helmet or the preview camera cuts the rider's head off.
+  motorcycle: 1.65,
+  scooter: 1.7
 }
 
 /**
@@ -3235,6 +3241,8 @@ export class World {
       case 'suv': return this.buildSUV(v)
       case 'monster': return this.buildMonsterTruck(v)
       case 'race': return this.buildRaceCar(v)
+      case 'motorcycle': return this.buildMotorcycle(v)
+      case 'scooter': return this.buildScooter(v)
       default: return this.buildCar(v, false)
     }
   }
@@ -3837,6 +3845,348 @@ export class World {
   }
 
   /**
+   * A box from one point to another: a limb, a frame tube, a fork leg.
+   *
+   * `lookAt` points an object's +Z at the target, and the box is built long
+   * along Z, so it lies between the two points without any angle arithmetic.
+   * Used for the riders below and nowhere else yet; the attendants at the
+   * pumps have their own simpler version because their arms only ever hang.
+   */
+  strut(a, b, thick, material) {
+    const length = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z)
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(thick, thick, length), material)
+    mesh.position.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
+    mesh.lookAt(b.x, b.y, b.z)
+    mesh.castShadow = true
+    return mesh
+  }
+
+  /**
+   * Somebody on the bike.
+   *
+   * A bike with nobody on it is a bike parked, and the player is not parked.
+   * Boxes, like the pedestrians - a dozen of them - because the rider is seen
+   * from behind at twenty units and a helmet, a back and two arms out to the
+   * bars are the whole silhouette.
+   *
+   * Everything is given as a point in the bike's own space with the ground
+   * at y=0, so the two builders can seat their riders differently: the
+   * motorcyclist crouched forward over a tank, the scooter rider bolt upright
+   * with knees together.
+   *
+   *   seat   - where the hips are
+   *   bars   - where the hands are, one side given, mirrored
+   *   knee   - where the knees are, one side given, mirrored
+   *   foot   - where the feet are, one side given, mirrored
+   *   lean   - how far forward the torso tips, radians, 0 is upright
+   */
+  addRider(group, { seat, bars, knee, foot, lean, paint }) {
+    const jacket = new THREE.MeshStandardMaterial({
+      color: 0x2b2f3a, roughness: 0.8, flatShading: true
+    })
+    const jeans = new THREE.MeshStandardMaterial({
+      color: 0x3c4a6b, roughness: 0.9, flatShading: true
+    })
+    const helmet = new THREE.MeshStandardMaterial({
+      color: paint, roughness: 0.3, metalness: 0.3, flatShading: true
+    })
+    const glove = new THREE.MeshStandardMaterial({
+      color: 0x1b1d22, roughness: 0.9, flatShading: true
+    })
+
+    // Legs: hip to knee, knee to foot, both sides.
+    for (const side of [1, -1]) {
+      const hip = { x: side * 0.11, y: seat.y, z: seat.z }
+      const k = { x: side * knee.x, y: knee.y, z: knee.z }
+      const f = { x: side * foot.x, y: foot.y, z: foot.z }
+      group.add(this.strut(hip, k, 0.13, jeans))
+      group.add(this.strut(k, f, 0.11, jeans))
+      const boot = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.09, 0.26), glove)
+      boot.position.set(f.x, f.y - 0.02, f.z + 0.06)
+      group.add(boot)
+    }
+
+    // The torso, as a box tipped forward about the hips, so its top ends up
+    // where the shoulders are. Positive rotation about X takes +Y towards +Z,
+    // which is forward, so a forward lean is a positive angle.
+    const torsoH = 0.52
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.34, torsoH, 0.2), jacket)
+    torso.position.set(0, seat.y + 0.04, seat.z)
+    torso.rotation.x = lean
+    torso.geometry.translate(0, torsoH / 2, 0)
+    torso.castShadow = true
+    group.add(torso)
+
+    const shoulder = {
+      y: seat.y + 0.04 + torsoH * Math.cos(lean),
+      z: seat.z + torsoH * Math.sin(lean)
+    }
+    // Arms, shoulder to hand.
+    for (const side of [1, -1]) {
+      const sh = { x: side * 0.2, y: shoulder.y - 0.05, z: shoulder.z }
+      const hand = { x: side * bars.x, y: bars.y, z: bars.z }
+      group.add(this.strut(sh, hand, 0.1, jacket))
+      const fist = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), glove)
+      fist.position.set(hand.x, hand.y, hand.z)
+      group.add(fist)
+    }
+
+    // The helmet, a little forward of the shoulders along the lean.
+    const head = new THREE.Mesh(
+      this.sharedGeometry('helmet', () => new THREE.SphereGeometry(0.15, 10, 8)),
+      helmet)
+    head.position.set(0, shoulder.y + 0.17 * Math.cos(lean),
+                      shoulder.z + 0.17 * Math.sin(lean) + 0.02)
+    head.castShadow = true
+    group.add(head)
+    // And a visor, dark, so the helmet has a front.
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.08, 0.06), glove)
+    visor.position.set(0, head.position.y + 0.01, head.position.z + 0.13)
+    group.add(visor)
+  }
+
+  /**
+   * The motorcycle.
+   *
+   * Two wheels, an engine between them, a tank over the engine and a rider
+   * crouched over the tank. The fork and the handlebars live INSIDE the front
+   * wheel's pivot, so when Vehicle.js steers that wheel the bars turn with it
+   * - a bike whose wheel turned under a fixed handlebar would be a very
+   * particular kind of wrong.
+   *
+   * Nose is +Z, like everything else. Ground is y=0; wrapTrafficMesh() moves
+   * the whole thing down to the chassis centre, so nothing here knows about
+   * CAR_HEIGHT.
+   */
+  buildMotorcycle(v) {
+    const group = new THREE.Group()
+    const length = TRAFFIC_LENGTHS[v.kind]
+    const trim = this.vehicleTrim()
+
+    const paint = v.colour || this.pick([
+      PALETTE.carRed, PALETTE.carBlue, PALETTE.crane, 0x2e8b57
+    ])
+    const body = new THREE.MeshStandardMaterial({
+      color: paint, roughness: 0.3, metalness: 0.45, flatShading: true
+    })
+    group.userData.body = body
+    const dark = trim.trim
+    const steel = trim.chrome
+
+    // Wheels first, so the front pivot exists to hang the fork on. Slim
+    // tyres - a car's 0.34 on a bike is a tractor.
+    const radius = BIKE_WHEEL_RADIUS[v.kind]
+    const wheels = this.addWheels(group, length, 0, radius,
+      { inline: true, thickness: 0.17, rear: 0.21 })
+    const frontPivot = wheels[0].pivot
+
+    // The engine: a block low between the wheels, with a pair of cylinder
+    // heads poking up out of it.
+    const engine = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.34, 0.5), dark)
+    engine.position.set(0, 0.46, 0.02)
+    engine.castShadow = true
+    group.add(engine)
+    for (const z of [0.16, -0.04]) {
+      const headBlock = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.16, 0.14), steel)
+      headBlock.position.set(0, 0.68, z)
+      group.add(headBlock)
+    }
+
+    // The tank, lofted: fattest at the front, pinched towards the seat.
+    group.add(this.loftMesh([
+      { z: 0.62, halfWidth: 0.12, yBottom: 0.72, yTop: 0.88 },
+      { z: 0.4, halfWidth: 0.2, yBottom: 0.7, yTop: 0.98 },
+      { z: 0.1, halfWidth: 0.18, yBottom: 0.72, yTop: 0.94 },
+      { z: -0.1, halfWidth: 0.13, yBottom: 0.74, yTop: 0.84 }
+    ], body))
+
+    // The seat, and a tail that kicks up behind it.
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 0.62), dark)
+    seat.position.set(0, 0.82, -0.42)
+    group.add(seat)
+    group.add(this.loftMesh([
+      { z: -0.3, halfWidth: 0.15, yBottom: 0.7, yTop: 0.78 },
+      { z: -0.7, halfWidth: 0.14, yBottom: 0.72, yTop: 0.82 },
+      { z: -1.02, halfWidth: 0.08, yBottom: 0.8, yTop: 0.9 }
+    ], body))
+    // A rear mudguard hugging the back tyre.
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.05, 0.5), body)
+    guard.position.set(0, radius * 2 + 0.06, -0.78)
+    group.add(guard)
+
+    // Frame: two down-tubes from the steering head to the engine, and the
+    // swingarm back to the rear axle.
+    const headAt = { x: 0, y: 0.92, z: 0.5 }
+    for (const side of [1, -1]) {
+      group.add(this.strut(headAt, { x: side * 0.14, y: 0.5, z: 0.2 }, 0.05, dark))
+      group.add(this.strut({ x: side * 0.12, y: 0.42, z: -0.2 },
+                           { x: side * 0.12, y: radius, z: -length * 0.34 }, 0.06, dark))
+    }
+    // Footpegs, where the rider's feet go.
+    for (const side of [1, -1]) {
+      const peg = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.04, 0.06), steel)
+      peg.position.set(side * 0.28, 0.38, -0.12)
+      group.add(peg)
+    }
+    // The exhaust, down the right-hand side. Right is -X: see sideOfVehicle().
+    const pipe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.065, 1.1, 8), steel)
+    pipe.rotation.x = Math.PI / 2
+    pipe.rotation.z = 0.02
+    pipe.position.set(-0.2, 0.34, -0.45)
+    group.add(pipe)
+
+    // THE FRONT END, IN THE PIVOT. The pivot's origin is the front wheel's
+    // centre, so everything here is measured from the axle: fork legs raked
+    // back to a steering head above and behind the wheel, bars across the
+    // top, a mudguard over the tyre.
+    const rake = -0.42   // top of the fork leans towards -Z, the rider
+    for (const side of [1, -1]) {
+      const leg = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.03, 0.03, 0.72, 8), steel)
+      leg.rotation.x = rake
+      leg.position.set(side * 0.1, 0.33, -0.15)
+      frontPivot.add(leg)
+    }
+    const bars = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.04, 0.04), steel)
+    bars.position.set(0, 0.64, -0.3)
+    frontPivot.add(bars)
+    for (const side of [1, -1]) {
+      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.05, 0.05), dark)
+      grip.position.set(side * 0.3, 0.64, -0.3)
+      frontPivot.add(grip)
+    }
+    const fender = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.05, 0.48), body)
+    fender.position.set(0, radius + 0.06, 0.04)
+    frontPivot.add(fender)
+
+    // Lamps on the steering head and the tail. Fixed to the group, not the
+    // pivot: the indicator code finds them through userData.lights, and the
+    // headlamp of a real bike is on the yoke, which does turn, but a lamp
+    // that turns a quarter-unit off the nose at full lock on a 0.8-wide
+    // vehicle is a lamp nobody can tell is turning.
+    this.addVehicleLamps(group, length, TRAFFIC_WIDTHS[v.kind],
+      TRAFFIC_HEIGHTS[v.kind], 0,
+      { style: 'bike', headY: 0.9, headZ: 0.66, tailY: 0.84 })
+
+    // The rider: crouched forward, knees against the tank, hands on the
+    // bars (which are at pivot y 0.64 + axle 0.36 = 1.0, z 0.78 - 0.3).
+    this.addRider(group, {
+      seat: { y: 0.9, z: -0.3 },
+      bars: { x: 0.3, y: 1.0, z: 0.48 },
+      knee: { x: 0.22, y: 0.82, z: 0.22 },
+      foot: { x: 0.28, y: 0.42, z: -0.12 },
+      lean: 0.42,
+      paint
+    })
+    return group
+  }
+
+  /**
+   * The motor scooter.
+   *
+   * Step-through: small wheels, a flat floor between them, a leg shield up
+   * the front and a rounded body behind, with the rider sat upright on top
+   * of it with both feet on the floor. Nothing about it is fast and nothing
+   * about it is supposed to be.
+   */
+  buildScooter(v) {
+    const group = new THREE.Group()
+    const length = TRAFFIC_LENGTHS[v.kind]
+    const trim = this.vehicleTrim()
+
+    const paint = v.colour || this.pick([
+      0xf2e6d8, PALETTE.signCyan, 0xf0b840, PALETTE.carRed
+    ])
+    const body = new THREE.MeshStandardMaterial({
+      color: paint, roughness: 0.35, metalness: 0.3, flatShading: true
+    })
+    group.userData.body = body
+    const dark = trim.trim
+    const steel = trim.chrome
+
+    // Small wheels, fat tyres.
+    const radius = BIKE_WHEEL_RADIUS[v.kind]
+    const wheels = this.addWheels(group, length, 0, radius,
+      { inline: true, thickness: 0.17 })
+    const frontPivot = wheels[0].pivot
+
+    // The floor, and the spine under it joining the two ends.
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.06, 0.64), dark)
+    floor.position.set(0, 0.3, 0.06)
+    group.add(floor)
+    const spine = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.1, 1.2), dark)
+    spine.position.set(0, 0.33, -0.1)
+    group.add(spine)
+
+    // The body behind the floor: engine cover, rounded off, with the seat
+    // on top and the rear wheel tucked underneath.
+    group.add(this.loftMesh([
+      { z: -0.2, halfWidth: 0.16, yBottom: 0.36, yTop: 0.6 },
+      { z: -0.42, halfWidth: 0.24, yBottom: 0.38, yTop: 0.74 },
+      { z: -0.72, halfWidth: 0.22, yBottom: 0.42, yTop: 0.74 },
+      { z: -0.92, halfWidth: 0.12, yBottom: 0.5, yTop: 0.68 }
+    ], body))
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.12, 0.6), dark)
+    seat.position.set(0, 0.8, -0.5)
+    group.add(seat)
+
+    // The leg shield: a tall panel up the front, leaning back a touch, with
+    // the headlamp on it.
+    group.add(this.loftMesh([
+      { z: 0.3, halfWidth: 0.2, yBottom: 0.36, yTop: 0.4 },
+      { z: 0.42, halfWidth: 0.23, yBottom: 0.34, yTop: 0.9 },
+      { z: 0.5, halfWidth: 0.2, yBottom: 0.36, yTop: 0.96 }
+    ], body))
+    // A little glovebox face on the inside of the shield.
+    const box = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.2, 0.06), dark)
+    box.position.set(0, 0.7, 0.34)
+    group.add(box)
+
+    // THE FRONT END, IN THE PIVOT: a steering column up from the axle, bars
+    // across it, a mudguard over the tyre.
+    const column = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.035, 0.035, 0.68, 8), steel)
+    column.rotation.x = -0.3
+    column.position.set(0, 0.34, -0.08)
+    frontPivot.add(column)
+    const bars = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.04, 0.04), steel)
+    bars.position.set(0, 0.66, -0.18)
+    frontPivot.add(bars)
+    for (const side of [1, -1]) {
+      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.05, 0.05), dark)
+      grip.position.set(side * 0.26, 0.66, -0.18)
+      frontPivot.add(grip)
+      const mirror = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.06, 0.02), steel)
+      mirror.position.set(side * 0.26, 0.84, -0.14)
+      frontPivot.add(mirror)
+      group.add(this.strut({ x: side * 0.26, y: 0.66 + radius, z: -0.18 + length * 0.34 },
+                           { x: side * 0.26, y: 0.82 + radius, z: -0.14 + length * 0.34 },
+                           0.02, steel))
+    }
+    const fender = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.05, 0.42), body)
+    fender.position.set(0, radius + 0.05, 0.02)
+    frontPivot.add(fender)
+
+    this.addVehicleLamps(group, length, TRAFFIC_WIDTHS[v.kind],
+      TRAFFIC_HEIGHTS[v.kind], 0,
+      { style: 'bike', headY: 0.84, headZ: 0.54, tailY: 0.7 })
+
+    // The rider, upright, knees together, feet flat on the floor. The bars
+    // are at pivot y 0.66 + axle 0.27 = 0.93, z 0.646 - 0.18.
+    this.addRider(group, {
+      seat: { y: 0.9, z: -0.42 },
+      bars: { x: 0.26, y: 0.93, z: 0.44 },
+      knee: { x: 0.12, y: 0.86, z: 0.1 },
+      foot: { x: 0.12, y: 0.36, z: 0.14 },
+      lean: 0.08,
+      paint: 0xe8e4dc   // an open-face helmet in cream, not the bike's colour
+    })
+    return group
+  }
+
+  /**
    * Wheels, shared by everything on the road.
    *
    * A tyre, a RIM and a hub - three meshes where there was one. The rim is the
@@ -3877,8 +4227,14 @@ export class World {
     const front = parts(thickness)
     const rear = parts(rearThickness)
 
-    for (const at of wheelPositions(length, width, radius, thickness,
-                                    opts.atFront ?? 0.31, opts.atRear ?? 0.31)) {
+    // Two wheels in line, or four at the corners. Both return the same shape
+    // of record, so nothing below knows which it was given.
+    const places = opts.inline
+      ? twoWheelPositions(length, radius, opts.atFront, opts.atRear)
+      : wheelPositions(length, width, radius, thickness,
+                       opts.atFront ?? 0.31, opts.atRear ?? 0.31)
+
+    for (const at of places) {
       const geo = at.front ? front : rear
       const pivot = new THREE.Group()
       pivot.position.set(at.x, at.y, at.z)
@@ -4282,6 +4638,36 @@ export class World {
     // care what shape the lamp is - so the four are made either way and only
     // the meshes change. Returning early without them would be a crash three
     // files away the first time somebody indicated.
+    // A bike has one headlamp, on the steering head rather than at the nose
+    // - the nose is the front of the tyre and a lamp there would hang in the
+    // air in front of the wheel - and one tail lamp, with a small indicator
+    // either side of each. Same four materials as everything else, so the
+    // indicator and brake code never knows.
+    if (opts.style === 'bike') {
+      const headY = opts.headY ?? lampY
+      const headZ = opts.headZ ?? nose
+      const tailY = opts.tailY ?? lampY
+      const lamp = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.1, 0.1, 0.08, 12), head)
+      lamp.rotation.x = Math.PI / 2
+      lamp.position.set(0, headY, headZ)
+      group.add(lamp)
+      const rear = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.09, 0.06), tail)
+      rear.position.set(0, tailY, tailZ)
+      group.add(rear)
+      for (const side of [1, -1]) {
+        const material = sideOfVehicle(side) < 0 ? left : right
+        for (const [y, z] of [[headY - 0.1, headZ - 0.12], [tailY, tailZ]]) {
+          const blinker = new THREE.Mesh(
+            new THREE.BoxGeometry(0.07, 0.07, 0.06), material)
+          blinker.position.set(side * 0.2, y, z)
+          group.add(blinker)
+        }
+      }
+      group.userData.lights = { head, tail, left, right }
+      return group.userData.lights
+    }
+
     if (opts.style === 'race') {
       const rain = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 0.07), tail)
       rain.position.set(0, baseY + 0.5, tailZ - 0.1)

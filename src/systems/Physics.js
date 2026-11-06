@@ -26,6 +26,15 @@ export const VEHICLE_MASS = {
   bus: 13,
   monster: 8,
   race: 3,
+  // Lighter than the racing car, and not by the factor the real things
+  // differ by. This is the mass the SOLVER sees, and the table in
+  // createVehicleChassis() below is the reason to be careful with it: the
+  // lighter the body, the worse the kick off a trimesh edge (worst 9.76 at
+  // 2.5 against 6.12 at 4). A true-to-life 0.5 would be a bike that
+  // bounced off every kerb in the town. 2.2 is under everything with four
+  // wheels and still above the mass that was measured as the problem.
+  motorcycle: 2.2,
+  scooter: 1.9,
   // Never actually thrown around by the solver - a driven monorail is held on
   // its beam by the timetable - but it has to have a mass like everything
   // else, and a train weighing less than a bus would be a strange lie to tell.
