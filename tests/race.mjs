@@ -1,22 +1,18 @@
 /**
- * The stunt arena's geometry, and the race.
+ * The open ground, the circuit, and the race.
  *
- * Both are pure modules with no THREE in them, which is the point of them being
- * pure modules: a mound is arithmetic and a race is a state machine, and
- * neither needs a browser to be wrong in front of you.
+ * The circuit and the race are pure modules with no THREE in them, which is
+ * the point of them being pure modules: a lap is arithmetic and a race is a
+ * state machine, and neither needs a browser to be wrong in front of you.
  *
- * What is NOT here, and could not be: whether the monster truck can actually
- * get over any of this. That is the physics engine's answer, not arithmetic's,
- * and it was measured in the running game - the numbers are on MAX_FACE and on
- * STUNT_DOUBLE.landing. What this file guards is that the LAYOUT still matches
- * those measurements, so that moving a mound without re-measuring is a failing
- * test rather than a quiet regression.
+ * The open ground used to be the monster truck stadium, and sections 1 to 5
+ * of this file used to guard its layout against the measurements the physics
+ * had produced - the steepest face a truck can climb, where the double's
+ * landing had to be. The stadium is gone, and so are they. Section 1 now
+ * checks only that the island is the empty floor it is meant to be.
  */
 import {
-  moundSolid, flightRange, pointAlongRing, walkLoop, outsetLoop, faceRun,
-  COURSE_GROUND, RAMP_BURY, MAX_FACE, MIN_RUN,
-  STUNT_COURSE, STUNT_MOUNDS, STUNT_DOUBLE, MEASURED_DOUBLE,
-  CRUSH_PILE, crushSolid, crushFitsOn,
+  pointAlongRing, walkLoop, outsetLoop, COURSE_GROUND, OPEN_GROUND_INSET,
   RACE_LAPS, RACE_FIELD, RACE_LIGHTS, RACE_COUNTDOWN, RACE_LINE_AT, lightAt,
   CIRCUIT_GATE, GRID_COLUMN_OFFSET, pitStraightPlan, RUN_OFF
 } from '../src/world/course.js'
@@ -41,6 +37,8 @@ import {
 } from '../src/world/driving.js'
 import { distanceToEdge, insetPolygon } from '../src/world/shapes.js'
 
+const HERE = dirname(fileURLToPath(import.meta.url))
+
 let pass = 0, fail = 0
 const chk = (n, c, d = '') => {
   c ? (pass++, console.log('  PASS  ' + n))
@@ -50,375 +48,44 @@ const near = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol
 const deg = (r) => r * 180 / Math.PI
 
 // ---------------------------------------------------------------------------
-console.log('1. A mound is a closed solid with no vertical face on it\n')
+console.log('1. The open ground\n')
 
-const mound = moundSolid({
-  x: 0, z: 0, heading: 0,
-  topWidth: 10, topDepth: 6, height: 3, runIn: 8, runOut: 4, runSide: 7
-})
-
-chk('it has triangles', mound.positions.length > 0 && mound.positions.length % 9 === 0,
-    `${mound.positions.length} floats`)
-chk('every vertex has an index', mound.indices.length === mound.positions.length / 3)
-chk('the indices are the plain sequence a trimesh wants',
-    mound.indices.every((v, i) => v === i))
-
-// Twelve triangles: eight for the four sloped faces, two for the flat top, two
-// for the floor. A shell with any of them missing is something a fast vehicle
-// can pass through - a Rapier trimesh is infinitely thin.
-chk('it is closed - twelve triangles, no open faces',
-    mound.indices.length === 36, `${mound.indices.length / 3} triangles`)
-
-const ys = []
-for (let i = 1; i < mound.positions.length; i += 3) ys.push(mound.positions[i])
-chk('its floor is buried under the ground',
-    near(Math.min(...ys), COURSE_GROUND - RAMP_BURY), `${Math.min(...ys)}`)
-chk('its top is exactly the height asked for',
-    near(Math.max(...ys), COURSE_GROUND + 3), `${Math.max(...ys)}`)
-chk('and the crest is reported where the geometry puts it',
-    near(mound.crest.y, COURSE_GROUND + 3) && near(mound.crest.x, 0),
-    JSON.stringify(mound.crest))
-
-// THE WHOLE POINT. Mike's son's report on the first arena was that most of the
-// obstacles were walls: "if I drive into them, I'm not jumping, I'm more like
-// crashing into a wall." That was true, and it was true because a wedge has one
-// sloped face and three vertical ones. A mound has four sloped faces and no
-// vertical one, which is what lets you hit it from any direction.
-// AND IT FACES OUTWARDS. Rapier collides with a trimesh from either side, so
-// the physics was right for two whole rounds of screenshots while the picture
-// was inside out: three.js culls back faces, so every mound rendered as the
-// unlit inside of its own far slope - a black hole in a tan floor. Colour was
-// changed twice before winding was checked once.
+// Sections 1 to 5 of this file were the monster truck stadium - the mounds,
+// the double, the crush cars, the barrier and the stands, about two hundred
+// checks that the layout still matched its measurements. The stadium is gone
+// (Mike: "Too small and too cluttered. Maybe the stadium can just go."), and
+// with it the course data those checks were guarding. What is left to guard
+// is that the island really is open ground now.
 {
-  const p = mound.positions
-  let cx = 0, cy = 0, cz = 0
-  for (let i = 0; i < p.length; i += 3) { cx += p[i]; cy += p[i + 1]; cz += p[i + 2] }
-  const n = p.length / 3
-  cx /= n; cy /= n; cz /= n
-  let outward = 0
-  for (let t = 0; t < p.length; t += 9) {
-    const ux = p[t + 3] - p[t], uy = p[t + 4] - p[t + 1], uz = p[t + 5] - p[t + 2]
-    const vx = p[t + 6] - p[t], vy = p[t + 7] - p[t + 1], vz = p[t + 8] - p[t + 2]
-    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
-    const dx = (p[t] + p[t + 3] + p[t + 6]) / 3 - cx
-    const dy = (p[t + 1] + p[t + 4] + p[t + 7]) / 3 - cy
-    const dz = (p[t + 2] + p[t + 5] + p[t + 8]) / 3 - cz
-    if (nx * dx + ny * dy + nz * dz > 0) outward++
-  }
-  chk('every triangle is wound so its front face points out of the solid',
-      outward === 12, `${outward} of 12`)
-}
+  const stunt = getIsland('stunt')
+  chk('the island is still there', !!stunt && stunt.id === 'stunt')
+  chk('and still a closed course, so the public stays off it', !!stunt && stunt.noTraffic === true)
+  chk('and bare - no town, no props', !!stunt && stunt.bare === true)
 
-chk('every face is sloped - none of them is vertical',
-    mound.angles.in < Math.PI / 2 && mound.angles.out < Math.PI / 2 &&
-    mound.angles.side < Math.PI / 2)
-chk('the three runs give the three angles they should',
-    near(deg(mound.angles.in), deg(Math.atan2(3, 8)), 1e-9) &&
-    near(deg(mound.angles.out), deg(Math.atan2(3, 4)), 1e-9) &&
-    near(deg(mound.angles.side), deg(Math.atan2(3, 7)), 1e-9))
+  const ring = stunt ? getIslandRing(stunt) : null
+  chk('it has a ring road for the bridge to join', !!ring && ring.length > 8)
 
-// A run of zero would BE a vertical face, so it cannot be allowed through even
-// by accident.
-const flat = moundSolid({
-  x: 0, z: 0, heading: 0, topWidth: 6, topDepth: 6, height: 3,
-  runIn: 0, runOut: -5, runSide: 0
-})
-chk('a run of zero is clamped rather than believed',
-    flat.angles.in < Math.PI / 2 && flat.angles.out < Math.PI / 2,
-    `${deg(flat.angles.in).toFixed(1)} / ${deg(flat.angles.out).toFixed(1)} degrees`)
-chk('and the clamp is MIN_RUN', near(flat.angles.in, Math.atan2(3, MIN_RUN)))
+  // The floor runs almost to the kerb now - there is nothing to leave room
+  // for. The inset exists only so the floor does not z-fight the verge.
+  chk('the floor is inset from the ring by less than the arena was',
+      OPEN_GROUND_INSET > 0 && OPEN_GROUND_INSET < 5, `${OPEN_GROUND_INSET}`)
 
-// Heading is atan2(x, z), like every other bearing in the project: 0 is +Z.
-const east = moundSolid({
-  x: 0, z: 0, heading: Math.PI / 2,
-  topWidth: 10, topDepth: 6, height: 3, runIn: 8, runOut: 4, runSide: 7
-})
-chk('heading pi/2 puts the far face at +x',
-    near(east.lip.x, 7, 1e-9) && near(east.lip.z, 0, 1e-9), JSON.stringify(east.lip))
-
-// ---------------------------------------------------------------------------
-console.log('\n2. Nothing on the floor is steeper than the truck can climb\n')
-
-console.log(`   the measured limit is ${deg(MAX_FACE).toFixed(0)} degrees` +
-            ` - see MAX_FACE for the table it came from`)
-
-const everything = [
-  ...STUNT_MOUNDS,
-  { name: 'the double: take-off', ...STUNT_DOUBLE.takeOff },
-  { name: 'the double: landing', ...STUNT_DOUBLE.landing }
-]
-
-for (const spec of everything) {
-  const solid = moundSolid(spec)
-  const worst = Math.max(solid.angles.in, solid.angles.out, solid.angles.side)
-  chk(`${spec.name.padEnd(22)} steepest face ${deg(worst).toFixed(1)} degrees`,
-      worst <= MAX_FACE + 1e-9,
-      `over the measured limit of ${deg(MAX_FACE).toFixed(0)}`)
-}
-
-chk('and none of them is a gentle rise either - they are meant to be jumps',
-    everything.every((s) => moundSolid(s).angles.in > 18 * Math.PI / 180),
-    everything.filter((s) => moundSolid(s).angles.in <= 18 * Math.PI / 180)
-              .map((s) => s.name).join(' '))
-
-chk('faceRun() and FACE agree with each other',
-    near(Math.atan2(3, faceRun(3)), 25 * Math.PI / 180, 1e-9))
-
-// ---------------------------------------------------------------------------
-console.log('\n3. The ballistics still describe what the game does\n')
-
-// Measured in the running browser on a three-unit test mound with 26-degree
-// faces: the truck went over at 14 and came down 21 units past the crest.
-const takeOff = STUNT_DOUBLE.takeOff
-const overCrest = flightRange(14, 0, takeOff.height)
-chk('leaving a crest horizontally still gives a real flight',
-    overCrest.distance > 8, `${overCrest.distance.toFixed(1)} units`)
-chk('a faster vehicle always flies further, which is why size cannot be the gate',
-    flightRange(27.9, 0, takeOff.height).distance >
-    flightRange(14, 0, takeOff.height).distance)
-chk('flightRange copes with no height at all',
-    flightRange(14, 0, 0).distance === 0)
-chk('and with no speed at all', flightRange(0, 0.3, 3).distance === 0)
-
-// ---------------------------------------------------------------------------
-console.log('\n4. The double still does what it was measured doing\n')
-
-// These are not predictions. They were taken off the running game with
-// probe/double.mjs, and their job here is to fail the moment somebody resizes
-// the mound or retunes a vehicle without re-taking them - which is exactly
-// what happened the last time this jump changed shape and nobody re-measured.
-{
-  const solid = moundSolid(STUNT_DOUBLE.takeOff)
-  const land = moundSolid(STUNT_DOUBLE.landing)
-  const crest = STUNT_DOUBLE.takeOff.z
-  const m = MEASURED_DOUBLE.monster
-
-  chk('the truck comes down past the take-off, not on it',
-      crest + m.flight > crest + solid.reach.along,
-      `lands ${(crest + m.flight).toFixed(1)}, take-off reaches ` +
-      `${(crest + solid.reach.along).toFixed(1)}`)
-
-  const nearFoot = STUNT_DOUBLE.landing.z - land.reach.along
-  const topFrom = STUNT_DOUBLE.landing.z - STUNT_DOUBLE.landing.topDepth / 2
-  const farFoot = STUNT_DOUBLE.landing.z + land.reach.along
-
-  chk('and it comes down ON the landing rather than in the gap',
-      m.landsAt > nearFoot && m.landsAt < farFoot,
-      `${m.landsAt} against ${nearFoot.toFixed(1)}..${farFoot.toFixed(1)}`)
-
-  // The saloon and the racing car are FASTER, so they go further. That is the
-  // whole argument for gating the arena by physics rather than by vehicle
-  // kind: nothing here is locked, the jump simply suits one truck.
-  chk('the saloon flies further than the truck, so the gate is speed not kind',
-      MEASURED_DOUBLE.sedan.flight > m.flight,
-      `${MEASURED_DOUBLE.sedan.flight} against ${m.flight}`)
-  chk('and the saloon lands beyond the landing crest, not on the same spot',
-      MEASURED_DOUBLE.sedan.landsAt > STUNT_DOUBLE.landing.z)
-  chk('the racing car does not come down inside the arena at all',
-      MEASURED_DOUBLE.race.landsAt === null &&
-      MEASURED_DOUBLE.race.peak > 12)
-
-  // The measured peak has to be consistent with the ballistics the pure module
-  // predicts. Not equal - the game is a physics engine and this is a parabola
-  // - but the same order, or one of the two is describing a different world.
-  const predicted = flightRange(m.lipSpeed, 0, STUNT_DOUBLE.takeOff.height)
-  chk('and the measured flight is within half of the parabola for it',
-      Math.abs(predicted.distance - m.flight) < m.flight * 0.5,
-      `parabola says ${predicted.distance.toFixed(1)}, game says ${m.flight}`)
-
-  chk('the landing is far enough past the take-off to be a gap',
-      nearFoot - (crest + solid.reach.along) >= 2,
-      `${(nearFoot - (crest + solid.reach.along)).toFixed(1)} units`)
-  chk('and the truck clears that gap',
-      crest + m.flight > nearFoot,
-      `${(crest + m.flight).toFixed(1)} against a foot at ${nearFoot.toFixed(1)}`)
-
-  console.log(`   the truck leaves at ${m.lipSpeed}, peaks at ${m.peak},` +
-              ` flies ${m.flight} and lands ${(m.landsAt - topFrom).toFixed(1)}` +
-              ` short of the flat top`)
-}
-
-// ---------------------------------------------------------------------------
-console.log('\n5. Everything fits on the floor it is built on\n')
-
-const stunt = getIsland('stunt')
-chk('the stunt island exists', !!stunt)
-
-if (stunt) {
-  const ring = getIslandRing(stunt)
-  const floor = insetPolygon(ring, STUNT_COURSE.padInset)
-  const barrier = insetPolygon(ring, STUNT_COURSE.barrier.inset)
-
-  // Every mound's footprint has to be inside the barrier, which is the wall
-  // round the arena. A mound half-buried in the wall is not a jump, it is a
-  // ramp into a fence - and this is exactly the class of mistake that is
-  // invisible in a plan view and obvious the moment somebody drives at it.
-  const inFloor = (x, z) => distanceToEdge(barrier, x, z)
-
-  for (const spec of everything) {
-    const solid = moundSolid(spec)
-    const fx = Math.sin(spec.heading)
-    const fz = Math.cos(spec.heading)
-    let worst = Infinity
-    let where = null
-    // The four corners of the footprint, which is where it sticks out.
-    for (const along of [-solid.reach.along, solid.reach.along]) {
-      for (const across of [-solid.reach.across, solid.reach.across]) {
-        const x = spec.x + fx * along + fz * across
-        const z = spec.z + fz * along - fx * across
-        const d = inFloor(x, z)
-        if (d < worst) { worst = d; where = [+x.toFixed(1), +z.toFixed(1)] }
-      }
-    }
-    // 1.5, not 0. A footprint corner that just touches the barrier still has
-    // the barrier's own thickness built through it.
-    chk(`${spec.name.padEnd(22)} is inside the barrier`, worst > 1.5,
-        `corner ${JSON.stringify(where)} is ${worst.toFixed(1)} from the wall`)
-  }
-
-  // The monorail crosses this island - `monorail: false` keeps a STATION off,
-  // not the railway - and it stands on piers. A pier inside a mound is a
-  // concrete column sticking out of a jump.
-  const piers = getMonorailPiers()
-    .map((p) => ({ x: p.x - stunt.x, z: p.z - stunt.z }))
-    .filter((p) => distanceToEdge(floor, p.x, p.z) > -8)
-
-  console.log(`   ${piers.length} monorail piers stand on this island`)
-  chk('there are piers to avoid, so this check is doing something',
-      piers.length > 0)
-
-  for (const spec of everything) {
-    const solid = moundSolid(spec)
-    let worst = Infinity
-    for (const pier of piers) {
-      // Distance from the pier to the mound's footprint rectangle, in the
-      // mound's own frame.
-      const dx = pier.x - spec.x
-      const dz = pier.z - spec.z
-      const along = Math.abs(dx * Math.sin(spec.heading) + dz * Math.cos(spec.heading))
-      const across = Math.abs(dx * Math.cos(spec.heading) - dz * Math.sin(spec.heading))
-      const gap = Math.max(along - solid.reach.along, across - solid.reach.across)
-      worst = Math.min(worst, gap)
-    }
-    chk(`${spec.name.padEnd(22)} clears the monorail piers`, worst > 3,
-        `${worst.toFixed(1)} units`)
-  }
-
-  // And they must not be built into each other. Two overlapping trimeshes are
-  // not a bigger mound, they are a pair of surfaces that disagree about where
-  // the ground is, and a vehicle between them gets picked up by whichever one
-  // Rapier resolves second.
-  //
-  // The gap between two mounds is a SEPARATING-AXIS test on their footprint
-  // rectangles, not a distance between bounding circles. The first version of
-  // this check used circles, and a circle round a 30-by-22 rectangle is nine
-  // units bigger than the rectangle in every direction - so it called the two
-  // halves of the double a collision when they are twelve units apart, and
-  // would have gone on calling every workable layout a failure.
-  const rectGap = (a, b) => {
-    const sa = moundSolid(a)
-    const sb = moundSolid(b)
-    const dx = b.x - a.x
-    const dz = b.z - a.z
-    // How far a mound reaches along an arbitrary axis: its two half-extents,
-    // each scaled by how much its own axis lines up with the one being tested.
-    const spread = (heading, solid, ax, az) =>
-      Math.abs(Math.sin(heading) * ax + Math.cos(heading) * az) * solid.reach.along +
-      Math.abs(Math.cos(heading) * ax - Math.sin(heading) * az) * solid.reach.across
-    // Two rectangles are apart if they are apart on ANY axis, and for two
-    // rectangles the only axes that can separate them are their own four
-    // edge normals - so the biggest of these four gaps is the real one.
-    let widest = -Infinity
-    for (const h of [a.heading, a.heading + Math.PI / 2,
-                     b.heading, b.heading + Math.PI / 2]) {
-      const ax = Math.sin(h)
-      const az = Math.cos(h)
-      widest = Math.max(widest, Math.abs(dx * ax + dz * az) -
-        spread(a.heading, sa, ax, az) - spread(b.heading, sb, ax, az))
-    }
-    return widest
-  }
-
-  // Prove the metric before trusting it: two identical mounds on top of each
-  // other must read as overlapping, and the same pair pushed well apart must
-  // not. A gap function that says everything is fine is not a test.
-  const twin = (x, z) => ({ x, z, heading: 0, topWidth: 10, topDepth: 6,
-                            height: 3, runIn: 6, runOut: 6, runSide: 6 })
-  chk('the gap metric calls a mound built on top of itself an overlap',
-      rectGap(twin(0, 0), twin(0, 0)) < 0, `${rectGap(twin(0, 0), twin(0, 0))}`)
-  chk('and two the same size, forty apart, clear by the arithmetic',
-      near(rectGap(twin(0, 0), twin(0, 40)), 40 - 2 * (3 + 6), 1e-9),
-      `${rectGap(twin(0, 0), twin(0, 40))}`)
-
-  let closest = Infinity
-  let pair = ''
-  for (let i = 0; i < everything.length; i++) {
-    for (let j = i + 1; j < everything.length; j++) {
-      const d = rectGap(everything[i], everything[j])
-      if (d < closest) { closest = d; pair = `${everything[i].name} / ${everything[j].name}` }
-    }
-  }
-  console.log(`   closest pair: ${pair}, ${closest.toFixed(1)} apart`)
-  // Two clear, not zero. Touching footprints put the foot of one mound's
-  // slope in the foot of another's, which is a seam you can catch a wheel in.
-  chk('no two mounds are built into each other', closest > 2, `${pair}`)
-
-  // THE CRUSH PILE IS A RAMP, AND IT HAS TO FIT ON ITS OWN MOUND.
-  //
-  // Mike: "the monster truck stadium has these vehicles that I think we're
-  // supposed to drive over, but because it uses the in-game vehicle model, I
-  // am unable to do anything with the cars." He was right - each wreck had a
-  // static BOX round it, which is a vertical wall at the top of a slope, so
-  // driving at the pile stopped you dead.
-  //
-  // It is one trimesh now, built by the same moundSolid() as everything else
-  // and therefore with the same 25-degree faces. Which means it has the same
-  // problem every mound has: it must fit on the thing it is built on. The
-  // first version did not - 1.15 high with a 5.2 by 3.4 top needs 5.1 units
-  // across and the mound's flat top is 4 - so its buried edge hung in the air
-  // over the parent's slope, the two trimeshes crossed, and driving into the
-  // seam threw the monster truck TWENTY-ONE units into the sky.
-  {
-    const pile = STUNT_MOUNDS.find((m) => m.crush)
-    chk('there is a crush pile to check', !!pile)
-    if (pile) {
-      const fit = crushFitsOn(pile)
-      chk('the crush ramp fits within its mound\'s flat top', fit.fits,
-          `needs ${fit.acrossNeeded.toFixed(2)} x ${fit.alongNeeded.toFixed(2)}, ` +
-          `has ${fit.acrossHave} x ${fit.alongHave}`)
-
-      const parent = moundSolid(pile)
-      const ramp = crushSolid({ x: pile.x, z: pile.z, heading: pile.heading },
-                              parent.crest.y)
-      chk('and it stands on the mound rather than floating over it',
-          ramp.topY > parent.crest.y && ramp.topY < parent.crest.y + 2,
-          `ramp top ${ramp.topY.toFixed(2)}, mound crest ${parent.crest.y.toFixed(2)}`)
-      chk('its faces are climbable, like every other obstacle here',
-          Math.max(ramp.angles.in, ramp.angles.out, ramp.angles.side) <= MAX_FACE + 1e-9)
-      chk('and it is low enough to be a lip on a jump, not a second jump',
-          CRUSH_PILE.height < 1.2, `${CRUSH_PILE.height}`)
-    }
-  }
-
-  // The arena furniture has to resolve too. An outset that comes back null is
-  // a grandstand that never gets built, which is how the first version of the
-  // stands ended up invisible.
-  chk('the barrier loop resolves', !!barrier && barrier.length > 3)
-  for (let tier = 0; tier < STUNT_COURSE.stands.tiers; tier++) {
-    const out = STUNT_COURSE.stands.fromRing + tier * STUNT_COURSE.stands.tread
-    const loop = outsetLoop(ring, out)
-    chk(`seating tier ${tier} resolves and is bigger than the ring`,
-        loop.length === ring.length &&
-        Math.max(...loop.map((p) => p.x)) > Math.max(...ring.map((p) => p.x)),
-        `${loop.length} points`)
-  }
-
-  const blocks = walkLoop([...barrier, barrier[0]], STUNT_COURSE.barrier.blockLength)
-  console.log(`   the barrier is ${blocks.length} blocks round`)
-  chk('the barrier is a whole number of blocks with no short one at the seam',
-      blocks.length > 20)
-  chk('and walkLoop hands back fractions from 0 to just under 1',
-      blocks[0].fraction === 0 && blocks[blocks.length - 1].fraction < 1)
+  // And nothing on it. course.js no longer exports any arena geometry, and
+  // World.js no longer builds any. Read rather than trusted, because the
+  // whole point of removing four hundred lines is that nobody has to wonder
+  // whether some of them are still live.
+  const course = readFileSync(join(HERE, '..', 'src/world/course.js'), 'utf8')
+  const world = readFileSync(join(HERE, '..', 'src/world/World.js'), 'utf8')
+  const gone = ['STUNT_COURSE', 'STUNT_MOUNDS', 'STUNT_DOUBLE', 'ARENA_STANDS',
+                'ARENA_BARRIER', 'ARENA_LIGHTS', 'moundSolid', 'crushSolid']
+  chk('course.js exports none of the stadium any more',
+      gone.every(g => !new RegExp('export (const|function) ' + g + '\\b').test(course)),
+      gone.filter(g => new RegExp('export (const|function) ' + g + '\\b').test(course)).join(' '))
+  chk('and World.js builds none of it',
+      !/buildMound\(|buildArenaStands\(|buildArenaBarrier\(|buildArenaLights\(|buildCrushCars\(/.test(world))
+  chk('but it does build the floor', /buildStuntPark\(\) \{[\s\S]{0,1600}?buildInfield\(island, ring, OPEN_GROUND_INSET/.test(world))
+  chk('and still draws nothing from the shared random sequence there',
+      !/buildStuntPark\(\) \{[\s\S]{0,1600}?this\.rand\(/.test(world))
 }
 
 // ---------------------------------------------------------------------------
