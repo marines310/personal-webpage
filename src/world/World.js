@@ -224,6 +224,9 @@ import {
   newBusState, stepBus, busHud, busPanel, doorPhase as busDoorPhase,
   nextStop as busNextStop, AT_STOP as BUS_AT_STOP
 } from './busGame.js'
+import {
+  celebrates, newFireworks, startShow, stepFireworks, fillPoints, POINTS
+} from './fireworks.js'
 import { chooseMission } from './missions.js'
 import {
   newGasState, stepGas, gasHud, fuelGauge, hasTank, makeAttendants, LOW_FUEL
@@ -911,6 +914,11 @@ export class World {
     this.ambulance = newAmbulanceState()
     this.race = newRaceState()
     this.createRaceField()
+    // Fireworks for winning it. The show is decided in fireworks.js; this
+    // holds one Points mesh and asks where to put every point.
+    this.fireworks = newFireworks()
+    this._celebrated = false
+    this.createFireworks()
     this.crashSites = this.findCrashSites()
     this.createWreckCars()
     this.tow = newTowState()
@@ -14416,6 +14424,89 @@ export class World {
 
     this.drawRaceField()
     this.drawRaceLights()
+    this.updateFireworks(delta)
+  }
+
+  /**
+   * The one Points mesh the show is drawn with, allocated once.
+   *
+   * POINTS slots, every one written or parked every frame by fillPoints() -
+   * see the note there about the stale-slot bug. Additive blending so
+   * overlapping sparks brighten rather than occlude, which is what makes a
+   * burst read as light rather than as confetti; no depth write for the
+   * same reason.
+   */
+  createFireworks() {
+    const geometry = new THREE.BufferGeometry()
+    this._fwPositions = new Float32Array(POINTS * 3)
+    this._fwColours = new Float32Array(POINTS * 3)
+    this._fwSizes = new Float32Array(POINTS)
+    geometry.setAttribute('position', new THREE.BufferAttribute(this._fwPositions, 3))
+    geometry.setAttribute('color', new THREE.BufferAttribute(this._fwColours, 3))
+    geometry.setAttribute('size', new THREE.BufferAttribute(this._fwSizes, 1))
+
+    const material = new THREE.PointsMaterial({
+      size: 1.1,
+      vertexColors: true,
+      transparent: true,
+      opacity: 1,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      sizeAttenuation: true
+    })
+
+    const points = new THREE.Points(geometry, material)
+    points.frustumCulled = false
+    points.visible = false
+    this.game.add(points)
+    this.fireworkPoints = points
+    this._fwColour = new THREE.Color()
+  }
+
+  /**
+   * Light the show on the win, and draw it while it runs.
+   *
+   * ONCE PER WIN. `celebrates()` is true for every frame of the finished
+   * phase - five and a half seconds of them - so without the latch a new
+   * show would start sixty times a second on top of the last. The latch
+   * clears when the race leaves the finished phase, so the next win gets
+   * its own.
+   */
+  updateFireworks(delta) {
+    const won = celebrates(this.race)
+    if (won && !this._celebrated) {
+      this._celebrated = true
+      // Over the finish line, where you just crossed. The player's own
+      // position is the fallback for a circuit the world cannot find.
+      const line = this.circuitPoint ? this.circuitPoint(0) : null
+      const mesh = this.game.vehicle && this.game.vehicle.mesh
+      const at = line || (mesh && mesh.position) || { x: 0, y: 0, z: 0 }
+      startShow(this.fireworks,
+        { x: at.x, y: this.groundAt(at.x, at.z), z: at.z })
+    }
+    if (!won) this._celebrated = false
+
+    stepFireworks(this.fireworks, delta)
+
+    const points = this.fireworkPoints
+    if (!points) return
+    points.visible = this.fireworks.active
+    if (!this.fireworks.active) return
+
+    const colour = this._fwColour
+    fillPoints(this.fireworks, this._fwPositions, this._fwColours, this._fwSizes,
+      (hue, alpha, out, at) => {
+        // Bright and saturated, scaled by alpha so a fading spark dims rather
+        // than blends to grey. Additive blending makes dim-to-black the fade.
+        colour.setHSL(hue, 1, 0.62)
+        out[at] = colour.r * alpha
+        out[at + 1] = colour.g * alpha
+        out[at + 2] = colour.b * alpha
+      })
+
+    points.geometry.attributes.position.needsUpdate = true
+    points.geometry.attributes.color.needsUpdate = true
+    points.geometry.attributes.size.needsUpdate = true
   }
 
   /** Put the field where the state says it is. */
