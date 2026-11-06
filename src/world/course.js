@@ -253,6 +253,36 @@ export function outsetLoop(points, distance) {
  */
 export const OPEN_GROUND_INSET = 2
 
+/**
+ * The rim: one raised stage-edge round the whole island, outside the road.
+ *
+ * Mike: "The monster truck field needs a boundary so the cars don't fall
+ * into the ocean." Measured, the ring road's centre line is 8 units from the
+ * coast at its tightest and the road is 7 wide, so there are about four and
+ * a half units of verge between the tarmac and the water. That is why they
+ * fall in, and it is also why this is a RIM and not a stand: there is no
+ * room for seating, and a single level is what was asked for anyway.
+ *
+ *   out      how far the rim's centre line sits outside the road's centre
+ *            line. 5.0 is past the kerb and still on land all the way round
+ *            (4 is, 6 touches the sea at the narrow end).
+ *   thick    across. Wide enough to read as a podium edge with a flat top
+ *            rather than a fence.
+ *   height   above the ground. The collider is taller and reaches below
+ *            ground (see buildOpenGroundRim), so there is no gap under it
+ *            for a wheel to find and no jump off the kerb that clears it.
+ *   block    the length of each straight piece the loop is built from.
+ *
+ * The gap for the bridge is the circuit's own `circuitGate`, with the same
+ * width: a corridor out from the island's centre along the bridge's bearing.
+ */
+export const OPEN_GROUND_RIM = {
+  out: 5.0,
+  thick: 1.3,
+  height: 1.5,
+  block: 4
+}
+
 // ---------------------------------------------------------------------------
 // THE SPEEDWAY
 // ---------------------------------------------------------------------------

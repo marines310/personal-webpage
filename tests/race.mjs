@@ -13,6 +13,7 @@
  */
 import {
   pointAlongRing, walkLoop, outsetLoop, COURSE_GROUND, OPEN_GROUND_INSET,
+  OPEN_GROUND_RIM,
   RACE_LAPS, RACE_FIELD, RACE_LIGHTS, RACE_COUNTDOWN, RACE_LINE_AT, lightAt,
   CIRCUIT_GATE, GRID_COLUMN_OFFSET, pitStraightPlan, RUN_OFF
 } from '../src/world/course.js'
@@ -35,7 +36,7 @@ import {
   COYOTE_TIME, GROUND_REACH, AIR_YAW,
   tiltRates, uprightError, pathError, isFlipped, flippedAngleDegrees, TILT
 } from '../src/world/driving.js'
-import { distanceToEdge, insetPolygon } from '../src/world/shapes.js'
+import { distanceToEdge, insetPolygon, pointInPolygon } from '../src/world/shapes.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -86,6 +87,55 @@ console.log('1. The open ground\n')
   chk('but it does build the floor', /buildStuntPark\(\) \{[\s\S]{0,1600}?buildInfield\(island, ring, OPEN_GROUND_INSET/.test(world))
   chk('and still draws nothing from the shared random sequence there',
       !/buildStuntPark\(\) \{[\s\S]{0,1600}?this\.rand\(/.test(world))
+
+  // THE RIM. Mike: "the monster truck field needs a boundary so the cars
+  // don't fall into the ocean." Three ways it could be wrong, each checked
+  // against the real island: it could be in the sea, it could be across the
+  // bridge, or it could be on the road.
+  if (ring) {
+    const outline = islandOutline(stunt)
+    const loop = outsetLoop(ring, OPEN_GROUND_RIM.out)
+    const path = [...loop.map(p => ({ x: p.x, z: p.z })), { ...loop[0] }]
+    const blocks = walkLoop(path, OPEN_GROUND_RIM.block)
+
+    // The gate, exactly as World.js draws it.
+    const landings = getBridgeLandings(stunt)
+    const half = CIRCUIT_GATE / 2
+    const inGate = (x, z) => landings.some(l =>
+      x * l.dirX + z * l.dirZ > 0 && Math.abs(x * l.dirZ - z * l.dirX) < half)
+    const built = blocks.filter(b => !inGate(b.x, b.z))
+    const skipped = blocks.length - built.length
+
+    console.log(`   ${built.length} rim blocks round the island, ${skipped} left out for the bridge`)
+    chk('the rim goes most of the way round', built.length > blocks.length * 0.9)
+    chk('and leaves a gap for the bridge', skipped >= 2 && landings.length >= 1, `${skipped}`)
+
+    // ON LAND, every block, and with something to spare - the outer face of
+    // the rim must not hang over the water either.
+    const outerFace = OPEN_GROUND_RIM.thick / 2
+    const clearances = built.map(b => distanceToEdge(outline, b.x, b.z) - outerFace)
+    const tightest = Math.min(...clearances)
+    console.log(`   nearest the water the rim's outer face gets: ${tightest.toFixed(2)}`)
+    chk('every block of the rim stands on land',
+        built.every(b => pointInPolygon(outline, b.x, b.z)))
+    chk('and its outer face is clear of the water all the way round',
+        tightest > 0.3, `${tightest.toFixed(2)}`)
+
+    // OFF THE ROAD. The rim's inner face must be past the road's edge, or it
+    // is a wall you drive into on the ring road.
+    const innerFace = OPEN_GROUND_RIM.out - OPEN_GROUND_RIM.thick / 2
+    chk('and its inner face is outside the road',
+        innerFace > DEFAULT_ROAD_WIDTH / 2 + 0.5,
+        `inner face ${innerFace.toFixed(2)} vs road edge ${DEFAULT_ROAD_WIDTH / 2}`)
+
+    chk('it is tall enough to stop a car and low enough to see over',
+        OPEN_GROUND_RIM.height >= 1.2 && OPEN_GROUND_RIM.height <= 2.5)
+    chk('World.js builds it with a collider taller than it is drawn',
+        /buildOpenGroundRim\(island, ring\)/.test(world) &&
+        /createStaticBoxAt\([\s\S]{0,120}?rim\.height \+ 1\.5/.test(world))
+    chk('and uses the circuit gate rather than a second way of finding the bridge',
+        /buildOpenGroundRim\(island, ring\) \{[\s\S]{0,1500}?this\.circuitGate\(island, CIRCUIT_GATE\)/.test(world))
+  }
 }
 
 // ---------------------------------------------------------------------------

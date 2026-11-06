@@ -244,7 +244,7 @@ import {
 import { pathTangents, ribbonQuads, distanceToPath } from './curves.js'
 import {
   COURSE_GROUND, COURSE_ROAD, walkLoop, outsetLoop, pointAlongRing,
-  OPEN_GROUND_INSET, RACE_LINE_AT, GRID_COLUMN_OFFSET, CIRCUIT_GATE,
+  OPEN_GROUND_INSET, OPEN_GROUND_RIM, RACE_LINE_AT, GRID_COLUMN_OFFSET, CIRCUIT_GATE,
   pitStraightPlan
 } from './course.js'
 import {
@@ -11301,6 +11301,74 @@ export class World {
     // almost to the kerb. OPEN_GROUND_INSET is in course.js with the rest of
     // the island's few remaining numbers.
     this.buildInfield(island, ring, OPEN_GROUND_INSET, dirtMat)
+    this.buildOpenGroundRim(island, ring)
+  }
+
+  /**
+   * The boundary: one raised rim round the whole island, with a collider.
+   *
+   * Mike: "The monster truck field needs a boundary so the cars don't fall
+   * into the ocean." See OPEN_GROUND_RIM for why it is a rim and not a stand
+   * - there are four and a half units between the road and the water at the
+   * narrow end, and nothing deeper fits.
+   *
+   * Built the way the speedway's armco is: the ring road outset by a fixed
+   * distance, walked in blocks, a box per block, and `circuitGate()` leaving
+   * the corridor the bridge road needs. That gate is the thing the first
+   * armco forgot - a wall all the way round an island is a wall across the
+   * bridge - so it is reused rather than rewritten.
+   *
+   * Two faces: concrete, and a band of the island's own accent colour along
+   * the top, so from the field it reads as a stage edge rather than a kerb.
+   * The collider is taller than the drawn rim and reaches below the ground:
+   * a wall that starts AT ground level has a seam a wheel can catch, and a
+   * monster truck coming off the kerb at speed has more than a metre of air.
+   */
+  buildOpenGroundRim(island, ring) {
+    const rim = OPEN_GROUND_RIM
+    const loop = outsetLoop(ring, rim.out)
+    if (!loop || loop.length < 3) return
+
+    const path = loop.map(p => ({ x: p.x, z: p.z }))
+    path.push({ ...path[0] })
+
+    const concrete = new THREE.MeshStandardMaterial({
+      color: 0xb9b4a8, roughness: 0.95, flatShading: true
+    })
+    const band = new THREE.MeshStandardMaterial({
+      color: island.accent || 0xff8c42, roughness: 0.8, flatShading: true
+    })
+
+    const gate = this.circuitGate(island, CIRCUIT_GATE)
+    const y = COURSE_GROUND
+
+    walkLoop(path, rim.block).forEach((at) => {
+      if (gate(at.x, at.z)) return
+      const x = island.x + at.x
+      const z = island.z + at.z
+      // A hair longer than the spacing so the blocks overlap on the bends
+      // rather than leaving a sliver of daylight at every joint.
+      const len = rim.block + 0.3
+
+      const wall = new THREE.Mesh(
+        new THREE.BoxGeometry(rim.thick, rim.height, len), concrete)
+      wall.position.set(x, y + rim.height / 2, z)
+      wall.rotation.y = at.heading
+      wall.castShadow = true
+      wall.receiveShadow = true
+      this.game.add(wall)
+
+      const top = new THREE.Mesh(
+        new THREE.BoxGeometry(rim.thick + 0.08, 0.18, len), band)
+      top.position.set(x, y + rim.height + 0.09, z)
+      top.rotation.y = at.heading
+      this.game.add(top)
+
+      // Taller than it looks and sunk half a unit, see above.
+      this.game.physics.createStaticBoxAt(
+        x, y + rim.height / 2 + 0.25, z,
+        rim.thick, rim.height + 1.5, len, at.heading)
+    })
   }
 
   // -------------------------------------------------------------
