@@ -1916,10 +1916,22 @@ function getFixedRoads(island) {
     )
 
     auto.push({
+      // Smoothed for the width it is drawn at, like the run itself is in
+      // getBridgeRoadPaths(): a 14-wide ribbon needs a wider bend than a
+      // 7-wide one before its inner edge folds, and tests/islandroads.mjs
+      // ribbons this road at its stated width.
       points: smoothRoad(
-        sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS })
+        sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS }),
+        ARTERIAL_WIDTH
       ),
-      width: DEFAULT_ROAD_WIDTH,
+      // THE WIDTH THE BRIDGE ROAD IS ACTUALLY DRAWN AT. This was
+      // DEFAULT_ROAD_WIDTH, 7, and getBridgeRoadPaths() draws the run at
+      // ARTERIAL_WIDTH, 14 - so everything that kept clear of "the
+      // approach" kept clear of a road half as wide as the one on the
+      // ground. Fourteen signal poles stood a clear metre and a half off
+      // the 7-wide road and two units INSIDE the 14-wide one, which is
+      // where Mike photographed them. tools/sweep.mjs found all fourteen.
+      width: ARTERIAL_WIDTH,
       // Drawn as part of the continuous bridge road instead, but still
       // needed here so props keep clear of it
       auto: true,
@@ -4779,6 +4791,14 @@ export function getBusStops(network = getLaneNetwork()) {
   network.lanes.forEach((lane, index) => {
     if (lane.kind !== 'ring' && lane.kind !== 'road') return
     if (lane.length < BUS_STOP_SPACING * 0.6) return
+    // NOT ON A CLOSED COURSE. The speedway's ring is the racing circuit and
+    // the stunt island's ring is the way round the jumps; no bus runs on
+    // either (`noTraffic` keeps every AI vehicle off them), so a shelter
+    // there is a shelter nobody will ever stop at. Mike photographed them:
+    // "a lot of unnecessary items in the speedway like bus stops in the
+    // middle of the road." Nine stops went - seven on the speedway, two on
+    // the stunt island.
+    if (lane.noTraffic) return
 
     const count = Math.max(1, Math.floor(lane.length / BUS_STOP_SPACING))
     for (let i = 1; i <= count; i++) {
@@ -4824,11 +4844,19 @@ export function getBusStops(network = getLaneNetwork()) {
         lane: index, at,
         x: point.x, z: point.z, heading: point.heading,
         island: lane.island,
-        // How far the kerb is from HERE, not from the road's centre line. A
-        // lane sits a quarter of the road's width off centre, so the kerb is
-        // another quarter plus a bit away - and it's a different distance on a
-        // 5.5-unit street and a 7-unit ring. The shelter is placed from this.
-        kerb: lane.width / 4 + PAVEMENT_WIDTH
+        // How far the KERB is from here - the edge of the road, to the right
+        // of the direction of travel. A lane sits a quarter of the road's
+        // width off centre, so the kerb is another quarter away, and it is a
+        // different distance on a 5.5-unit street and a 14-unit arterial.
+        // The shelter is placed from this.
+        //
+        // It used to add PAVEMENT_WIDTH as well, which made it the BACK of
+        // the pavement and not the kerb, and World.createBusStops() then
+        // stepped that far to the LEFT - across both lanes - so on a wide
+        // road every shelter in the world stood in the oncoming carriageway.
+        // Mike photographed it three times. Measured by tools/sweep.mjs
+        // against the drawn asphalt: 31 of 34 posts on it.
+        kerb: lane.width / 4
       })
       lane.stops.push({ at, index: stops.length - 1 })
     }
@@ -9477,6 +9505,10 @@ export function invalidateSignals() {
 }
 
 function buildTrafficSignals(island) {
+  // A closed course has no traffic to control, so it gets no lights - and
+  // no zebra crossings, which World.js hangs off the signals. A red light
+  // on a racing circuit is a prop in the middle of the track.
+  if (island.noTraffic) return []
   // Bridge approaches count. They're marked `auto` because they're drawn
   // as part of the continuous bridge run rather than separately, but where
   // one meets the ring a driver arrives at a T-junction and expects to be
@@ -9632,7 +9664,7 @@ function buildTrafficSignals(island) {
     const withPoles = []
 
     for (const arm of distinct) {
-      const pole = clearSpotBeside(cluster, arm, roads)
+      const pole = clearSpotBeside(island, cluster, arm, roads)
       if (pole) withPoles.push({ ...arm, pole })
     }
 
@@ -9765,7 +9797,7 @@ function crossingSpot(cluster, arm) {
  * Returns null if nothing within reach is clear, which is better than
  * planting a pole in the road.
  */
-function clearSpotBeside(cluster, arm, roads) {
+function clearSpotBeside(island, cluster, arm, roads) {
   // Candidates in order of preference: near the junction and to the right
   // of oncoming traffic first, then further back, then the left side.
   //
@@ -9783,7 +9815,17 @@ function clearSpotBeside(cluster, arm, roads) {
         // Round FIRST, then test. Rounding after the test can shift the
         // pole by up to 0.05 and push a borderline spot back into the road.
         const spot = { x: Math.round(x * 10) / 10, z: Math.round(z * 10) / 10 }
-        if (distanceToNearestRoad(roads, spot.x, spot.z) >= POLE_CLEARANCE) {
+        // Against the roads AND the junction patches - a signal pole stands
+        // right next to a junction by definition, which is exactly where the
+        // patch reaches past the road's edge. See distanceToAsphalt().
+        if (distanceToNearestRoad(roads, spot.x, spot.z) >= POLE_CLEARANCE &&
+            distanceToAsphalt(island, spot.x, spot.z) >= POLE_CLEARANCE &&
+            // And ON THE ISLAND. The junction where a bridge meets the ring
+            // is near the coast by definition, and a spot far enough back
+            // along the approach to clear the ring can be past the shore -
+            // where the only thing to stand on is the bridge deck, which is
+            // a road. One pole on the hub did exactly that.
+            inlandDistance(island, spot.x, spot.z) >= 1.5) {
           return spot
         }
 
@@ -10069,8 +10111,42 @@ function resolvePoint(point) {
 }
 
 /**
+ * Shortest distance from an island-local point to any ASPHALT on that island:
+ * the roads, and the round patches laid where two of them meet.
+ *
+ * `distanceToNearestRoad()` below answers for the roads alone, and every
+ * placer in World.js asked it. But where two roads cross, World.buildJunction()
+ * lays a disc of asphalt whose radius reaches the CORNERS of the crossing -
+ * `hypot(wA/2, wB/2) + 0.6` - so at a right-angled crossing of two 7-unit
+ * streets the asphalt extends 5.5 from the junction's centre where the roads
+ * alone reach 3.5. A lamp, a tree or a bench placed just off a road's edge
+ * near a junction was placed on that disc. tools/sweep.mjs found eight.
+ *
+ * The junctions are cached per island because this is asked hundreds of times
+ * while a town is dressed and getIslandJunctions() is not cheap.
+ */
+const junctionCache = new WeakMap()
+
+export function distanceToAsphalt(island, localX, localZ) {
+  let best = distanceToNearestRoad(getIslandRoads(island), localX, localZ)
+
+  let junctions = junctionCache.get(island)
+  if (!junctions) {
+    junctions = getIslandJunctions(island)
+    junctionCache.set(island, junctions)
+  }
+  for (const j of junctions) {
+    const d = Math.hypot(localX - j.x, localZ - j.z) - j.radius
+    if (d < best) best = d
+  }
+  return best
+}
+
+/**
  * Shortest distance from an island-local point to any road on that island.
- * World.js uses this to keep props from spawning in the road.
+ * World.js uses this to keep props from spawning in the road - and should
+ * usually ask distanceToAsphalt() instead, which also knows about the
+ * junction patches.
  */
 export function distanceToNearestRoad(roads, localX, localZ) {
   let best = Infinity

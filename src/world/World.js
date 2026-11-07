@@ -12,6 +12,7 @@ import {
   DEFAULT_ROAD_WIDTH,
   pointAlong,
   distanceToNearestRoad,
+  distanceToAsphalt,
   getSpawnIsland,
   getBridgeRoadPaths,
   validateLayout,
@@ -304,8 +305,17 @@ export const WINDOWS_LIT_CHANCE = 0.88
 /** And within a lit building, how many rooms are empty. */
 export const WINDOW_DARK_CHANCE = 0.3
 
-export const SHELTER_SETBACK = 1.3
-export const SHELTER_DEPTH = 1.9
+/**
+ * Where a bus stop stands on its pavement, measured from the road's edge.
+ *
+ * The pavement is PAVEMENT_WIDTH (2.4) wide from the kerb. The post goes
+ * near the kerb, where a flag is read from a bus, and the shelter is a
+ * further SHELTER_DEPTH behind it: 1.9 across, so centred at 0.6 + 0.85 it
+ * spans 0.5 to 2.4 from the kerb and sits on the pavement with nothing
+ * poking out into the road or into the plot behind.
+ */
+export const SHELTER_SETBACK = 0.6
+export const SHELTER_DEPTH = 0.85
 
 /**
  * How each kind of station is dressed. Sizes and positions are NOT here -
@@ -836,6 +846,11 @@ export class World {
     this.festiveLevel = 0     // how much of the festive lighting is on
     this.swayables = []       // foliage that moves in the wind
     this.trafficLights = []   // signal heads, grouped by junction
+    // Every piece of street furniture that stands on the ground, by kind and
+    // position, as it is placed. Not read by the game; read by the sweep
+    // (tools/sweep.mjs) that checks none of it is standing in the road - see
+    // noteProp().
+    this.props = []
     this.lightPools = []      // the patch of lit ground under a lamp
     this.trains = []          // monorail trains, and where they've got to
     this.elapsed = 0
@@ -1701,11 +1716,12 @@ export class World {
     if (!pts || pts.length < 2) return
 
     // Island-local to world, then hand off to the shared builder
-    this.buildRoadSurface(
+    const surface = this.buildRoadSurface(
       pts.map(p => ({ x: island.x + p.x, z: island.z + p.z })),
       road.width,
       road.dashOffset || 0
     )
+    if (surface) surface.userData.road = road.ring ? 'ring' : 'street'
   }
 
   /**
@@ -1734,6 +1750,7 @@ export class World {
     }))
     patch.position.set(x, this.groundAt(x, z) + 0.065, z)
     patch.receiveShadow = true
+    patch.userData.road = 'junction'
     this.game.add(patch)
   }
 
@@ -1902,6 +1919,7 @@ export class World {
    * cycle can switch them.
    */
   addTrafficLight(x, z, heading) {
+    this.noteProp('signal', x, z)
     const group = new THREE.Group()
 
     const poleMat = new THREE.MeshStandardMaterial({
@@ -2207,9 +2225,12 @@ export class World {
       side: THREE.DoubleSide
     }))
     surface.receiveShadow = true
+    // Asphalt, for the sweep. See noteProp(). Callers may say which kind.
+    surface.userData.road = true
     this.game.add(surface)
 
     this.addRoadMarkings(path, pathTangents(path), dashOffset, y)
+    return surface
   }
 
   /**
@@ -2438,7 +2459,8 @@ export class World {
     }
 
     for (const road of getBridgeRoadPaths()) {
-      this.buildRoadSurface(road.points, road.width)
+      const deck = this.buildRoadSurface(road.points, road.width)
+      if (deck) deck.userData.road = 'bridge'
     }
   }
 
@@ -6018,26 +6040,34 @@ export class World {
     })
 
     for (const stop of this.busStops) {
-      // The kerb is to the right of the direction of travel
+      // The kerb is to the RIGHT of the direction of travel, and right is
+      // (-cos h, sin h): forward is (sin h, cos h) and right is forward
+      // cross up. See sideOfVehicle() in vehicleLights.js, which exists
+      // because this exact assumption was got wrong once before.
       const fx = Math.sin(stop.heading)
       const fz = Math.cos(stop.heading)
       const sx = -fz
       const sz = fx
 
-      // How far out the pavement starts, measured rather than assumed.
+      // From the lane to the road's edge, then a little onto the pavement.
       //
-      // A flat 4.6 was used before, from the LANE centre - but a lane sits a
-      // quarter of the road's width off the road's centre line, so how far the
-      // kerb is depends on the road, and on a wide one the shelter ended up in
-      // the carriageway. From the road edge outwards there is no such doubt.
+      // THIS WAS `stop.x - sx * out`. Minus. The post went LEFT - across the
+      // lane, across the centre line, across the oncoming lane - and the
+      // distance had been tuned (twice) until it came out on the far
+      // pavement of a 5.5-unit street, which looked fine from a car. On a
+      // 14-unit arterial the same step ends in the middle of the oncoming
+      // carriageway, which is where Mike photographed it. tools/sweep.mjs
+      // found 31 of the 34 posts standing on asphalt; with the sign right
+      // and the distance measured from the kerb it finds none.
       const out = stop.kerb + SHELTER_SETBACK
 
-      const x = stop.x - sx * out
-      const z = stop.z - sz * out
+      const x = stop.x + sx * out
+      const z = stop.z + sz * out
 
       const post = new THREE.Mesh(
         new THREE.CylinderGeometry(0.09, 0.11, 2.8, 7), postMat)
       const stopGround = this.groundAt(x, z)
+      this.noteProp('bus stop', x, z)
       post.position.set(x, stopGround + 1.4, z)
       post.castShadow = true
       this.game.add(post)
@@ -6053,8 +6083,8 @@ export class World {
       // which put a shelter 3.6 wide broadside to the kerb and reaching a
       // metre and a half into the carriageway - the mesh is rotated by the
       // heading, so its local X is across the road, not along it.
-      const bx = x - sx * SHELTER_DEPTH
-      const bz = z - sz * SHELTER_DEPTH
+      const bx = x + sx * SHELTER_DEPTH
+      const bz = z + sz * SHELTER_DEPTH
 
       const roof = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.12, 3.6), roofMat)
       roof.position.set(bx, this.groundAt(bx, bz) + 2.5, bz)
@@ -7077,10 +7107,16 @@ export class World {
     }
 
     // Lighting, so the quay is somewhere you'd go after dark
+    //
+    // At the very edge of the deck. A small quay is 8.5 wide with a 6.5-unit
+    // road down it, which leaves a unit each side; the lamps used to stand
+    // 0.9 in from the edge, a tenth of a unit off the road, and
+    // tools/sweep.mjs listed every one of them as standing on the kerb. 0.45
+    // in leaves half a unit of deck between the pole and the tarmac.
     for (let i = 0; i <= count; i += 2) {
       const along = -port.length / 2 + (port.length * i) / count
-      const lx = port.mid.x + fx * along + sx * (port.width / 2 - 0.9)
-      const lz = port.mid.z + fz * along + sz * (port.width / 2 - 0.9)
+      const lx = port.mid.x + fx * along + sx * (port.width / 2 - 0.45)
+      const lz = port.mid.z + fz * along + sz * (port.width / 2 - 0.45)
       this.addStreetlight(lx, lz, { x: port.mid.x + fx * along, z: port.mid.z + fz * along })
     }
 
@@ -7596,25 +7632,46 @@ export class World {
 
     // The road itself: island ring, across the water, onto the loop - one
     // unbroken surface, so there is no seam where the land ends.
-    this.buildRoadSurface(road.points, road.width)
+    const strip = this.buildRoadSurface(road.points, road.width)
+    if (strip) strip.userData.road = 'airport'
 
     // And the loop round the platform. Closed, so the last point joins the
     // first: passing `true` is what stops the ribbon ending in a square edge
     // across the taxiway.
-    this.buildRoadSurface([...loop.points, loop.points[0]], loop.width)
+    const apron = this.buildRoadSurface([...loop.points, loop.points[0]], loop.width)
+    if (apron) apron.userData.road = 'airport'
 
     // Lit, like every other road. Every fourth point of the loop, so the lamps
     // are evenly spaced round it whatever size the platform is - and set OFF
     // the carriageway, on the seaward side, aimed back at the road. A pole
     // placed on the loop's own points would stand in the middle of it.
+    //
+    // Set off along the loop's own OUTWARD NORMAL, not along the line from
+    // the platform's centre. The loop is a wide rectangle, so from its
+    // centre the long sides are seen at a slant, and "2.5 units away from
+    // the centre" near a corner was 2.5 units along the road and a unit
+    // INTO it: tools/sweep.mjs found twenty of these lamps standing on the
+    // taxiway. The normal is perpendicular to the road wherever it is.
     const centre = this.airport
     const stand = loop.width / 2 + 2.5
-    for (let i = 0; i < loop.points.length; i += 4) {
+    const n = loop.points.length
+    for (let i = 0; i < n; i += 4) {
       const p = loop.points[i]
-      const ox = p.x - centre.x
-      const oz = p.z - centre.z
-      const len = Math.hypot(ox, oz) || 1
-      this.addStreetlight(p.x + (ox / len) * stand, p.z + (oz / len) * stand, p)
+      const before = loop.points[(i - 1 + n) % n]
+      const after = loop.points[(i + 1) % n]
+      const tx = after.x - before.x
+      const tz = after.z - before.z
+      const tl = Math.hypot(tx, tz) || 1
+      // The two normals; take the one that points away from the centre.
+      let nx = -tz / tl
+      let nz = tx / tl
+      if ((p.x - centre.x) * nx + (p.z - centre.z) * nz < 0) { nx = -nx; nz = -nz }
+      const lx = p.x + nx * stand
+      const lz = p.z + nz * stand
+      // Not where the causeway road comes onto the loop: outside the loop
+      // there is the one place that is also a road.
+      if (distanceToPath(road.points, lx, lz) < road.width / 2 + 0.8) continue
+      this.addStreetlight(lx, lz, p)
     }
   }
 
@@ -10268,12 +10325,32 @@ export class World {
    * Asked INSIDE each placer rather than at every call site, so it cannot be
    * forgotten by the next thing that puts an object on a pavement.
    */
+  /**
+   * Record a thing placed on the ground, so a sweep can find it afterwards.
+   *
+   * Mike, with five screenshots: "items in the middle of the road" - traffic
+   * lights, lamp posts, bus stops, on the streets and on the speedway. The
+   * third time. The two earlier fixes each passed their own check, and each
+   * check tested the point the placer CHOSE rather than the thing that was
+   * DRAWN - so a pole that cleared `getIslandRoads()` by a metre and stood on
+   * a junction patch, a bridge deck or a widened circuit passed every test
+   * there was and was in the road anyway.
+   *
+   * So the props say where they are, the road surfaces say what they are
+   * (`userData.road`), and tools/sweep.mjs drops a ray through every prop in
+   * the running game and reports which ones land on asphalt. That is a test
+   * of what is on the screen, which is the only thing Mike is looking at.
+   */
+  noteProp(kind, x, z) {
+    this.props.push({ kind, x: +x.toFixed(2), z: +z.toFixed(2) })
+  }
+
   onCarriageway(x, z, margin = 0.5) {
     const island = islandAt(x, z)
     if (!island) return false
 
-    return distanceToNearestRoad(
-      getIslandRoads(island), x - island.x, z - island.z) < margin
+    // Roads AND junction patches. See distanceToAsphalt().
+    return distanceToAsphalt(island, x - island.x, z - island.z) < margin
   }
 
   /**
@@ -10289,6 +10366,7 @@ export class World {
   addBench(x, z, facing) {
     // Never in the road. See onCarriageway().
     if (this.onCarriageway(x, z)) return
+    this.noteProp('bench', x, z)
 
     if (typeof facing !== 'number' || !Number.isFinite(facing)) facing = 0
     const group = new THREE.Group()
@@ -10319,6 +10397,7 @@ export class World {
   addBin(x, z) {
     // Never in the road. See onCarriageway().
     if (this.onCarriageway(x, z)) return
+    this.noteProp('bin', x, z)
 
     const bin = new THREE.Mesh(
       new THREE.CylinderGeometry(0.32, 0.26, 0.85, 8),
@@ -10335,6 +10414,7 @@ export class World {
   addPlanter(x, z) {
     // Never in the road. See onCarriageway().
     if (this.onCarriageway(x, z)) return
+    this.noteProp('planter', x, z)
 
     const group = new THREE.Group()
 
@@ -10373,6 +10453,7 @@ export class World {
   addStreetTree(x, z) {
     // Never in the road. See onCarriageway().
     if (this.onCarriageway(x, z)) return
+    this.noteProp('tree', x, z)
 
     // THE MODEL IS NOT USED FOR STREET TREES, and it took photographing it to
     // find out why it should not be.
@@ -10493,9 +10574,11 @@ export class World {
         const lx = road.points[i].x - tan.z * offset * side
         const lz = road.points[i].z + tan.x * offset * side
 
-        // Not in the sea, and not on some other road
+        // Not in the sea, and not on some other road - nor on the asphalt
+        // patch where this road meets one. See distanceToAsphalt().
         if (inlandDistance(island, lx, lz) < 2) continue
         if (distanceToNearestRoad(roads, lx, lz) < 0.8) continue
+        if (distanceToAsphalt(island, lx, lz) < 0.8) continue
 
         // AND NOT ACROSS A STATION'S DOORS.
         //
@@ -10688,8 +10771,10 @@ export class World {
     if (this.accessStations &&
         blocksStationEntrance(worldX, worldZ, this.accessStations)) return false
 
-    // Clear of every road on this island?
-    return distanceToNearestRoad(roads, localX, localZ) > clearance
+    // Clear of every road on this island - and of the asphalt patches where
+    // they meet, which reach past the roads' edges. See distanceToAsphalt().
+    return distanceToNearestRoad(roads, localX, localZ) > clearance &&
+           distanceToAsphalt(island, localX, localZ) > clearance
   }
 
   // -------------------------------------------------------------
@@ -11250,6 +11335,7 @@ export class World {
   }
 
   addPalm(x, z, beach = false) {
+    this.noteProp('palm', x, z)
     const modelKey = this.pick(TREE_MODELS)
 
     // Palms are the only other thing that gets near the beam - the trunk
@@ -11357,6 +11443,7 @@ export class World {
   }
 
   addBush(x, z) {
+    this.noteProp('bush', x, z)
     const group = new THREE.Group()
     const mat = new THREE.MeshStandardMaterial({
       color: this.rand() < 0.5 ? PALETTE.bush : PALETTE.grassDark,
@@ -11436,6 +11523,7 @@ export class World {
   }
 
   addRock(x, z) {
+    this.noteProp('rock', x, z)
     if (this.assets && this.assets.has('rock')) {
       const model = this.assets.clone('rock')
       const s = this.randRange(0.7, 1.4)
@@ -11475,6 +11563,7 @@ export class World {
    * them lighting the sea or a wall.
    */
   addStreetlight(x, z, aim = null) {
+    this.noteProp('streetlight', x, z)
     const heading = aim
       ? Math.atan2(-(aim.z - z), aim.x - x)
       : this.rand() * Math.PI * 2
@@ -12117,7 +12206,8 @@ export class World {
     const trackMat = new THREE.MeshStandardMaterial({
       color: 0x22242a, roughness: 0.88, metalness: 0.04, side: THREE.DoubleSide
     })
-    this.buildFlatRibbon(world, this.circuitWidth(), COURSE_ROAD + 0.02, trackMat)
+    const track = this.buildFlatRibbon(world, this.circuitWidth(), COURSE_ROAD + 0.02, trackMat)
+    if (track) track.userData.road = 'circuit'
 
     this.buildCircuitKerbs(island, ring)
     this.buildCircuitBarriers(island, ring)

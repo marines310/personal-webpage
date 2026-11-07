@@ -439,7 +439,7 @@ for (const fn of ['addBench', 'addBin', 'addPlanter', 'addStreetTree']) {
       /^[^]{0,220}if \(this\.onCarriageway\(x, z\)\) return/.test(body))
 }
 chk('and the guard measures from the kerb, not the centre line',
-    /distanceToNearestRoad\(\s*getIslandRoads\(island\)/.test(world))
+    /onCarriageway\(x, z, margin = 0\.5\) \{[\s\S]{0,400}?distanceToAsphalt\(island, x - island\.x, z - island\.z\) < margin/.test(world))
 
 // The things the LAYOUT places can be checked outright rather than read.
 let onRoad = []

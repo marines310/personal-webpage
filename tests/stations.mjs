@@ -671,9 +671,15 @@ console.log('\nNothing stands across a station\'s doors')
   console.log(`   ${stops.length} bus stops, ${blocking.length} across a station's doors`)
   chk('no bus stop stands across a station entrance', blocking.length === 0,
       blocking.map(s => `${s.island} (${s.x.toFixed(0)}, ${s.z.toFixed(0)})`).join(', '))
-  // And dropping them did not empty the routes.
-  chk('the city still has plenty of bus stops', stops.length > 25,
+  // And dropping them did not empty the routes. 25, not the 34 there were:
+  // the nine on the two closed courses went (Mike: "unnecessary items in the
+  // speedway like bus stops in the middle of the road"), and no bus ever
+  // called at any of them.
+  chk('the city still has plenty of bus stops', stops.length >= 25,
       `${stops.length}`)
+  chk('and none of them is on a closed course',
+      stops.every(s => !['speedway', 'stunt'].includes(s.island)),
+      stops.filter(s => ['speedway', 'stunt'].includes(s.island)).map(s => s.island).join(' '))
   chk('every town island still has one',
       ISLANDS.filter(i => !i.bare && stops.some(s => s.island === i.id)).length >= 5,
       ISLANDS.filter(i => !i.bare && !stops.some(s => s.island === i.id))

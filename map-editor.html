@@ -228,7 +228,7 @@ import { MODEL_MANIFEST } from './src/world/modelManifest.js'
 // version of these and it quietly drifted out of step with the game, so
 // the preview showed roads where they weren't.
 import { sampleSpline, bowedPath } from './src/world/curves.js'
-import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, getStoredRing, buildNetwork, getTownGrid, getTownPlots, takenOverStreets, isTown as isTownIsland, getPort, getPortRoad, DEFAULT_STREET_WIDTH, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS } from './src/world/islandLayout.js'
+import { smoothRoad, hashString, approachControls, getIslandRing, getIslandJunctions, getStoredRing, buildNetwork, getTownGrid, getTownPlots, takenOverStreets, isTown as isTownIsland, getPort, getPortRoad, DEFAULT_STREET_WIDTH, DEFAULT_ROAD_CURVE, ROAD_SMOOTHNESS, ARTERIAL_WIDTH } from './src/world/islandLayout.js'
 import { ISLANDS as MAP_ISLANDS, BRIDGES as MAP_BRIDGES } from './src/world/mapData.js'
 
 /** key -> { footprint:{x,y,z}, thumb: dataURL } */
@@ -513,7 +513,10 @@ function approachRoads(island) {
 
     out.push({
       controls,
-      curve: smoothRoad(sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS })),
+      // Smoothed for the width the bridge road is drawn at, exactly as
+      // getFixedRoads() does in the game - tests/roadmatch.mjs holds the
+      // two to the same points.
+      curve: smoothRoad(sampleSpline(controls, { samplesPerSpan: ROAD_SMOOTHNESS }), ARTERIAL_WIDTH),
       to: otherId,
       edited
     });
