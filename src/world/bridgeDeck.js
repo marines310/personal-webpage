@@ -235,3 +235,87 @@ export function measureDeckGradient(length, rise = BRIDGE_RISE, steps = 2000) {
   }
   return worst
 }
+
+/**
+ * The deck as a closed solid: top face, underside a slab below it, two sides
+ * and two ends. World.buildArchedDeck() draws it and hands the same arrays to
+ * the physics, so the thing you see and the thing you drive on cannot
+ * disagree.
+ *
+ * Here rather than in World.js because the WINDING is a fact a test has to
+ * be able to check, and it was wrong: the first version was wound inside out
+ * - every top face pointed down, every underside up - and nobody saw it,
+ * because the road ribbon is drawn over the top and Rapier treated the
+ * trimesh as double-sided. Then the trimeshes got FIX_INTERNAL_EDGES (see
+ * Physics.createStaticTrimesh), which computes pseudo-normals from the
+ * winding and treats the mesh as ORIENTED - and a car driving onto a bridge
+ * was inside the deck as far as the solver was concerned, pulled down into
+ * the slab and held. Measured: the racing car placed on the deck settled
+ * half a unit below its surface and did not move.
+ *
+ * `deckSignedVolume()` below is what pins it: positive for an outward solid,
+ * negative for an inside-out one, and about width x thickness x length for
+ * this one.
+ */
+export function deckSolid(bridge, steps = Math.max(24, Math.round(bridge.length / 3))) {
+  const half = bridge.width / 2
+  const sin = Math.sin(bridge.rotationY)
+  const cos = Math.cos(bridge.rotationY)
+
+  const at = (t, side, drop = 0) => {
+    const along = (t - 0.5) * bridge.length
+    const across = half * side
+    return {
+      x: bridge.x + sin * along + cos * across,
+      y: bridgeDeckProfile(t, bridge.length) - drop,
+      z: bridge.z + cos * along - sin * across
+    }
+  }
+
+  const positions = []
+  const indices = []
+  const push = (p) => { positions.push(p.x, p.y, p.z); return positions.length / 3 - 1 }
+
+  const top = []
+  const under = []
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    top.push([push(at(t, -1)), push(at(t, 1))])
+    under.push([
+      push(at(t, -1, BRIDGE_DECK_THICKNESS)),
+      push(at(t, 1, BRIDGE_DECK_THICKNESS))
+    ])
+  }
+
+  // Outward. `a, b, c, a, c, d` is the inside-out order for these corners.
+  const quad = (a, b, c, d) => { indices.push(a, c, b, a, d, c) }
+
+  for (let i = 0; i < steps; i++) {
+    quad(top[i][0], top[i][1], top[i + 1][1], top[i + 1][0])
+    quad(under[i][1], under[i][0], under[i + 1][0], under[i + 1][1])
+    quad(top[i][0], top[i + 1][0], under[i + 1][0], under[i][0])
+    quad(top[i + 1][1], top[i][1], under[i][1], under[i + 1][1])
+  }
+  quad(top[0][1], top[0][0], under[0][0], under[0][1])
+  quad(top[steps][0], top[steps][1], under[steps][1], under[steps][0])
+
+  return { positions, indices, steps }
+}
+
+/**
+ * The volume a closed indexed solid encloses, with its sign: positive when
+ * every face is wound outward, negative when the whole thing is inside out,
+ * and nonsense in between. The divergence theorem, one triangle at a time.
+ */
+export function deckSignedVolume({ positions: p, indices: ix }) {
+  let six = 0
+  for (let i = 0; i < ix.length; i += 3) {
+    const a = ix[i] * 3, b = ix[i + 1] * 3, c = ix[i + 2] * 3
+    const ax = p[a], ay = p[a + 1], az = p[a + 2]
+    const bx = p[b], by = p[b + 1], bz = p[b + 2]
+    const cx = p[c], cy = p[c + 1], cz = p[c + 2]
+    // a . (b x c)
+    six += ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)
+  }
+  return six / 6
+}

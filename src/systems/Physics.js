@@ -170,8 +170,44 @@ export class Physics {
       const bodyDesc = this.rapier.RigidBodyDesc.fixed()
       const body = this.world.createRigidBody(bodyDesc)
 
+      // FIX_INTERNAL_EDGES, and this one flag is most of why the fast
+      // vehicles stopped flying.
+      //
+      // Mike: "lots of floating/flying instances ... race cars and motor
+      // cycles especially 'jumpy' or prone to flying."
+      //
+      // A trimesh is triangles, and a box sliding across one crosses an edge
+      // between two of them every few units. Without this flag Rapier
+      // resolves each crossing against the triangle's own edge, and the
+      // contact normal it finds there points partly BACKWARDS along the
+      // travel - so every edge is a tiny kerb, and the faster you cross it
+      // the harder it kicks. That is why the quick vehicles were the ones
+      // complained about, and why it got worse at a lower frame rate (a
+      // longer step is a deeper bite into the next triangle). With the flag,
+      // the contact normal is blended from the adjacent triangles' normals
+      // and a flat floor is flat.
+      //
+      // Measured with tools/fly.mjs, the racing car at full speed on the
+      // stunt island's flat floor, frames with no ground contact:
+      //
+      //                      60 fps    30 fps
+      //     without flag      14.3%     89.3%   (30 fps: launched 3.7 up,
+      //                                           then off the island)
+      //     with flag          7.3%      9.3%   (nothing over 0.17 up)
+      //
+      // and on the hub-about bridge, 25.0% / 47.8% before, 7.0% / 8.1% after.
+      // What is left is skimming a few centimetres, which you cannot see.
+      //
+      // THE FLAG ASSUMES THE MESH IS ORIENTED - wound with its front faces
+      // outward - because it builds pseudo-normals from the winding. The
+      // bridge decks were inside out, which this flag turned from invisible
+      // into a car held inside the slab. See deckSolid() in bridgeDeck.js and
+      // tests/flying.mjs, which checks the winding of every solid that
+      // comes through here.
+      const flags = this.rapier.TriMeshFlags
+        ? this.rapier.TriMeshFlags.FIX_INTERNAL_EDGES : undefined
       const colliderDesc = this.rapier.ColliderDesc
-        .trimesh(vertices, indices)
+        .trimesh(vertices, indices, flags)
         .setFriction(0.9)
 
       const collider = this.world.createCollider(colliderDesc, body)

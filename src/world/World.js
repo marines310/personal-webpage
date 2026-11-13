@@ -114,7 +114,8 @@ import {
 import {
   BRIDGE_DECK_THICKNESS,
   bridgeDeckProfile,
-  bridgeDeckAt
+  bridgeDeckAt,
+  deckSolid
 } from './bridgeDeck.js'
 import { findWindowFaces, windowGeometry, windowVents } from './windows.js'
 import {
@@ -2330,52 +2331,9 @@ export class World {
    * A trimesh has no steps at all because it IS the surface.
    */
   buildArchedDeck(bridge) {
-    const steps = Math.max(24, Math.round(bridge.length / 3))
-    const half = bridge.width / 2
-    const sin = Math.sin(bridge.rotationY)
-    const cos = Math.cos(bridge.rotationY)
-
-    // A point on the deck, from a fraction along the span and a side.
-    const at = (t, side, drop = 0) => {
-      const along = (t - 0.5) * bridge.length
-      const across = half * side
-      return {
-        x: bridge.x + sin * along + cos * across,
-        y: bridgeDeckProfile(t, bridge.length) - drop,
-        z: bridge.z + cos * along - sin * across
-      }
-    }
-
-    const positions = []
-    const indices = []
-    const push = (p) => { positions.push(p.x, p.y, p.z); return positions.length / 3 - 1 }
-
-    // Top face, then the underside a slab's thickness below it, then the four
-    // sides - so the deck is a closed solid. An open ribbon works for the mesh
-    // and is wrong for the collider: a trimesh is a surface, and a car that
-    // gets beneath an open one finds nothing to stand on.
-    const top = []
-    const under = []
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps
-      top.push([push(at(t, -1)), push(at(t, 1))])
-      under.push([
-        push(at(t, -1, BRIDGE_DECK_THICKNESS)),
-        push(at(t, 1, BRIDGE_DECK_THICKNESS))
-      ])
-    }
-
-    const quad = (a, b, c, d) => { indices.push(a, b, c, a, c, d) }
-
-    for (let i = 0; i < steps; i++) {
-      quad(top[i][0], top[i][1], top[i + 1][1], top[i + 1][0])
-      quad(under[i][1], under[i][0], under[i + 1][0], under[i + 1][1])
-      quad(top[i][0], top[i + 1][0], under[i + 1][0], under[i][0])
-      quad(top[i + 1][1], top[i][1], under[i][1], under[i + 1][1])
-    }
-    // The two ends, so the arch is capped where it tucks into the land.
-    quad(top[0][1], top[0][0], under[0][0], under[0][1])
-    quad(top[steps][0], top[steps][1], under[steps][1], under[steps][0])
+    // The solid comes from bridgeDeck.js, where its winding can be tested -
+    // see deckSolid() for the inside-out version that shipped first.
+    const { positions, indices } = deckSolid(bridge)
 
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position',
