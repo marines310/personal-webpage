@@ -85,8 +85,8 @@ chk('a PlayStation pad gets its shapes and a Switch pad its mirrored letters',
     labelsFor('playstation').A === '✕' && labelsFor('switch').A === 'B')
 const hints = padHints('stadia')
 chk('the controls box gets four lines, like the keyboard\'s', hints.length === 4)
-chk('and they name R2 to go, L2 to brake and Y for the garage',
-    /R2 to go/.test(hints[0]) && /L2 to brake/.test(hints[0]) && /hold Y for the garage/.test(hints[3]))
+chk('and they name L2 to go, R2 to brake and Y for the garage',
+    /L2 to go/.test(hints[0]) && /R2 to brake/.test(hints[0]) && /L1 to boost/.test(hints[1]) && /hold Y for the garage/.test(hints[3]))
 
 // ---------------------------------------------------------------------------
 console.log('\n2. The sticks\n')
@@ -126,22 +126,23 @@ chk('the standard indices are the standard ones',
     BUTTON.UP === 12 && BUTTON.DOWN === 13 && BUTTON.LEFT === 14 && BUTTON.RIGHT === 15 &&
     AXIS.LX === 0 && AXIS.RX === 2 && AXIS.RY === 3)
 
-chk('R2 all the way is full throttle', near(read1(squeeze(pad(), BUTTON.RT, 1)).forward, 1))
-chk('L2 all the way is full reverse', near(read1(squeeze(pad(), BUTTON.LT, 1)).forward, -1))
-chk('half a trigger is about half the pull',
-    Math.abs(read1(squeeze(pad(), BUTTON.RT, 0.5)).forward - 0.5) < 0.05)
-chk('both triggers cancel', near(read1(squeeze(squeeze(pad(), BUTTON.RT, 1), BUTTON.LT, 1)).forward, 0))
-chk('a trigger resting a hair off zero is nothing',
-    read1(squeeze(pad(), BUTTON.RT, TRIGGER_DEADZONE * 0.8)).forward === 0)
-
 const one = (i) => read1(press(pad(), i))
-chk('A is boost', one(BUTTON.A).boost && !one(BUTTON.A).brake)
-chk('B is the handbrake', one(BUTTON.B).brake && !one(BUTTON.B).boost)
+chk('L2 all the way is full throttle', near(one(BUTTON.LT).forward, 1))
+chk('half of L2 gives about half throttle',
+    Math.abs(read1(squeeze(pad(), BUTTON.LT, 0.5)).forward - 0.5) < 0.05)
+chk('R2 brakes without reversing', one(BUTTON.RT).brake && one(BUTTON.RT).forward === 0)
+chk('R2 wins while L2 and boost are held',
+    read1(press(pad(), BUTTON.LT, BUTTON.LB, BUTTON.RT)).forward === 0 &&
+    read1(press(pad(), BUTTON.LT, BUTTON.LB, BUTTON.RT)).brake)
+chk('incidental trigger motion does nothing', [BUTTON.LT, BUTTON.RT].every(button =>
+    !read1(squeeze(pad(), button, TRIGGER_DEADZONE * 0.8)).active))
+chk('L1 boosts without indicating', one(BUTTON.LB).boost && !one(BUTTON.LB).held.indicateLeft)
+chk('B reverses and releases cleanly', one(BUTTON.B).forward === -1 && !one(BUTTON.B).brake && rest.forward === 0)
 chk('X is the donut switch', one(BUTTON.X).held.donut)
 chk('Y is the garage', one(BUTTON.Y).held.garage)
-chk('L1 and R1 are the indicator stalk, left and right',
-    one(BUTTON.LB).held.indicateLeft && one(BUTTON.RB).held.indicateRight &&
-    !one(BUTTON.LB).held.indicateRight)
+chk('A and R1 are the indicator stalk, left and right',
+    one(BUTTON.A).held.indicateLeft && one(BUTTON.RB).held.indicateRight &&
+    !one(BUTTON.A).held.indicateRight)
 chk('D-pad up is nose UP (the tail stand) and down is nose down',
     one(BUTTON.UP).held.wheelieTail && one(BUTTON.DOWN).held.wheelieNose)
 chk('R3 re-centres the camera and L3 saves it', one(BUTTON.R3).held.cameraReset && one(BUTTON.L3).held.cameraSave)
@@ -206,7 +207,7 @@ chk('a snapshot is a copy, not the live object', (() => {
 chk('a pad with holes in it reads as at rest rather than throwing',
     !readPad(snapshotPad({ id: CHROME_ID, mapping: 'standard', axes: [], buttons: [{ pressed: false, value: 0 }, null, undefined, {}] })).active)
 chk('buttons given as bare numbers (old browsers) still read',
-    readPad(snapshotPad({ id: 'x', mapping: 'standard', axes: [0, 0, 0, 0], buttons: [1, 0, 0, 0, 0, 0, 0, 0.8] })).boost === true)
+    readPad(snapshotPad({ id: 'x', mapping: 'standard', axes: [0, 0, 0, 0], buttons: [0, 0, 0, 0, 1, 0, 0, 0] })).boost === true)
 
 // UNMAPPED. Axes 2 and 3 are often the triggers, resting at -1.
 const raw = read1(pad({ mapping: '', axes: [0, 0, -1, -1] }))
@@ -230,7 +231,7 @@ chk('but it still steers', read1(pad({ mapping: '', axes: [1, 0, -1, -1] })).ste
   real.buttons[18] = { pressed: true, value: 1 }
   chk('and its two extra buttons, Assistant and Capture, do nothing',
       !read1(real).active && pressedSince(null, read1(real).held).length === 0)
-  chk('while it still drives', near(read1(squeeze(real, BUTTON.RT, 1)).forward, 1))
+  chk('while it still drives', near(read1(squeeze(real, BUTTON.LT, 1)).forward, 1))
 }
 
 // WHICH ONE. A headset that calls itself a gamepad must not win.

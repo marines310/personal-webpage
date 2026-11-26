@@ -297,7 +297,7 @@ export class VehicleSelector {
    * Nothing here knows which button is which: that is gamepad.js.
    *
    * `menuOpen` is told to Inputs every frame, and it is what stops the A
-   * button that confirms a vehicle from also being the boost.
+   * button that confirms a vehicle from also toggling the left indicator.
    */
   readController() {
     const inputs = this.game.inputs

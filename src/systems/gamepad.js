@@ -153,10 +153,10 @@ export function labelsFor(kind) {
 export function padHints(kind) {
   const b = labelsFor(kind)
   return [
-    `Left stick to steer · ${b.RT} to go · ${b.LT} to brake / reverse`,
-    `${b.A} to boost · ${b.B} handbrake · ${b.LB} / ${b.RB} to indicate`,
+    `Left stick to steer · ${b.LT} to go · ${b.RT} to brake`,
+    `${b.LB} to boost · ${b.B} to reverse · ${b.A} / ${b.RB} to indicate`,
     `Right stick to look · ${b.R3} to re-centre · D-pad ◀ ▶ to zoom`,
-    `${b.X} donut · D-pad ▲ ▼ wheelie · hold ${b.Y} for the garage`
+    `${b.X} donut · D-pad ▲ front up / ▼ rear up · hold ${b.Y} for the garage`
   ]
 }
 
@@ -236,20 +236,14 @@ const value = (snap, index) => (snap.buttons[index] ? snap.buttons[index].value 
  * Everything the game wants to know about a pad this frame.
  *
  *   steering  +1 left, -1 right    - the same convention getInput() uses
- *   forward   +1 throttle, -1 reverse, analogue: right trigger minus left
+ *   forward   +1 throttle, -1 reverse
  *   boost, brake                    - held
  *   camYaw, camPitch, camZoom       - -1 to 1, to be multiplied by a rate
  *   held                            - every named button, for pressedSince()
  *   menuX                           - -1, 0 or 1: left or right, for the picker
  *
- * THE LAYOUT, and why:
- *   Triggers for go and stop, because that is every driving game since 2001
- *   and they are analogue. Left stick steers and ONLY steers - throttle on
- *   the same stick means you cannot corner without lifting. A is boost
- *   (the button a thumb rests on) and B the handbrake beside it. Bumpers
- *   are the indicator stalk: left and right, under the fingers that are not
- *   busy. The D-pad's vertical is the wheelie pair (up = nose up) and its
- *   horizontal is zoom, which leaves the right stick for looking around.
+ * The left trigger applies throttle and the right trigger brakes to a stop.
+ * Reverse has its own button so holding the brake keeps the vehicle stopped.
  *
  * IF THE BROWSER DID NOT MAP IT (`standard` false), only what is safe is
  * read: the first stick's X axis and the buttons. The right stick is left
@@ -272,15 +266,15 @@ export function readPad(snap) {
   // either thumb can flick through the garage.
   const padX = (pressed(snap, BUTTON.RIGHT) ? 1 : 0) - (pressed(snap, BUTTON.LEFT) ? 1 : 0)
 
-  const go = deadzone(value(snap, BUTTON.RT), TRIGGER_DEADZONE)
-  const stop = deadzone(value(snap, BUTTON.LT), TRIGGER_DEADZONE)
+  const go = deadzone(value(snap, BUTTON.LT), TRIGGER_DEADZONE)
+  const stop = deadzone(value(snap, BUTTON.RT), TRIGGER_DEADZONE)
 
   const held = {
-    boost: pressed(snap, BUTTON.A),
-    brake: pressed(snap, BUTTON.B),
+    boost: pressed(snap, BUTTON.LB),
+    brake: stop > 0,
     donut: pressed(snap, BUTTON.X),
     garage: pressed(snap, BUTTON.Y),
-    indicateLeft: pressed(snap, BUTTON.LB),
+    indicateLeft: pressed(snap, BUTTON.A),
     indicateRight: pressed(snap, BUTTON.RB),
     wheelieTail: pressed(snap, BUTTON.UP),
     wheelieNose: pressed(snap, BUTTON.DOWN),
@@ -297,7 +291,7 @@ export function readPad(snap) {
     standard: snap.standard,
     // Stick right is +X; steering is + for LEFT. One minus sign, here.
     steering: -steerCurve(stickX),
-    forward: Math.max(-1, Math.min(1, go - stop)),
+    forward: held.brake ? 0 : go - value(snap, BUTTON.B),
     boost: held.boost,
     brake: held.brake,
     camYaw: snap.standard ? deadzone(snap.axes[AXIS.RX]) : 0,

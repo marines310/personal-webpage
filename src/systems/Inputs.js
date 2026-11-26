@@ -88,7 +88,7 @@ export class Inputs {
     this.padUi = { step: 0, confirm: false, garage: false, sound: false }
     this.padChanged = null
     // Set by VehicleSelector while the picker is up. A pad's buttons mean
-    // something else in a menu, and A must not confirm AND boost.
+    // something else in a menu, and A must not confirm and toggle the left indicator.
     this.menuOpen = false
     // Which device was touched last, so the controls box can show the
     // controls for the thing in the player's hands.
