@@ -187,7 +187,13 @@
       </button>
     </div>
 
-    <!-- Controls hint -->
+    <!-- "Stadia controller connected". Empty and hidden until a controller
+         is; UI.updatePad() writes the name of whatever turned up. -->
+    <div id="pad-notice" class="hidden" role="status" aria-live="polite"></div>
+
+    <!-- Controls hint. These four lines are the KEYBOARD's; when a controller
+         is the thing being used, UI.updatePad() swaps in that pad's own four
+         from gamepad.js and puts these back when a key is pressed. -->
     <div id="controls-hint">
       <p>WASD or Arrow Keys to drive</p>
       <p>SHIFT to boost &middot; SPACE to brake</p>

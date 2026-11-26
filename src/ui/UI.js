@@ -3,6 +3,7 @@ import { wheelieHud } from '../world/wheelie.js'
 import { Game } from '../core/Game.js'
 import { getMapExtent, islandOutline } from '../world/islandLayout.js'
 import { missionArrow, formatDistance } from '../world/missions.js'
+import { padHints, labelsFor } from '../systems/gamepad.js'
 
 /**
  * Give the keyboard back to the car after you touch a panel.
@@ -326,9 +327,83 @@ export class UI {
     this.updateCamera()
     this.updateMission()
     this.updateFuel()
+    this.updatePad(delta)
     this.updateDonut()
     this.updateWheelie()
     this.updateRail()
+  }
+
+  /**
+   * The controller: say when one arrives or leaves, and show ITS controls.
+   *
+   * Three small things, all of them read from Inputs and none of them
+   * decided here:
+   *
+   *   - A notice, for a few seconds, naming the pad - "Stadia controller
+   *     connected" - because the first thing anyone plugging one in wants to
+   *     know is whether the game has seen it. Browsers hide a controller
+   *     until a button on it is pressed, so this appears on that press.
+   *   - The controls box swaps to the pad's own four lines, with the buttons
+   *     named the way they are printed on that pad, while the pad is the
+   *     thing being used - and back to the keyboard's the moment a key is.
+   *   - The pad's Menu button is the sound switch, the same as M.
+   */
+  updatePad(delta) {
+    const inputs = this.game.inputs
+    if (!inputs || !inputs.consumePadChange) return
+
+    if (!this.padNotice) {
+      this.padNotice = document.getElementById('pad-notice')
+      this.hintEl = document.getElementById('controls-hint')
+      this.keyboardHint = this.hintEl ? this.hintEl.innerHTML : ''
+      this.hintShows = 'keyboard'
+      this.padNoticeFor = 0
+    }
+
+    const change = inputs.consumePadChange()
+    if (change && this.padNotice) {
+      // textContent, never innerHTML: the name comes from gamepad.js, but the
+      // habit of putting device strings into markup is how that stops being
+      // true one day.
+      this.padNotice.textContent = change.connected
+        ? `🎮  ${change.name} connected` +
+          (change.standard === false ? ' · limited: use Chrome for full controls' : '')
+        : `${change.name} disconnected`
+      this.padNotice.classList.toggle('gone', !change.connected)
+      this.padNotice.classList.remove('hidden')
+      this.padNoticeFor = 4
+    }
+    if (this.padNoticeFor > 0) {
+      this.padNoticeFor -= delta || 0
+      if (this.padNoticeFor <= 0 && this.padNotice) this.padNotice.classList.add('hidden')
+    }
+
+    if (inputs.consumePadSound() && this.toggleSound) this.toggleSound()
+
+    // Whose controls to show.
+    const pad = inputs.padInfo()
+    const want = pad && inputs.lastDevice === 'gamepad' ? 'pad:' + pad.kind : 'keyboard'
+    if (this.hintEl && want !== this.hintShows) {
+      this.hintShows = want
+      if (want === 'keyboard') {
+        this.hintEl.innerHTML = this.keyboardHint
+      } else {
+        this.hintEl.textContent = ''
+        for (const line of padHints(pad.kind)) {
+          const p = document.createElement('p')
+          p.textContent = line
+          this.hintEl.appendChild(p)
+        }
+      }
+    }
+  }
+
+  /** What to call a key in the HUD: the keyboard's, or the pad's button. */
+  keyOrButton(keys, button) {
+    const inputs = this.game.inputs
+    const pad = inputs && inputs.padInfo && inputs.padInfo()
+    if (!pad || inputs.lastDevice !== 'gamepad') return keys
+    return typeof button === 'function' ? button(labelsFor(pad.kind)) : button
   }
 
   /** Clock, weather and season readout. */
@@ -489,7 +564,7 @@ export class UI {
 
     this.donutEl.classList.toggle('on', hud.active)
     if (this.donutState) {
-      const text = hud.active ? 'ON' : 'OFF  ·  G'
+      const text = hud.active ? 'ON' : 'OFF  ·  ' + this.keyOrButton('G', b => b.X)
       if (this.donutState.textContent !== text) this.donutState.textContent = text
     }
   }
@@ -522,7 +597,7 @@ export class UI {
 
     this.wheelieEl.classList.toggle('on', hud.active)
     if (this.wheelieState) {
-      const text = hud.active ? hud.label : 'OFF  ·  T / Y'
+      const text = hud.active ? hud.label : 'OFF  ·  ' + this.keyOrButton('T / Y', 'D-pad ▲ ▼')
       if (this.wheelieState.textContent !== text) {
         this.wheelieState.textContent = text
       }

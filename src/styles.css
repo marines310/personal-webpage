@@ -554,6 +554,38 @@ body {
   color: rgba(255, 255, 255, 0.42);
 }
 
+/* "Controller connected". Top centre, where nothing else is, and gone again
+   after a few seconds - it is news, not furniture. */
+#pad-notice {
+  position: fixed;
+  top: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: rgba(10, 14, 24, 0.78);
+  color: #fff;
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(79, 232, 255, 0.45);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  z-index: 30;
+  white-space: nowrap;
+}
+
+#pad-notice.hidden {
+  opacity: 0;
+  transform: translate(-50%, -12px);
+}
+
+#pad-notice.gone {
+  border-color: rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.75);
+}
+
 /* Controls Hint */
 #controls-hint {
   color: rgba(255, 255, 255, 0.7);

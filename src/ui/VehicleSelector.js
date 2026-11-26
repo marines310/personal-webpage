@@ -1,4 +1,5 @@
 import { Game } from '../core/Game.js'
+import { labelsFor } from '../systems/gamepad.js'
 import {
   getPlayerGarage,
   inGarageBay,
@@ -287,6 +288,48 @@ export class VehicleSelector {
     else if (key === 'Enter' || key === ' ') { this.confirm(); event.preventDefault() }
   }
 
+  /**
+   * The controller's way of doing what the keyboard does to this picker.
+   *
+   * The same three things onKey() does - step left, step right, confirm -
+   * and the same recall onGlobalKey() does, arriving as one-shot requests
+   * from Inputs rather than as key events, because a gamepad has no events.
+   * Nothing here knows which button is which: that is gamepad.js.
+   *
+   * `menuOpen` is told to Inputs every frame, and it is what stops the A
+   * button that confirms a vehicle from also being the boost.
+   */
+  readController() {
+    const inputs = this.game.inputs
+    if (!inputs || !inputs.consumePadMenu) return
+    inputs.menuOpen = this.open
+
+    // The line under the picker names the keys; with a pad in hand it names
+    // the pad's buttons instead. "A / D to browse" beside a controller whose
+    // A button DRIVES AWAY is a sentence that means two different things.
+    if (this.open && this.el) {
+      const pad = inputs.padInfo && inputs.padInfo()
+      const want = pad && inputs.lastDevice === 'gamepad' ? 'pad' : 'keys'
+      if (want !== this.hintShows) {
+        this.hintShows = want
+        const hint = this.el.querySelector('.vs-hint')
+        if (hint) {
+          hint.textContent = want === 'pad'
+            ? `D-pad or stick ◀ ▶ to browse · ${labelsFor(pad.kind).A} to drive`
+            : 'A / D or ← → to browse · ENTER to drive'
+        }
+      }
+    }
+
+    const asked = inputs.consumePadMenu()
+    if (this.open) {
+      if (asked.step) this.step(asked.step)
+      if (asked.confirm) this.confirm()
+    } else if (asked.garage && !this.isBusy()) {
+      this.show()
+    }
+  }
+
   /** Chosen. Close up and roll out of the garage. */
   confirm() {
     if (!this.open) return
@@ -303,6 +346,8 @@ export class VehicleSelector {
    * here, so it cannot come adrift from where the building actually is.
    */
   update(delta) {
+    this.readController()
+
     if (this.rolling <= 0) {
       this.checkEntered()
       return

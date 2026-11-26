@@ -2,6 +2,9 @@ import {
   KEY_YAW_RATE, KEY_PITCH_RATE, KEY_ZOOM_RATE,
   DRAG_YAW, DRAG_PITCH, WHEEL_ZOOM
 } from './cameraPose.js'
+import {
+  choosePad, readPad, pressedSince, holdFired, menuStep, GARAGE_HOLD
+} from './gamepad.js'
 
 /**
  * Inputs - keyboard, mouse and touch input handling.
@@ -67,6 +70,29 @@ export class Inputs {
       joystick: { x: 0, y: 0 },
       boost: false
     }
+
+    // A game controller, if there is one. Polled in update() - the Gamepad
+    // API has no button events - and everything about what the buttons MEAN
+    // is in gamepad.js. `state` is this frame's reading; `held` is last
+    // frame's buttons, kept to tell a press from a hold.
+    this.pad = {
+      index: null,
+      state: readPad(null),
+      held: null,
+      garageHeld: 0,
+      menu: { dir: 0, wait: 0 }
+    }
+    // One-shot things the pad asks of the INTERFACE rather than of the car:
+    // the vehicle picker, the sound switch, and the "controller connected"
+    // notice. Read and cleared by whoever owns each, like `pulses`.
+    this.padUi = { step: 0, confirm: false, garage: false, sound: false }
+    this.padChanged = null
+    // Set by VehicleSelector while the picker is up. A pad's buttons mean
+    // something else in a menu, and A must not confirm AND boost.
+    this.menuOpen = false
+    // Which device was touched last, so the controls box can show the
+    // controls for the thing in the player's hands.
+    this.lastDevice = 'keyboard'
 
     // Bind event handlers
     this.onKeyDown = this.onKeyDown.bind(this)
@@ -242,6 +268,7 @@ export class Inputs {
   onKeyDown(event) {
     const control = this.resolveKey(event.code)
     if (!control) return
+    this.lastDevice = 'keyboard'
 
     // Touching a driving key hands the keyboard back to the car.
     //
@@ -379,6 +406,16 @@ export class Inputs {
     pitch += this.mouse.dy * DRAG_PITCH
     zoom += this.mouse.wheel * WHEEL_ZOOM
 
+    // The controller's right stick and D-pad, at the SAME rates as the camera
+    // keys - a stick held hard over is Q or E held down, and a stick half
+    // over is half of it. A rate, so it is multiplied by delta like the keys.
+    if (!this.menuOpen) {
+      const pad = this.pad.state
+      yaw += pad.camYaw * KEY_YAW_RATE * delta
+      pitch += pad.camPitch * KEY_PITCH_RATE * delta
+      zoom += pad.camZoom * KEY_ZOOM_RATE * delta
+    }
+
     this.mouse.dx = 0
     this.mouse.dy = 0
     this.mouse.wheel = 0
@@ -418,8 +455,110 @@ export class Inputs {
     this.touch.boost = event.touches.length >= 2
   }
 
+  /**
+   * Poll the controller.
+   *
+   * Keys, mouse and touch are event driven and need nothing here. A gamepad
+   * is the opposite: there are no events for its buttons at all, only a
+   * state to read, so it is read once a frame and compared with the frame
+   * before. Runs first in the tick, so everything that asks for input this
+   * frame sees this frame's pad.
+   */
   update(delta) {
-    // Input state is event driven; nothing to poll.
+    this.pollPad(delta || 0)
+  }
+
+  pollPad(delta) {
+    // Not every browser has it, and an embedded page can be forbidden it -
+    // getGamepads() THROWS under a permissions policy rather than returning
+    // nothing. A controller that cannot be read is no controller.
+    let pads = null
+    try {
+      pads = typeof navigator !== 'undefined' && navigator.getGamepads
+        ? navigator.getGamepads() : null
+    } catch (err) {
+      pads = null
+    }
+
+    const snap = choosePad(pads, this.pad.index)
+    const state = readPad(snap)
+    const was = this.pad.state
+
+    if (!snap) {
+      // Gone, or never there. Drop everything it was holding, so a pad that
+      // dies with the trigger down does not leave the car driving itself.
+      this.pad.index = null
+      this.pad.state = state
+      this.pad.held = null
+      this.pad.garageHeld = 0
+      this.pad.menu.dir = 0
+      if (was.connected) this.padChanged = { connected: false, name: was.name, kind: was.kind }
+      return
+    }
+
+    if (!was.connected || this.pad.index !== snap.index) {
+      this.padChanged = { connected: true, name: state.name, kind: state.kind, standard: state.standard }
+    }
+    this.pad.index = snap.index
+    this.pad.state = state
+    if (state.active) this.lastDevice = 'gamepad'
+
+    const pressed = pressedSince(this.pad.held, state.held)
+    this.pad.held = state.held
+
+    if (this.menuOpen) {
+      // In the picker: left and right step through the garage, A or Menu
+      // drives away. Nothing reaches the car.
+      const step = menuStep(this.pad.menu, state.menuX, delta)
+      if (step) this.padUi.step = step
+      if (pressed.includes('confirm')) this.padUi.confirm = true
+      this.pad.garageHeld = 0
+    } else {
+      this.pad.menu.dir = 0
+      for (const name of pressed) {
+        if (name in this.pulses) this.pulses[name] = true
+      }
+      // Y, HELD, is the way back to the garage - the pad's version of
+      // Backspace twice. Held rather than tapped for the same reason that is
+      // a double tap: it throws away wherever you were.
+      const before = this.pad.garageHeld
+      this.pad.garageHeld = state.held.garage ? before + delta : 0
+      if (holdFired(before, this.pad.garageHeld, GARAGE_HOLD)) this.padUi.garage = true
+    }
+
+    if (pressed.includes('sound')) this.padUi.sound = true
+  }
+
+  /** What the pad has asked of the vehicle picker since last asked. Clears it. */
+  consumePadMenu() {
+    const out = { step: this.padUi.step, confirm: this.padUi.confirm, garage: this.padUi.garage }
+    this.padUi.step = 0
+    this.padUi.confirm = false
+    this.padUi.garage = false
+    return out
+  }
+
+  /** Did the pad's Menu button ask for the sound to be switched? */
+  consumePadSound() {
+    if (!this.padUi.sound) return false
+    this.padUi.sound = false
+    return true
+  }
+
+  /**
+   * A controller arrived or left since this was last asked, or null.
+   * `{ connected, name, kind, standard }` - for the notice on screen.
+   */
+  consumePadChange() {
+    const change = this.padChanged || null
+    this.padChanged = null
+    return change
+  }
+
+  /** The controller in use right now, or null. For the HUD. */
+  padInfo() {
+    const s = this.pad.state
+    return s.connected ? { name: s.name, kind: s.kind, standard: s.standard } : null
   }
 
   /**
@@ -434,7 +573,20 @@ export class Inputs {
     let steering = (this.keys.left ? 1 : 0) - (this.keys.right ? 1 : 0)
 
     let boost = this.keys.boost
-    const brake = this.keys.brake
+    let brake = this.keys.brake
+
+    // The controller ADDS to the keyboard rather than replacing it, so there
+    // is no "controller mode" to be in the wrong one of: whichever you touch
+    // works, and both at once is the sum, clamped. Analogue all the way
+    // through - half a trigger is half the pull, and Vehicle.js already
+    // takes fractions because the touch joystick gives them.
+    if (!this.menuOpen) {
+      const pad = this.pad.state
+      forward = Math.max(-1, Math.min(1, forward + pad.forward))
+      steering = Math.max(-1, Math.min(1, steering + pad.steering))
+      boost = boost || pad.boost
+      brake = brake || pad.brake
+    }
 
     // Touch overrides keyboard while a finger is down
     if (this.touch.active) {
