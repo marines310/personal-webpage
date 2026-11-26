@@ -154,7 +154,7 @@ export function padHints(kind) {
   const b = labelsFor(kind)
   return [
     `Left stick to steer · ${b.LT} to go · ${b.RT} to brake`,
-    `${b.LB} to boost · ${b.B} to reverse · ${b.A} / ${b.RB} to indicate`,
+    `${b.B} to boost · ${b.A} to reverse · ${b.LB} / ${b.RB} to indicate`,
     `Right stick to look · ${b.R3} to re-centre · D-pad ◀ ▶ to zoom`,
     `${b.X} donut · D-pad ▲ front up / ▼ rear up · hold ${b.Y} for the garage`
   ]
@@ -250,7 +250,7 @@ const value = (snap, index) => (snap.buttons[index] ? snap.buttons[index].value 
  * alone, because on an unmapped pad axes 2 and 3 are often the TRIGGERS,
  * which rest at -1 - and that is a camera spinning for ever.
  */
-export function readPad(snap) {
+export function readPad(snap, suppressReverse = false) {
   const empty = {
     connected: false, kind: 'generic', name: '', standard: false,
     steering: 0, forward: 0, boost: false, brake: false,
@@ -270,11 +270,12 @@ export function readPad(snap) {
   const stop = deadzone(value(snap, BUTTON.RT), TRIGGER_DEADZONE)
 
   const held = {
-    boost: pressed(snap, BUTTON.LB),
+    boost: pressed(snap, BUTTON.B),
+    reverse: pressed(snap, BUTTON.A),
     brake: stop > 0,
     donut: pressed(snap, BUTTON.X),
     garage: pressed(snap, BUTTON.Y),
-    indicateLeft: pressed(snap, BUTTON.A),
+    indicateLeft: pressed(snap, BUTTON.LB),
     indicateRight: pressed(snap, BUTTON.RB),
     wheelieTail: pressed(snap, BUTTON.UP),
     wheelieNose: pressed(snap, BUTTON.DOWN),
@@ -284,6 +285,7 @@ export function readPad(snap) {
     confirm: pressed(snap, BUTTON.A) || pressed(snap, BUTTON.START)
   }
 
+  const reverse = suppressReverse ? 0 : value(snap, BUTTON.A)
   const out = {
     connected: true,
     kind: who.kind,
@@ -291,7 +293,7 @@ export function readPad(snap) {
     standard: snap.standard,
     // Stick right is +X; steering is + for LEFT. One minus sign, here.
     steering: -steerCurve(stickX),
-    forward: held.brake ? 0 : go - value(snap, BUTTON.B),
+    forward: held.brake ? 0 : go - reverse,
     boost: held.boost,
     brake: held.brake,
     camYaw: snap.standard ? deadzone(snap.axes[AXIS.RX]) : 0,

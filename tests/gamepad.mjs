@@ -86,7 +86,7 @@ chk('a PlayStation pad gets its shapes and a Switch pad its mirrored letters',
 const hints = padHints('stadia')
 chk('the controls box gets four lines, like the keyboard\'s', hints.length === 4)
 chk('and they name L2 to go, R2 to brake and Y for the garage',
-    /L2 to go/.test(hints[0]) && /R2 to brake/.test(hints[0]) && /L1 to boost/.test(hints[1]) && /hold Y for the garage/.test(hints[3]))
+    /L2 to go/.test(hints[0]) && /R2 to brake/.test(hints[0]) && /B to boost · A to reverse · L1 \/ R1 to indicate/.test(hints[1]) && /hold Y for the garage/.test(hints[3]))
 
 // ---------------------------------------------------------------------------
 console.log('\n2. The sticks\n')
@@ -132,24 +132,25 @@ chk('half of L2 gives about half throttle',
     Math.abs(read1(squeeze(pad(), BUTTON.LT, 0.5)).forward - 0.5) < 0.05)
 chk('R2 brakes without reversing', one(BUTTON.RT).brake && one(BUTTON.RT).forward === 0)
 chk('R2 wins while L2 and boost are held',
-    read1(press(pad(), BUTTON.LT, BUTTON.LB, BUTTON.RT)).forward === 0 &&
-    read1(press(pad(), BUTTON.LT, BUTTON.LB, BUTTON.RT)).brake)
+    read1(press(pad(), BUTTON.LT, BUTTON.B, BUTTON.RT)).forward === 0 &&
+    read1(press(pad(), BUTTON.LT, BUTTON.B, BUTTON.RT)).brake)
 chk('incidental trigger motion does nothing', [BUTTON.LT, BUTTON.RT].every(button =>
     !read1(squeeze(pad(), button, TRIGGER_DEADZONE * 0.8)).active))
-chk('L1 boosts without indicating', one(BUTTON.LB).boost && !one(BUTTON.LB).held.indicateLeft)
-chk('B reverses and releases cleanly', one(BUTTON.B).forward === -1 && !one(BUTTON.B).brake && rest.forward === 0)
+chk('B boosts without reversing', one(BUTTON.B).boost && one(BUTTON.B).forward === 0)
+chk('A reverses without boost', one(BUTTON.A).forward === -1 && !one(BUTTON.A).boost)
+chk('A held from garage selection cannot reverse', readPad(snapshotPad(press(pad(), BUTTON.A)), true).forward === 0)
 chk('X is the donut switch', one(BUTTON.X).held.donut)
 chk('Y is the garage', one(BUTTON.Y).held.garage)
-chk('A and R1 are the indicator stalk, left and right',
-    one(BUTTON.A).held.indicateLeft && one(BUTTON.RB).held.indicateRight &&
-    !one(BUTTON.A).held.indicateRight)
+chk('L1 and R1 are the indicator stalk, left and right',
+    one(BUTTON.LB).held.indicateLeft && one(BUTTON.RB).held.indicateRight &&
+    !one(BUTTON.LB).held.indicateRight)
 chk('D-pad up is nose UP (the tail stand) and down is nose down',
     one(BUTTON.UP).held.wheelieTail && one(BUTTON.DOWN).held.wheelieNose)
 chk('R3 re-centres the camera and L3 saves it', one(BUTTON.R3).held.cameraReset && one(BUTTON.L3).held.cameraSave)
 chk('Menu is the sound switch', one(BUTTON.START).held.sound)
 chk('A or Menu confirms in the picker', one(BUTTON.A).held.confirm && one(BUTTON.START).held.confirm)
 chk('every button the pad names is a real pulse or interface action', (() => {
-  const known = ['boost', 'brake', 'donut', 'garage', 'indicateLeft', 'indicateRight', 'wheelieTail',
+  const known = ['boost', 'brake', 'reverse', 'donut', 'garage', 'indicateLeft', 'indicateRight', 'wheelieTail',
                  'wheelieNose', 'cameraReset', 'cameraSave', 'sound', 'confirm']
   return Object.keys(rest.held).sort().join() === known.sort().join()
 })())
@@ -207,7 +208,7 @@ chk('a snapshot is a copy, not the live object', (() => {
 chk('a pad with holes in it reads as at rest rather than throwing',
     !readPad(snapshotPad({ id: CHROME_ID, mapping: 'standard', axes: [], buttons: [{ pressed: false, value: 0 }, null, undefined, {}] })).active)
 chk('buttons given as bare numbers (old browsers) still read',
-    readPad(snapshotPad({ id: 'x', mapping: 'standard', axes: [0, 0, 0, 0], buttons: [0, 0, 0, 0, 1, 0, 0, 0] })).boost === true)
+    readPad(snapshotPad({ id: 'x', mapping: 'standard', axes: [0, 0, 0, 0], buttons: [0, 1, 0, 0, 0, 0, 0, 0] })).boost === true)
 
 // UNMAPPED. Axes 2 and 3 are often the triggers, resting at -1.
 const raw = read1(pad({ mapping: '', axes: [0, 0, -1, -1] }))

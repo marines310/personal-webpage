@@ -80,6 +80,7 @@ export class Inputs {
       state: readPad(null),
       held: null,
       garageHeld: 0,
+      suppressReverse: false,
       menu: { dir: 0, wait: 0 }
     }
     // One-shot things the pad asks of the INTERFACE rather than of the car:
@@ -88,7 +89,7 @@ export class Inputs {
     this.padUi = { step: 0, confirm: false, garage: false, sound: false }
     this.padChanged = null
     // Set by VehicleSelector while the picker is up. A pad's buttons mean
-    // something else in a menu, and A must not confirm and toggle the left indicator.
+    // something else in a menu, and holding A to confirm must not back the car out.
     this.menuOpen = false
     // Which device was touched last, so the controls box can show the
     // controls for the thing in the player's hands.
@@ -481,7 +482,10 @@ export class Inputs {
     }
 
     const snap = choosePad(pads, this.pad.index)
-    const state = readPad(snap)
+    // A selects a vehicle. Require a fresh press for reverse after leaving the picker.
+    const suppressReverse = this.menuOpen || (snap?.index === this.pad.index && this.pad.suppressReverse)
+    const state = readPad(snap, suppressReverse)
+    this.pad.suppressReverse = suppressReverse && !!state.held.reverse
     const was = this.pad.state
 
     if (!snap) {
